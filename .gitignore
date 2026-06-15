@@ -12,3 +12,5 @@ eval/data**
 **/massif.out*
 *swp
 build
+miniforge.sh
+.env
