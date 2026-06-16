@@ -1,0 +1,14 @@
+experiment_name: "detection"
+model: "resnet18"
+dataset: "cifar10"
+num_clients: 10
+num_rounds: 50
+local_epochs: 5
+batch_size: 16
+learning_rate: 0.01
+watermark_lambda: 0.1
+memory_mu: 0.01
+trigger_sample_count: 100
+alpha: 0.5
+free_rider_ratio: 0.0  # no free riders, just evaluate watermark detection
+seed: 42

@@ -14,3 +14,4 @@ eval/data**
 build
 miniforge.sh
 .env
+logs/

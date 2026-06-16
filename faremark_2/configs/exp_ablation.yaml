@@ -1,0 +1,14 @@
+experiment_name: "ablation_trigger_count"
+model: "resnet18"
+dataset: "cifar10"
+num_clients: 10
+num_rounds: 50
+local_epochs: 5
+batch_size: 16
+learning_rate: 0.01
+watermark_lambda: 0.1
+memory_mu: 0.01
+trigger_sample_count: [1, 10, 50, 100, 150, 200, 300, 400]  # sweep
+alpha: 0.5
+free_rider_ratio: 0.0
+seed: 42

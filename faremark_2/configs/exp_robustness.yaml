@@ -1,0 +1,15 @@
+experiment_name: "robustness"
+model: "resnet18"
+dataset: "cifar10"
+num_clients: 10
+num_rounds: 100
+local_epochs: 5
+batch_size: 16
+learning_rate: 0.01
+watermark_lambda: 0.1
+memory_mu: 0.01
+trigger_sample_count: 100
+alpha: 0.5
+free_rider_ratio: 0.0
+robustness_tests: ["fine_tune", "prune", "quantize", "differential_privacy"]
+seed: 42
