@@ -10,6 +10,8 @@
 The honest client below just does standard local SGD starting from the current
 global weights — i.e. textbook FedAvg.
 """
+from __future__ import annotations  
+
 import copy
 
 import torch

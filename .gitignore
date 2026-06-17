@@ -15,3 +15,4 @@ build
 miniforge.sh
 .env
 logs/
+out/

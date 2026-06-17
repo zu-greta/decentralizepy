@@ -89,13 +89,28 @@ echo "Waiting for completion (poll loop)..."
 while true; do
   PHASE=$(kubectl get pod -n "$NAMESPACE" "$POD_NAME" \
             -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+# Poll the pod phase instead of `kubectl wait --for=condition=complete`
+# (that condition is for Jobs, not bare pods, and silently times out).
+FINAL_PHASE=""
+while true; do
+  PHASE=$(kubectl get pod -n "$NAMESPACE" "$POD_NAME" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
   case "$PHASE" in
-    Succeeded) echo "Pod Succeeded."; break ;;
-    Failed)    echo "Pod Failed. Check: kubectl logs -n $NAMESPACE $POD_NAME"; break ;;
+    Succeeded) echo "Pod Succeeded."; FINAL_PHASE="Succeeded"; break ;;
+    Failed)    echo "Pod Failed."; FINAL_PHASE="Failed"; break ;;
     *)         sleep 30 ;;
   esac
 done
 
-echo "Deleting job $JOB_NAME..."
-runai delete job "$JOB_NAME" --project "$PROJECT" || true
-echo "Done. Inspect $OUTPUT_DIR/result.json and stdout.log on the PVC."
+if [ "$FINAL_PHASE" = "Succeeded" ]; then
+  echo "Deleting job $JOB_NAME..."
+  runai delete job "$JOB_NAME" --project "$PROJECT" || true
+  echo "Done. Inspect $OUTPUT_DIR/result.json and stdout.log on the PVC."
+else
+  # Do NOT delete on failure — keep the pod so its logs stay readable.
+  echo ""
+  echo "Job FAILED. The pod is kept for inspection. Look at:"
+  echo "   kubectl logs -n $NAMESPACE $POD_NAME"
+  echo "   $OUTPUT_DIR/stdout.log   (on the PVC, if the run got that far)"
+  echo "When done, clean up with: runai delete job $JOB_NAME --project $PROJECT"
+fi

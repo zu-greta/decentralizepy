@@ -1,4 +1,6 @@
 """Small helpers shared across the simulator."""
+from __future__ import annotations  
+
 import logging
 import os
 import random
