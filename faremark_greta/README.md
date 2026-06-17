@@ -9,7 +9,7 @@ we always know the foundation is sound before building on it.
 | Stage | Content | Status | Gate |
 |------:|---------|--------|------|
 | 1 | Honest FedAvg (no free-riders, no watermark) | **done** | Table I FedAvg accuracies |
-| 2 | Free-rider attacks (Eq. 17 prev-models, Eq. 18 Gaussian) | planned | Fig. 7 trend |
+| 2 | Free-rider attacks (Eq. 17 prev-models, Eq. 18 Gaussian) | **done** | Fig. 7 trend |
 | 3 | Watermarking (Eq. 1–16) + memory update (Eq. 14) | planned | Tables II, VII |
 | 4 | Detection + robustness (Tables III–VI, Figs. 9–10) | planned | matching tables |
 
@@ -25,12 +25,13 @@ could be ported into decentralizepy later if we need genuinely distributed runs.
 ## Layout
 
 ```
-faremark_greta/
+faremark_paper/
   faremark/            # the library
     config.py          # experiment registry (config_idx -> config), expected-acc gates
     datasets.py        # MNIST / CIFAR-10 / CIFAR-100, IID partition
     models.py          # ResNet-18 (small-image), AlexNet, SmallCNN
     client.py          # Client.produce_update(...)  <- the seam stages 2/3 override
+    attacks.py         # Stage 2: free-rider clients (previous_models, gaussian) + factory
     server.py          # FedAvg Aggregator + round loop + verify_hook (no-op now)
     utils.py           # seeding, accuracy, logging
   scripts/
@@ -40,6 +41,7 @@ faremark_greta/
     Dockerfile build.sh requirements.txt
     submit_experiment.sh  # one RunAI job
     submit_sweep.sh       # config x repeats grid (10-repeat averaging)
+    submit_fig7.sh        # free-rider-count sweep (Stage 2 / Fig. 7 trend)
 ```
 
 ## Run locally
@@ -65,6 +67,26 @@ cd infra
 Each run writes `result.json` (config, per-round accuracy, final acc, PASS/FAIL)
 and `stdout.log` to the results dir on the PVC. `aggregate_results.py` rolls the
 repeats up into mean +/- std.
+
+## Stage 2: free-rider attacks
+
+Configs 7–9 add free-riders. Two attacks are implemented (both subclass `Client`,
+overriding only `produce_update`):
+- `previous_models` (Eq. 17): `W_free = 2*W_t - W_{t-1}` (delta-weights extrapolation).
+- `gaussian` (Eq. 18): `W_free = W_t + N(0, sigma^2)`, optional per-round decay.
+
+Run a Fig. 7 trend (accuracy vs free-rider count):
+
+```bash
+cd infra
+./submit_fig7.sh 7 0                # fast MNIST smoke, counts 0 2 4 6 8
+./submit_fig7.sh 8 0 0 2 4 6 8      # ResNet-18/CIFAR-10, previous_models
+python ../scripts/aggregate_results.py /mnt/nfs/home/zu/results
+```
+
+You can also override on any single run via env vars:
+`NUM_FREE_RIDERS=4 ATTACK=gaussian ./submit_experiment.sh 9 0`.
+The Stage-2 gate is the trend (accuracy falls as free-riders rise), not a fixed band.
 
 ## The seam for later stages
 

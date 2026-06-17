@@ -40,11 +40,11 @@ JOB_NAME="faremark-cfg${CONFIG_IDX}-rep${REPEAT}-$(date +%H%M%S)"
 
 echo "=== Submitting $JOB_NAME (config_idx=$CONFIG_IDX repeat=$REPEAT) ==="
 
-HOLD_CMD=""
-if [ "$DEBUG_HOLD" = "1" ]; then
-  HOLD_CMD="echo 'DEBUG_HOLD: sleeping 1h for inspection'; sleep 3600"
-fi
-
+# Pass all paths/values as ENV VARS (-e), expanded here by the outer shell into
+# simple KEY=VALUE flags (safe — no nested quoting). The command script below is
+# wrapped in SINGLE quotes so the outer shell does NOT touch it; every $VAR in it
+# is expanded by the CONTAINER's bash from the env we injected. This avoids the
+# quoting trap where variables vanish when runai re-parses the command string.
 runai submit "$JOB_NAME" \
   --project "$PROJECT" \
   -g 1 \
@@ -53,23 +53,49 @@ runai submit "$JOB_NAME" \
   --run-as-uid "$USER_UID" \
   --run-as-gid "$USER_GID" \
   --memory "$MEMORY" \
-  --command -- bash -c "
+  -e "CONFIG_IDX=$CONFIG_IDX" \
+  -e "REPEAT=$REPEAT" \
+  -e "OUTPUT_DIR=$OUTPUT_DIR" \
+  -e "DATA_ROOT=$DATA_ROOT" \
+  -e "GIT_REPO=$GIT_REPO" \
+  -e "GIT_BRANCH=$GIT_BRANCH" \
+  -e "PKG_SUBDIR=$PKG_SUBDIR" \
+  -e "SCRIPT=$SCRIPT" \
+  -e "DEBUG_HOLD=$DEBUG_HOLD" \
+  --command -- bash -c '
     set -euo pipefail
     export USER=zu
-    mkdir -p '$OUTPUT_DIR' '$DATA_ROOT'
+    mkdir -p "$OUTPUT_DIR" "$DATA_ROOT"
+    # Mirror ALL output to a log on the PVC so the run is debuggable even if the
+    # pod dies abruptly (kubectl logs may be gone; NFS stdout buffers can be lost).
+    exec > >(tee "$OUTPUT_DIR/pod.log") 2>&1
+    echo "=== pod start: $(date) ==="
+    echo "OUTPUT_DIR=$OUTPUT_DIR"
+    echo "DATA_ROOT=$DATA_ROOT"
+    echo "python: $(which python || echo MISSING)  $(python --version 2>&1 || true)"
+    echo "nvidia-smi:"; nvidia-smi -L || echo "(no GPU visible)"
     rm -rf /tmp/decentralizepy
-    git clone --depth 1 --branch '$GIT_BRANCH' '$GIT_REPO' /tmp/decentralizepy
-    export PYTHONPATH=/tmp/decentralizepy/${PKG_SUBDIR}
-    cd /tmp/decentralizepy/${PKG_SUBDIR}
-    python -u '$SCRIPT' \
-      --config_idx $CONFIG_IDX --repeat $REPEAT --device cuda \
-      --output_dir '$OUTPUT_DIR' --data_root '$DATA_ROOT' \
-      2>&1 | tee '$OUTPUT_DIR/stdout.log'
-    EXIT=\${PIPESTATUS[0]}
-    echo \"experiment exit code: \$EXIT\"
-    $HOLD_CMD
-    exit \$EXIT
-  "
+    echo "cloning $GIT_REPO (branch $GIT_BRANCH) ..."
+    git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REPO" /tmp/decentralizepy
+    echo "repo top-level:"; ls -la /tmp/decentralizepy
+    if [ ! -d "/tmp/decentralizepy/$PKG_SUBDIR" ]; then
+      echo "ERROR: $PKG_SUBDIR/ not found in the repo."
+      echo "Did you commit+push faremark_greta/ to branch $GIT_BRANCH of $GIT_REPO?"
+      sync; sleep 2; exit 3
+    fi
+    export PYTHONPATH="/tmp/decentralizepy/$PKG_SUBDIR"
+    cd "/tmp/decentralizepy/$PKG_SUBDIR"
+    echo "package dir:"; ls -la
+    set +e
+    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT"
+    EXIT=$?
+    set -e
+    echo "experiment exit code: $EXIT"
+    if [ "$DEBUG_HOLD" = "1" ]; then echo "DEBUG_HOLD: sleeping 1h"; sleep 3600; fi
+    sync; sleep 2   # let tee flush to NFS before the pod exits
+    exit $EXIT
+  '
+
 
 # ---- wait for the pod, then report + clean up ----
 sleep 5
@@ -84,11 +110,6 @@ echo "Live logs:  kubectl logs -n $NAMESPACE $POD_NAME -f"
 echo "Results ->  $OUTPUT_DIR"
 echo "Waiting for completion (poll loop)..."
 
-# Poll the pod phase instead of `kubectl wait --for=condition=complete`
-# (that condition is for Jobs, not bare pods, and silently times out).
-while true; do
-  PHASE=$(kubectl get pod -n "$NAMESPACE" "$POD_NAME" \
-            -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
 # Poll the pod phase instead of `kubectl wait --for=condition=complete`
 # (that condition is for Jobs, not bare pods, and silently times out).
 FINAL_PHASE=""
