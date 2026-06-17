@@ -1,0 +1,3 @@
+# torch + torchvision are provided by the pytorch/pytorch base image.
+# Only list extras here.
+numpy>=1.21
