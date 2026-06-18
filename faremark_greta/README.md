@@ -10,11 +10,13 @@ so the foundation is always verified before the next layer is added.
 |------:|---------|--------|------|
 | 1 | Honest FedAvg (no free-riders, no watermark) | **done** | Table I FedAvg accuracies |
 | 2 | Free-rider attacks (Eq. 17 prev-models, Eq. 18 Gaussian) | **done** | Fig. 7 accuracy-drop trend |
-| 3 | Watermarking scheme (Eq. 1–16) + memory update (Eq. 14) | planned | Tables II, VII |
+| 3 | Watermarking scheme (Eq. 1–16) + memory update (Eq. 14) | **done** | benign BER≈0; Tables II, VII |
 | 4 | Free-rider detection + robustness | planned | Tables III–VI, Figs. 9–10 |
 
-> **Stages 1–2 contain no watermarking.** Stage 1 is plain federated learning;
-> Stage 2 adds the free-rider *attacks* on top of it. Watermarking is Stage 3.
+> **Stages 1–3 are complete and verified.** Stage 1 is plain federated learning,
+> Stage 2 adds the free-rider *attacks*, and Stage 3 adds the *watermark*: honest
+> clients embed it (benign bit-error-rate ≈ 0) and free-riders cannot reproduce
+> it (BER ≈ 0.5). Stage 4 turns that separation into a full detection sweep.
 
 *Note*: FareMark is centralized FedAvg simulated on one GPU, plus a custom per-client
 loss, a memory-enhanced update, and server-side verification. 
@@ -25,26 +27,31 @@ loss, a memory-enhanced update, and server-side verification.
 
 ```
 decentralizepy/
-├── ...                         # upstream decentralizepy (not used yet)
+├── ...                           # upstream decentralizepy (not used yet)
 └── faremark_greta/
-    ├── faremark/               # the library
-    │   ├── config.py           # experiment registry + expected-accuracy gates
-    │   ├── datasets.py         # MNIST / CIFAR-10 / CIFAR-100, IID partition
-    │   ├── models.py           # ResNet-18 (small-image), AlexNet, SmallCNN
-    │   ├── client.py           # honest Client + the produce_update() seam
-    │   ├── attacks.py          # Stage 2 free-rider clients + factory
-    │   ├── server.py           # FedAvg aggregator + round loop + verify_hook
-    │   └── utils.py            # seeding, accuracy, logging
+    ├── faremark/                 # the library
+    │   ├── config.py             # experiment registry + expected-accuracy gates
+    │   ├── datasets.py           # MNIST / CIFAR-10 / CIFAR-100, IID partition
+    │   ├── models.py             # ResNet-18 (small-image), AlexNet, SmallCNN
+    │   ├── client.py             # honest Client + the produce_update() seam
+    │   ├── attacks.py            # Stage 2 free-rider clients + factory
+    │   ├── watermark.py          # Stage 3 core: smoothing f, projection, embed/extract, BER
+    │   ├── wm_client.py          # Stage 3 WatermarkClient (embed L_wm) + memory update (Eq.14)
+    │   ├── wm_verify.py          # Stage 3 registry + server-side extraction/detection
+    │   ├── server.py             # FedAvg aggregator + round loop + verify_hook
+    │   └── utils.py              # seeding, accuracy, logging
     ├── scripts/
-    │   ├── run_experiment.py   # entry point: one (config, repeat) -> result.json
-    │   └── aggregate_results.py# mean ± std over repeats (paper table format)
+    │   ├── run_experiment.py     # entry point: one (config, repeat) -> result.json
+    │   └── aggregate_results.py  # mean ± std over repeats (paper table format)
     ├── infra/
-    │   ├── Dockerfile build.sh requirements.txt
-    │   ├── submit_experiment.sh# one RunAI job
-    │   ├── submit_sweep.sh      # config × repeats grid
-    │   └── submit_fig7.sh       # free-rider-count sweep (Fig. 7)
-    ├── FareMark.md             # paper deep-dive
-    ├── GRETA.md                # project plan + notes
+    │   ├── Dockerfile 
+    │   ├── build.sh
+    │   ├── requirements.txt
+    │   ├── submit_experiment.sh  # one RunAI job
+    │   ├── submit_sweep.sh       # config × repeats grid
+    │   └── submit_fig7.sh        # free-rider-count sweep (Fig. 7)
+    ├── FareMark.md               # paper deep-dive
+    ├── GRETA.md                  # project plan + notes
     └── README.md
 ```
 
@@ -87,6 +94,39 @@ average. Maps to paper §V-A2:
   per-round decay `σ_t = σ₀ · t^(-γ)`.
 - `build_clients(cfg, ...)` — factory that returns a mix of honest + free-rider
   clients and the chosen free-rider indices (deterministic given the seed).
+
+### [`faremark/watermark.py`](faremark/watermark.py) — Stage 3 core math
+The box-free, output-space watermark (paper §IV-A). A client's m-bit message is
+read from the model's **softmax output** on its trigger class:
+- `smooth(p, …)` — the function f() (**Eq. 7–9**); default `f(p)=p^α`, `α<1`,
+  which amplifies the tail probabilities so the argmax can't dominate the read.
+- `make_key(m, l, …)` — the secret ±1 projection matrix M. Rows are
+  **sign-balanced** (equal +1/−1): since `f(p) ≥ 0`, an all-same-sign row would
+  force a fixed bit regardless of input, so balanced rows are required for a bit
+  to be embeddable at all. (This was the key debugging insight.)
+- `project_logits(probs, key, …, exclude)` — `z_k = Σ_j f(p_j)·M_{k,j}`
+  (**Eq. 13**); the trigger class is excluded so its dominant probability can't
+  freeze a bit. `extract_bits` averages z over N_T trigger samples then takes the
+  sign (**Eq. 15**); `watermark_loss` is the BCE embedding term (**Eq. 11–12**);
+  `bit_error_rate` / `detected` implement the detection threshold (**Eq. 16**).
+
+### [`faremark/wm_client.py`](faremark/wm_client.py) — Stage 3 watermark client
+`WatermarkClient(Client)` overrides `produce_update` to (1) train with
+`L = L_cl + λ·L_wm` where the watermark term is applied to trigger-class samples
+only (**Eq. 11–12**, plus label smoothing to keep the tail movable), and (2)
+apply the **memory-enhanced update** (**Eq. 14**):
+`W_new = β·(memory + Δ) + (1−β)·W_global`, where `Δ` is this round's local step.
+Without it, FedAvg averaging would wash the watermark out; `β=0` recovers plain
+local training. `build_watermarked_clients(...)` assigns each client a unique
+trigger class + secret key + message and registers them.
+
+### [`faremark/wm_verify.py`](faremark/wm_verify.py) — Stage 3 server verification
+`WatermarkRegistry` stores each client's (trigger class, key, bits).
+`build_trigger_bank` samples N_T trigger images per class from the test set.
+`make_verifier(...)` returns the server's `verify_hook`: each round it extracts
+every client's watermark from the submitted model, computes BER, and flags a
+free-rider when `BER ≥ η`. It reports benign BER, free-rider BER, detection
+accuracy and false-positive rate (**Eq. 15–16**; the mechanism behind Tables II–V).
 
 ### [`faremark/models.py`](faremark/models.py) — model zoo
 `ResNet18`, `AlexNetSmall`, `SmallCNN` (the last for fast smoke tests). Both real
@@ -148,6 +188,9 @@ python scripts/run_experiment.py --list_configs
 | 7 | fr_smoke_mnist | SmallCNN / MNIST | 10 | Stage-2 fast trend |
 | 8 | fr_prev_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | previous-models attack |
 | 9 | fr_gauss_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | gaussian attack |
+| 10 | wm_smoke_mnist | SmallCNN / MNIST | 10 | Stage-3 fast embed+extract |
+| 11 | wm_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | **fidelity vs baseline (Table I "Ours")** |
+| 12 | wm_fr_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | watermark + free-riders → detection |
 
 ### Locally
 
@@ -220,10 +263,14 @@ python test_stage2.py # -> assignment OK; previous_models runs; trend: 0 FR=100%
 # on the cluster for the full trend (Fig. 7)
 cd infra
 ./submit_fig7.sh 7 0                # fast MNIST trend, counts 0 2 4 6 8 (minutes)
-./submit_fig7.sh 8 0 0 2 4 6 8      # ResNet-18 / CIFAR-10, previous-models
-./submit_fig7.sh 9 0 0 2 4 6 8      # ResNet-18 / CIFAR-10, gaussian
-python ../scripts/aggregate_results.py /mnt/nfs/home/zu/results
+./submit_fig7.sh 8 0 0 2 4 6 8      # ResNet-18 / CIFAR-10, previous-models 
+./submit_fig7.sh 9 0 0 2 4 6 8      # ResNet-18 / CIFAR-10, gaussian 
+python ../scripts/aggregate_results.py /mnt/nfs/home/zu/results --fig7
 ```
+
+Each job writes its own `result.json`; `aggregate_results.py` walks the results
+root and groups by `(config, attack, #free-riders)` — so `--fig7` prints the
+accuracy-vs-free-rider trend, while plain repeats collapse into mean ± std.
 
 Override any single run via env vars:
 ```bash
@@ -234,6 +281,54 @@ NUM_FREE_RIDERS=4 ATTACK=gaussian ./submit_experiment.sh 9 0
 trend). `result.json` records `free_rider_indices` so you can see which clients
 cheated. The Stage-2 gate is the *trend*, not a fixed accuracy band — there is no
 detection yet (that needs the watermarks from Stage 3).
+
+### Stage 3 — watermarking (embed, extract, detect)
+
+First, the synthetic end-to-end test (no cluster, no dataset download — runs in
+seconds and exercises the real `WatermarkClient`, server verifier and registry):
+
+```bash
+python test_stage3.py
+```
+
+Then on the cluster:
+
+```bash
+cd infra
+./submit_experiment.sh 10 0     # fast watermark smoke (MNIST): embed + extract
+./submit_experiment.sh 11 0     # FIDELITY: ResNet-18/CIFAR-10, all honest + watermarked
+./submit_experiment.sh 12 0     # DETECTION: watermark + free-riders
+```
+
+What each piece maps to and the **expected output**:
+- **Embedding / extraction** (Eq. 11–15): honest clients reach mean benign
+  `wm_benign_ber ≈ 0` — the watermark is recovered. (Tables II / VII; vary N_T
+  via `wm_num_triggers`.)
+- **Fidelity** (idx 11, Table I "Ours"): final accuracy within ~2 points of the
+  Stage-1 baseline (your 93.22%). The watermark shouldn't cost much accuracy.
+- **Detection** (idx 12, Tables III–V): free-riders show `wm_fr_ber ≈ 0.5` and
+  are flagged (`wm_fr_recall`), benign clients are kept (`wm_fpr ≈ 0`).
+
+The Stage-3 watermark metrics are written into `result.json`:
+
+```json
+{
+  "watermark": true,
+  "wm_benign_ber": 0.0,    "wm_fr_ber": 0.5,
+  "wm_detect_acc": 1.0,    "wm_fpr": 0.0,  "wm_fr_recall": 1.0,
+  "final_acc": 92.1, "correctness_pass": true, ...
+}
+```
+
+Validated end-to-end on synthetic FL (6 clients, 2 free-riders) before any
+cluster run: benign BER 0.00, free-rider BER 0.50, detection accuracy 100%,
+FPR 0%. Two implementation notes that cost real debugging time and are baked into
+the code: the trigger class is **excluded** from the projection (its ~1.0
+probability would otherwise freeze a bit), and key rows are **sign-balanced**
+(because `f(p) ≥ 0`, a same-sign row makes a bit unembeddable). Key knobs:
+`wm_lambda` (embedding strength), `wm_beta` (memory vs global), `wm_alpha`
+(smoothing), `wm_eta` (detection threshold) — overridable via `--wm_lambda` /
+`--wm_beta` or the config.
 
 ---
 

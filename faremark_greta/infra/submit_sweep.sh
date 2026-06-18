@@ -21,7 +21,7 @@ for cfg in $CONFIG_IDXS; do
     # Run submit in the background-friendly "fire and forget" style: each job
     # is independent on the cluster. Remove the trailing '&' if your runai
     # quota requires serial submission.
-    "$SCRIPT_DIR/submit_experiment.sh" "$cfg" "$rep"
+    WAIT=0 "$SCRIPT_DIR/submit_experiment.sh" "$cfg" "$rep"
     n=$((n + 1))
     sleep 2
   done

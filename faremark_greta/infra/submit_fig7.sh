@@ -25,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 for k in "${COUNTS[@]}"; do
   echo ">>> free-riders=$k (config_idx=$CONFIG_IDX repeat=$REPEAT)"
-  NUM_FREE_RIDERS="$k" "$SCRIPT_DIR/submit_experiment.sh" "$CONFIG_IDX" "$REPEAT"
+  WAIT=0 NUM_FREE_RIDERS="$k" "$SCRIPT_DIR/submit_experiment.sh" "$CONFIG_IDX" "$REPEAT"
   sleep 2
 done
 

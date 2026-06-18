@@ -1,0 +1,148 @@
+"""Stage 3 client: embeds an output-space watermark and uses the
+memory-enhanced update so the watermark survives FedAvg aggregation.
+
+Maps to the paper:
+  * trigger / common split + L = L_cl + lambda * L_wm        (§IV-B, Eq. 11-12)
+  * memory-enhanced parameter update                          (§IV-C, Eq. 14)
+"""
+from __future__ import annotations
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .client import Client, _to_cpu_state
+from . import watermark as wm
+
+
+class WatermarkClient(Client):
+    """An honest client that also embeds its private watermark.
+
+    Extra args:
+      trigger_class : the class whose samples carry this client's watermark
+      key           : [m, l] secret +/-1 projection matrix (sign-balanced)
+      target_bits   : [m] the watermark message B^i
+      wm_lambda     : weight of L_wm in the total loss (Eq. 11)
+      wm_kind/alpha : smoothing f() (Eq. 7-9)
+      wm_beta       : memory coefficient beta in the Eq. 14 update (0 -> none)
+      label_smoothing: keeps the softmax tail movable so bits can be shaped
+    """
+
+    def __init__(self, *args, trigger_class: int, key: torch.Tensor,
+                 target_bits: torch.Tensor, wm_lambda: float = 5.0,
+                 wm_kind: str = "power", wm_alpha: float = 0.4,
+                 wm_beta: float = 0.6, label_smoothing: float = 0.1, **kw):
+        super().__init__(*args, **kw)
+        self.trigger_class = trigger_class
+        self.key = key
+        self.target_bits = target_bits
+        self.wm_lambda = wm_lambda
+        self.wm_kind = wm_kind
+        self.wm_alpha = wm_alpha
+        self.wm_beta = wm_beta
+        self.label_smoothing = label_smoothing
+        self.memory: dict | None = None      # client's persistent local model
+
+    # ---- the seam ----------------------------------------------------------
+    def produce_update(self, global_state: dict, prev_global_state, round_idx):
+        self.model.load_state_dict(global_state)
+        self._local_train_wm()
+        w_sgd = _to_cpu_state(self.model)
+        w_new = self._memory_update(global_state, w_sgd)
+        return w_new, self.num_samples
+
+    # ---- L = L_cl + lambda * L_wm  (Eq. 11-12) -----------------------------
+    def _local_train_wm(self):
+        self.model.train()
+        opt = torch.optim.SGD(self.model.parameters(), lr=self.lr,
+                              momentum=self.momentum, weight_decay=self.weight_decay)
+        key = self.key.to(self.device)
+        bits = self.target_bits.to(self.device)
+        for _ in range(self.local_epochs):
+            for x, y in self.loader:
+                x, y = x.to(self.device), y.to(self.device)
+                opt.zero_grad()
+                logits = self.model(x)
+                loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing)
+                tmask = (y == self.trigger_class)            # trigger samples only
+                if tmask.any():
+                    probs = F.softmax(logits[tmask], dim=1)
+                    loss = loss + self.wm_lambda * wm.watermark_loss(
+                        probs, key, bits, self.wm_kind, self.wm_alpha,
+                        exclude=self.trigger_class)
+                loss.backward()
+                opt.step()
+
+    # ---- memory-enhanced update (Eq. 14) -----------------------------------
+    def _memory_update(self, global_state: dict, w_sgd: dict) -> dict:
+        """W^j_{i+1} = beta * (W^j_i + delta) + (1 - beta) * W^g_i,
+        where delta = W_sgd - W^g_i is this round's local gradient step and
+        W^j_i is the client's own model from last round (its "memory").
+
+        Intuition: instead of fully resetting to the aggregated global each
+        round (which washes the watermark out), the client keeps its own
+        watermarked trajectory and only partially adopts the global. beta=0
+        recovers plain FedAvg local training; higher beta preserves the
+        watermark more strongly (at some cost to convergence speed).
+
+        Note: Eq. 14's notation in the paper is ambiguous; this is our explicit,
+        reproducible reading of it. Non-float buffers (e.g. BatchNorm counts)
+        are taken from the freshly trained model rather than blended.
+        """
+        beta = self.wm_beta
+        if self.memory is None:
+            self.memory = {k: v.clone() for k, v in global_state.items()}
+        w_new = {}
+        for k, vg in global_state.items():
+            if torch.is_floating_point(vg):
+                delta = w_sgd[k] - vg
+                w_new[k] = beta * (self.memory[k] + delta) + (1.0 - beta) * vg
+            else:
+                w_new[k] = w_sgd[k].clone()
+        self.memory = {k: v.clone() for k, v in w_new.items()}
+        return w_new
+
+
+def build_watermarked_clients(cfg, client_loaders, model, device, seed,
+                              num_classes, registry):
+    """Stage 3 client factory.
+
+    Each client slot gets a unique trigger class and its own secret key + bits,
+    all registered with `registry`. Honest slots are WatermarkClients (they
+    embed); free-rider slots use the Stage-2 attack clients (they fabricate and
+    therefore fail extraction). Returns (clients, free_rider_indices).
+    """
+    from .attacks import (choose_free_riders, ATTACKS, GaussianNoiseFreeRider)
+
+    m = cfg.wm_bits or (num_classes - 1) // 2          # default l = 2
+    l = wm.grouping(num_classes - 1, m)                # trigger class excluded
+    fr_idx = set(choose_free_riders(len(client_loaders),
+                                    getattr(cfg, "num_free_riders", 0), seed))
+    attack = getattr(cfg, "attack", "none")
+
+    clients = []
+    for cid, loader in enumerate(client_loaders):
+        trigger_class = cid % num_classes
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1)
+        bits = wm.make_bits(m, seed=seed + 1000 * cid + 1)
+        registry.register(cid, trigger_class, key, bits,
+                          kind=cfg.wm_f, alpha=cfg.wm_alpha)
+
+        common = dict(cid=cid, model=model, train_loader=loader, device=device,
+                      lr=cfg.lr, local_epochs=cfg.local_epochs,
+                      momentum=cfg.momentum, weight_decay=cfg.weight_decay)
+        if cid in fr_idx:
+            cls = ATTACKS[attack]
+            if cls is GaussianNoiseFreeRider:
+                clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),
+                                   noise_decay=getattr(cfg, "noise_decay", 0.0),
+                                   **common))
+            else:
+                clients.append(cls(**common))
+        else:
+            clients.append(WatermarkClient(
+                trigger_class=trigger_class, key=key, target_bits=bits,
+                wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
+                wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
+                **common))
+    return clients, sorted(fr_idx)

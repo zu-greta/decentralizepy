@@ -45,6 +45,18 @@ class ExpConfig:
     noise_sigma: float = 0.1    # GaussianNoiseFreeRider std
     noise_decay: float = 0.0    # >0 -> sigma_t = sigma0 * t^(-decay)
 
+    # ---- Stage 3: watermarking ----
+    watermark: bool = False     # honest clients embed an output-space watermark
+    wm_bits: int = 0            # m; 0 -> auto = (num_classes - 1)//2 (l=2)
+    wm_lambda: float = 5.0      # weight of L_wm in L = L_cl + lambda L_wm (Eq.11)
+    wm_alpha: float = 0.4       # smoothing f() exponent (Eq. 8)
+    wm_f: str = "power"         # smoothing kind: "power" | "sin" (Eq. 7-9)
+    wm_beta: float = 0.6        # memory coefficient in the Eq. 14 update
+    wm_label_smoothing: float = 0.1  # keeps the softmax tail movable
+    wm_num_triggers: int = 50   # N_T trigger samples used for extraction (Eq.15)
+    wm_eta: float = 0.25        # detection threshold on BER (Eq. 16)
+    wm_verify_every: int = 1    # run verification every k rounds (cost control)
+
     def to_dict(self):
         return asdict(self)
 
@@ -89,6 +101,30 @@ CONFIGS = [
     # idx 9: free-riding with Gaussian noise, ResNet-18 / CIFAR-10 (Fig. 7c).
     ExpConfig("fr_gauss_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
               attack="gaussian", num_free_riders=2, noise_sigma=0.1,
+              expected_acc=(0.0, 100.0)),
+
+    # ---- Stage 3: watermarking ----
+    # The Stage-3 honest-only gate is (a) FIDELITY: final acc within ~2 pts of
+    # the Stage-1 FedAvg baseline, AND (b) EMBEDDING: mean benign BER ~ 0 so the
+    # watermark is recovered (Tables II / VII). Free-rider DETECTION (idx 12)
+    # checks that fabricated updates fail extraction (high BER) -> Stage 4.
+
+    # idx 10: fast watermark smoke so you can see embed+extract in minutes.
+    ExpConfig("wm_smoke_mnist", "smallcnn", "mnist", num_clients=10,
+              rounds=10, local_epochs=1, batch_size=64,
+              watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              expected_acc=(0.0, 100.0)),
+
+    # idx 11: fidelity run, ResNet-18 / CIFAR-10, all honest + watermarked
+    # (compare final acc to the 93.22% Stage-1 baseline; Table I "Ours").
+    ExpConfig("wm_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
+              watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              expected_acc=(86.0, 94.0)),
+
+    # idx 12: detection run, watermark + free-riders (Tables III-V / Stage 4).
+    ExpConfig("wm_fr_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
+              watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="previous_models", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
 ]
 

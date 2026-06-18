@@ -111,6 +111,17 @@ runai submit "$JOB_NAME" \
   '
 
 
+# ---- fire-and-forget mode (WAIT=0): used by the sweep scripts ----
+# Submit the job and return immediately so many jobs can be queued at once and
+# the cluster runs them as GPUs free up. Default WAIT=1 keeps the old blocking
+# behaviour (wait for completion + auto-cleanup) for single interactive runs.
+if [ "${WAIT:-1}" = "0" ]; then
+  echo "Submitted (fire-and-forget): $JOB_NAME"
+  echo "Results -> $OUTPUT_DIR"
+  echo "Check:  runai describe job $JOB_NAME -p $PROJECT"
+  exit 0
+fi
+
 # ---- wait for the pod to be created (can be slow if queued for a free GPU) ----
 POD_NAME=""
 for i in $(seq 1 60); do

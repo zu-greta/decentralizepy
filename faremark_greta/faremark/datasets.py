@@ -24,6 +24,7 @@ class DataBundle:
     test_loader: DataLoader       # global test set
     num_classes: int
     in_channels: int
+    test_dataset: object = None   # raw test set (for Stage-3 trigger sampling)
 
 
 def _build_transforms(name: str, train: bool):
@@ -81,4 +82,5 @@ def build_data(name: str, data_root: str, num_clients: int, batch_size: int,
     ]
     test_loader = DataLoader(test, batch_size=256, shuffle=False,
                              num_workers=num_workers)
-    return DataBundle(client_loaders, test_loader, num_classes, in_channels)
+    return DataBundle(client_loaders, test_loader, num_classes, in_channels,
+                      test_dataset=test)

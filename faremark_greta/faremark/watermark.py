@@ -1,0 +1,206 @@
+"""Stage 3: the box-free, output-space watermarking scheme (paper §IV-A/B/D).
+
+The watermark of client i is an m-bit string B^i embedded into the model's
+SOFTMAX OUTPUT on inputs of that client's trigger class. Nothing is read from
+the weights — verification only needs model outputs (hence "box-free").
+
+Pipeline (equation numbers refer to the paper):
+  1. Split the n-dim softmax P into m groups of size l = n // m.            (§IV-A)
+  2. Smooth each probability with f() so the argmax doesn't dominate.    (Eq. 7-9)
+  3. Project each group onto a per-client pseudo-random +/-1 key row M.  (Eq. 1/13)
+        z_k = sum_j f(p_{k,j}) * M_{k,j}
+  4. Bit k is sign(z_k): >=0 -> 1, <0 -> 0.                                 (Eq. 2)
+  5. Embed by adding a BCE term that drives sign(z_k) -> target bit b_k. (Eq. 11-12)
+  6. Extract by averaging z over N_T trigger samples, then sign.          (Eq. 15)
+  7. Detect via bit-error-rate vs the registered bits, threshold eta.     (Eq. 16)
+
+Why smoothing is needed: cross-entropy makes the softmax steep (one class ~1,
+the rest ~0), so the projection would be decided by the argmax alone and the
+watermark couldn't be shaped without hurting accuracy. f(x)=x^a with 0<a<1
+amplifies the small tail probabilities so they can carry the bits while the
+argmax (the true class) is preserved. (§IV-A, Fig. 6.)
+"""
+from __future__ import annotations
+
+import torch
+import torch.nn.functional as F
+
+
+# ============================================================================
+# PAPER MAPPING (verified against the FareMark PDF, §IV)
+#   Eq. 1/13  z_k = sum_j f(p_{k,j}) * M_{i,k,j}        -> project_logits()
+#   Eq. 2     b_k = 1 if z_k >= 0 else 0                -> extract_bits() / sign
+#   Eq. 4-6   within-group anti-dominance (p_max<=0.5)  -> dominance_ratio()
+#   Eq. 7-9   smoothing f(): x^a (a<0 or 0<a<1), sin    -> smooth()
+#   Eq. 10    f(max)/sum f < 0.5 constraint             -> dominance_ratio()
+#   Eq. 11-12 L = L_cl + lambda*L_wm, L_wm = BCE        -> watermark_loss()
+#   Eq. 14    memory-enhanced update                    -> wm_client._memory_update
+#   Eq. 15    avg over N_T trigger samples, then sign   -> extract_bits()
+#   Eq. 16    BER < eta ; eta = mu + 3*sigma            -> bit_error_rate()/detected()
+#   Grouping  "the (l*(k-1)+j)-th element" => consecutive blocks of size l = n//m,
+#             using the first m*l softmax outputs (paper: only {p_1..p_{m*l}}).
+#
+# TWO DOCUMENTED REFINEMENTS (faithful to intent, needed for the small-group case):
+#   (1) `exclude` the trigger class from the projection. The paper handles the
+#       dominant class with the Eq. 4-6/10 constraint (p_max<=0.5 in a group).
+#       With a small group size (l=2) and argmax==trigger that constraint cannot
+#       be met without breaking classification, so the trigger group's bit
+#       freezes. Excluding the trigger class enforces the SAME anti-dominance
+#       intent by construction. Set exclude=None to run the paper-exact full
+#       softmax (use a larger l, e.g. l>=3, so the tail can outweigh the peak).
+#   (2) `make_key` rows are sign-balanced. The paper's M is pseudo-random; with a
+#       large l a random row is almost surely mixed-sign. With l=2 a same-sign
+#       row (e.g. [-1,-1]) forces z<0 for every input because f(p)>=0, making a
+#       bit unembeddable. Balancing rows is the discrete-l realization of the
+#       paper's mixed-sign example M=[1,-1,1] (§IV-A) and guarantees embeddability.
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# Smoothing function f()  (Eq. 7-9)
+# ----------------------------------------------------------------------------
+def smooth(p: torch.Tensor, kind: str = "power", alpha: float = 0.4,
+           eps: float = 1e-3) -> torch.Tensor:
+    """f(p) applied elementwise to probabilities p >= 0.
+
+    kind="power", 0<alpha<1  -> Eq. 8  (default; amplifies small probabilities)
+    kind="power", alpha<0    -> Eq. 7
+    kind="sin"               -> Eq. 9  f(x)=sin(alpha*x)
+    Smaller alpha => more smoothing (flatter distribution).
+    """
+    if kind == "power":
+        return (p.clamp(min=0) + eps) ** alpha
+    if kind == "sin":
+        return torch.sin(alpha * p)
+    raise ValueError(f"unknown smoothing kind '{kind}'")
+
+
+# ----------------------------------------------------------------------------
+# Per-client secret key M  (the +/-1 projection matrix, §IV-A)
+# ----------------------------------------------------------------------------
+def make_key(num_bits: int, group_size: int, seed: int) -> torch.Tensor:
+    """Per-client secret projection matrix M, shape [m, l], entries +/-1.
+
+    Each ROW is sign-balanced (equal +1 / -1, shuffled). This is required, not
+    cosmetic: probabilities are non-negative and f(p) >= 0, so a same-sign row
+    (e.g. [-1,-1]) would force z_k < 0 regardless of the input -> that bit could
+    never be embedded. Balanced rows make z_k = sum_j f(p_j) M_{k,j} shapeable to
+    either sign, so any target bit is reachable.
+    """
+    g = torch.Generator().manual_seed(seed)
+    half = group_size // 2
+    base = torch.tensor([1.0] * half + [-1.0] * (group_size - half))
+    rows = [base[torch.randperm(group_size, generator=g)] for _ in range(num_bits)]
+    return torch.stack(rows)
+
+
+def make_bits(num_bits: int, seed: int) -> torch.Tensor:
+    """Target watermark B^i in {0,1}^m, sign-balanced (equal 0s and 1s, shuffled).
+
+    Balance matters for detection: with a secret key, an un-watermarked model's
+    projected signs are essentially arbitrary w.r.t. a balanced target, so its
+    bit-error-rate sits near 0.5 -- which is what separates free-riders from
+    benign clients (whose trained model reaches BER ~ 0).
+    """
+    g = torch.Generator().manual_seed(seed + 7919)
+    half = num_bits // 2
+    base = torch.tensor([1] * half + [0] * (num_bits - half))
+    return base[torch.randperm(num_bits, generator=g)].long()
+
+
+def grouping(num_classes: int, num_bits: int) -> int:
+    """l = n // m, the size of each softmax group. Requires l >= 1."""
+    l = num_classes // num_bits
+    if l < 1:
+        raise ValueError(f"num_bits={num_bits} too large for n={num_classes} "
+                         f"(need num_bits <= num_classes).")
+    return l
+
+
+# ----------------------------------------------------------------------------
+# Projection: probabilities -> per-bit logits z  (Eq. 1/13)
+# ----------------------------------------------------------------------------
+def project_logits(probs: torch.Tensor, key: torch.Tensor,
+                   kind: str = "power", alpha: float = 0.4,
+                   exclude: int | None = None) -> torch.Tensor:
+    """probs [B, n] -> z [B, m].  z_k = sum_j f(p_{k,j}) * M_{k,j}  (Eq. 13).
+
+    If `exclude` is given (the client's trigger class), that column is dropped
+    first: the trigger class's own (dominant) probability would otherwise freeze
+    one bit, since smoothing can't overcome a ~1.0 vs ~0 gap. The watermark is
+    then carried by the SHAPE of the remaining (tail) probabilities, which the
+    embedding loss can move. Uses the first m*l of the remaining classes.
+    """
+    if exclude is not None:
+        keep = [c for c in range(probs.shape[1]) if c != exclude]
+        probs = probs[:, keep]
+    m, l = key.shape
+    used = m * l
+    p = probs[:, :used].reshape(probs.shape[0], m, l)   # [B, m, l]
+    fp = smooth(p, kind, alpha)                          # [B, m, l]
+    z = (fp * key.unsqueeze(0)).sum(dim=2)               # [B, m]
+    return z
+
+
+# ----------------------------------------------------------------------------
+# Embedding loss  (Eq. 11-12):  L_wm = BCE(sign-logit z, target bits)
+# ----------------------------------------------------------------------------
+def watermark_loss(probs: torch.Tensor, key: torch.Tensor,
+                   target_bits: torch.Tensor, kind: str = "power",
+                   alpha: float = 0.4, exclude: int | None = None) -> torch.Tensor:
+    """Per-sample BCE driving sign(z_k) -> b_k. Minimizing it embeds B^i."""
+    z = project_logits(probs, key, kind, alpha, exclude)   # [B, m]
+    t = target_bits.to(z.device).float().unsqueeze(0).expand_as(z)
+    return F.binary_cross_entropy_with_logits(z, t)
+
+
+# ----------------------------------------------------------------------------
+# Extraction (Eq. 15) and detection (Eq. 16)
+# ----------------------------------------------------------------------------
+@torch.no_grad()
+def extract_bits(probs: torch.Tensor, key: torch.Tensor, kind: str = "power",
+                 alpha: float = 0.4, exclude: int | None = None) -> torch.Tensor:
+    """Average z over the N_T trigger samples, then take the sign (Eq. 15)."""
+    z = project_logits(probs, key, kind, alpha, exclude)  # [N_T, m]
+    zbar = z.mean(dim=0)                                  # [m]
+    return (zbar >= 0).long()                             # [m] bits
+
+
+def bit_error_rate(bits: torch.Tensor, target: torch.Tensor) -> float:
+    """(1/m) sum |b_hat_k - b_k|  (Eq. 16, left-hand side)."""
+    return (bits.cpu() != target.cpu()).float().mean().item()
+
+
+def detected(ber: float, eta: float) -> bool:
+    """Watermark considered present (benign client) iff BER < eta (Eq. 16)."""
+    return ber < eta
+
+
+def calibrate_eta(benign_bers, floor: float = 0.05) -> float:
+    """Paper's detection threshold (Eq. 16): eta = mu + 3*sigma of the benign
+    bit-error-rate distribution observed over training rounds. A small floor
+    avoids a degenerate eta=0 when every benign BER is exactly 0."""
+    import statistics
+    vals = [b for b in benign_bers if b is not None]
+    if not vals:
+        return floor
+    mu = statistics.mean(vals)
+    sigma = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+    return max(mu + 3.0 * sigma, floor)
+
+
+@torch.no_grad()
+def dominance_ratio(probs: torch.Tensor, kind: str = "power", alpha: float = 0.4,
+                    exclude: int | None = None) -> float:
+    """Eq. 6/10 diagnostic: mean over samples of f(p_max) / sum_j f(p_j).
+
+    The paper requires this to stay below 0.5 so the watermark is not dominated
+    by the single largest probability. Use it to sanity-check the smoothing
+    strength (alpha) and whether the trigger class needs excluding.
+    """
+    if exclude is not None:
+        keep = [c for c in range(probs.shape[1]) if c != exclude]
+        probs = probs[:, keep]
+    fp = smooth(probs, kind, alpha)
+    ratio = fp.max(dim=1).values / fp.sum(dim=1).clamp(min=1e-9)
+    return ratio.mean().item()

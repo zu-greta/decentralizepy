@@ -27,6 +27,8 @@ from faremark.datasets import build_data
 from faremark.client import Client
 from faremark.attacks import build_clients
 from faremark.server import Server
+from faremark.wm_client import build_watermarked_clients
+from faremark.wm_verify import WatermarkRegistry, build_trigger_bank, make_verifier
 
 
 def parse_args():
@@ -48,6 +50,11 @@ def parse_args():
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
+    # Stage 3 overrides.
+    p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
+    p.add_argument("--no_watermark", dest="watermark", action="store_false")
+    p.add_argument("--wm_lambda", type=float, default=None)
+    p.add_argument("--wm_beta", type=float, default=None)
     p.add_argument("--list_configs", action="store_true")
     return p.parse_args()
 
@@ -82,6 +89,12 @@ def main():
         cfg.noise_sigma = args.noise_sigma
     if args.noise_decay is not None:
         cfg.noise_decay = args.noise_decay
+    if args.watermark is not None:
+        cfg.watermark = args.watermark
+    if args.wm_lambda is not None:
+        cfg.wm_lambda = args.wm_lambda
+    if args.wm_beta is not None:
+        cfg.wm_beta = args.wm_beta
 
     os.makedirs(args.output_dir, exist_ok=True)
     logger = get_logger(logfile=os.path.join(args.output_dir, "run.log"))
@@ -103,12 +116,34 @@ def main():
     # Single shared model instance reused by every client (sequential sim).
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)
 
-    clients, free_rider_indices = build_clients(cfg, data.client_loaders,
-                                                model, device, seed)
-    if free_rider_indices:
-        logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices} "
-                    f"of {cfg.num_clients}")
-    server = Server(model, clients, data.test_loader, device, logger)
+    registry = None
+    if getattr(cfg, "watermark", False):
+        registry = WatermarkRegistry()
+        clients, free_rider_indices = build_watermarked_clients(
+            cfg, data.client_loaders, model, device, seed,
+            data.num_classes, registry)
+        logger.info(f"watermark ON: {len(registry)} clients registered, "
+                    f"m={cfg.wm_bits or (data.num_classes - 1)//2} bits, "
+                    f"lambda={cfg.wm_lambda}, beta={cfg.wm_beta}")
+        if free_rider_indices:
+            logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
+        # Dedicated model instance for extraction (don't disturb the trainer).
+        verify_model = build_model(cfg.model, data.num_classes, data.in_channels)
+        classes = sorted({e["trigger_class"] for e in registry.entries.values()})
+        trigger_bank = build_trigger_bank(data.test_dataset, classes,
+                                          cfg.wm_num_triggers, seed=seed)
+        verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
+                                    free_rider_indices, eta=cfg.wm_eta,
+                                    verify_every=cfg.wm_verify_every)
+        server = Server(model, clients, data.test_loader, device, logger,
+                        verify_hook=verify_hook)
+    else:
+        clients, free_rider_indices = build_clients(cfg, data.client_loaders,
+                                                    model, device, seed)
+        if free_rider_indices:
+            logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices} "
+                        f"of {cfg.num_clients}")
+        server = Server(model, clients, data.test_loader, device, logger)
 
     t0 = time.time()
     history = server.run(cfg.rounds)
@@ -118,6 +153,26 @@ def main():
     best_acc = max(h["test_acc"] for h in history)
     lo, hi = cfg.expected_acc
     passed = lo <= final_acc <= hi
+
+    # Stage 3 watermark summary: take the most recent round that has metrics.
+    wm_summary = {}
+    if getattr(cfg, "watermark", False):
+        wm_rounds = [h for h in history if "wm_benign_ber" in h]
+        if wm_rounds:
+            last = wm_rounds[-1]
+            # Paper's detection threshold (Eq. 16): eta = mu + 3 sigma over the
+            # benign bit-error-rate distribution across rounds.
+            from faremark.watermark import calibrate_eta
+            eta_cal = round(calibrate_eta([h.get("wm_benign_ber") for h in wm_rounds]), 4)
+            wm_summary = {
+                "wm_benign_ber": last.get("wm_benign_ber"),
+                "wm_fr_ber": last.get("wm_fr_ber"),
+                "wm_detect_acc": last.get("wm_detect_acc"),
+                "wm_fpr": last.get("wm_fpr"),
+                "wm_fr_recall": last.get("wm_fr_recall"),
+                "wm_eta_used": cfg.wm_eta,
+                "wm_eta_calibrated": eta_cal,   # Eq. 16 mu+3sigma
+            }
 
     result = {
         "config_idx": args.config_idx,
@@ -133,6 +188,8 @@ def main():
         "expected_acc": list(cfg.expected_acc),
         "correctness_pass": passed,
         "elapsed_sec": round(elapsed, 1),
+        "watermark": getattr(cfg, "watermark", False),
+        **wm_summary,
         "history": history,
     }
     out_path = os.path.join(args.output_dir, "result.json")
