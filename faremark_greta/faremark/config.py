@@ -39,6 +39,12 @@ class ExpConfig:
     base_seed: int = 1000
     expected_acc: tuple = (0.0, 100.0)  # correctness band for Stage 1
 
+    # ---- Stage 2: free-rider attacks ----
+    attack: str = "none"        # "none" | "previous_models" | "gaussian"
+    num_free_riders: int = 0    # how many of num_clients are free-riders
+    noise_sigma: float = 0.1    # GaussianNoiseFreeRider std
+    noise_decay: float = 0.0    # >0 -> sigma_t = sigma0 * t^(-decay)
+
     def to_dict(self):
         return asdict(self)
 
@@ -62,6 +68,28 @@ CONFIGS = [
               expected_acc=(88.0, 99.5)),
     ExpConfig("alexnet_cifar100", "alexnet", "cifar100", num_clients=10,
               expected_acc=(62.0, 74.0)),
+
+    # ---- Stage 2: free-rider attacks ----
+    # The Stage-2 gate is the TREND (main-task accuracy falls as the free-rider
+    # fraction rises, cf. Fig. 7), not a single accuracy band. Sweep the number
+    # of free-riders with the --num_free_riders override (or NUM_FREE_RIDERS in
+    # submit_experiment.sh) and watch accuracy drop.
+
+    # idx 7: fast Stage-2 smoke so you can see the Fig.7 trend in minutes.
+    ExpConfig("fr_smoke_mnist", "smallcnn", "mnist", num_clients=10,
+              rounds=10, local_epochs=1, batch_size=64,
+              attack="previous_models", num_free_riders=0,
+              expected_acc=(0.0, 100.0)),
+
+    # idx 8: free-riding with previous models, ResNet-18 / CIFAR-10 (Fig. 7a).
+    ExpConfig("fr_prev_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
+              attack="previous_models", num_free_riders=2,
+              expected_acc=(0.0, 100.0)),
+
+    # idx 9: free-riding with Gaussian noise, ResNet-18 / CIFAR-10 (Fig. 7c).
+    ExpConfig("fr_gauss_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
+              attack="gaussian", num_free_riders=2, noise_sigma=0.1,
+              expected_acc=(0.0, 100.0)),
 ]
 
 

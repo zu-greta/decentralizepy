@@ -25,6 +25,7 @@ from faremark.utils import set_seed, get_logger
 from faremark.models import build_model
 from faremark.datasets import build_data
 from faremark.client import Client
+from faremark.attacks import build_clients
 from faremark.server import Server
 
 
@@ -41,6 +42,12 @@ def parse_args():
     p.add_argument("--local_epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
     p.add_argument("--lr", type=float, default=None)
+    # Stage 2 overrides.
+    p.add_argument("--attack", type=str, default=None,
+                   choices=["none", "previous_models", "gaussian"])
+    p.add_argument("--num_free_riders", type=int, default=None)
+    p.add_argument("--noise_sigma", type=float, default=None)
+    p.add_argument("--noise_decay", type=float, default=None)
     p.add_argument("--list_configs", action="store_true")
     return p.parse_args()
 
@@ -67,6 +74,14 @@ def main():
         cfg.batch_size = args.batch_size
     if args.lr is not None:
         cfg.lr = args.lr
+    if args.attack is not None:
+        cfg.attack = args.attack
+    if args.num_free_riders is not None:
+        cfg.num_free_riders = args.num_free_riders
+    if args.noise_sigma is not None:
+        cfg.noise_sigma = args.noise_sigma
+    if args.noise_decay is not None:
+        cfg.noise_decay = args.noise_decay
 
     os.makedirs(args.output_dir, exist_ok=True)
     logger = get_logger(logfile=os.path.join(args.output_dir, "run.log"))
@@ -88,11 +103,11 @@ def main():
     # Single shared model instance reused by every client (sequential sim).
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)
 
-    clients = [
-        Client(cid, model, loader, device, cfg.lr, cfg.local_epochs,
-               momentum=cfg.momentum, weight_decay=cfg.weight_decay)
-        for cid, loader in enumerate(data.client_loaders)
-    ]
+    clients, free_rider_indices = build_clients(cfg, data.client_loaders,
+                                                model, device, seed)
+    if free_rider_indices:
+        logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices} "
+                    f"of {cfg.num_clients}")
     server = Server(model, clients, data.test_loader, device, logger)
 
     t0 = time.time()
@@ -110,6 +125,9 @@ def main():
         "repeat": args.repeat,
         "seed": seed,
         "device": device,
+        "attack": cfg.attack,
+        "num_free_riders": cfg.num_free_riders,
+        "free_rider_indices": free_rider_indices,
         "final_acc": final_acc,
         "best_acc": best_acc,
         "expected_acc": list(cfg.expected_acc),

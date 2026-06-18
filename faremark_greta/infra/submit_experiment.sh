@@ -4,10 +4,12 @@ set -euo pipefail
 # ===================================================
 #  Usage:
 #     ./submit_experiment.sh [CONFIG_IDX] [REPEAT]
-#  Example (smoke test):
-#     ./submit_experiment.sh 0 0
-#  Example (Table I: ResNet-18 / CIFAR-10):
-#     ./submit_experiment.sh 1 0
+#  Example (smoke test):       ./submit_experiment.sh 0 0
+#  Example (Table I RN18/C10): ./submit_experiment.sh 1 0
+#
+#  Optional env overrides (handy for Stage-2 Fig.7 sweeps):
+#     NUM_FREE_RIDERS=4 ATTACK=previous_models ./submit_experiment.sh 8 0
+#     ROUNDS=10 BATCH_SIZE=64 ./submit_experiment.sh 7 0
 #  Set DEBUG_HOLD=1 to keep the pod alive 1h after the run for inspection.
 # ===================================================
 CONFIG_IDX="${1:-0}"
@@ -28,14 +30,25 @@ NAMESPACE="runai-sacs-zu"
 # ---- Code + paths ----
 GIT_REPO="https://github.com/zu-greta/decentralizepy.git"
 GIT_BRANCH="main"
-# Where the faremark_greta package lives inside the cloned repo.
 PKG_SUBDIR="faremark_greta"
 SCRIPT="scripts/run_experiment.py"
 
-RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
+# ---- Optional Python overrides assembled from env vars ----
+# Only the ones you set get forwarded; everything else uses the config defaults.
+PY_EXTRA=""
+[ -n "${NUM_FREE_RIDERS:-}" ] && PY_EXTRA="$PY_EXTRA --num_free_riders ${NUM_FREE_RIDERS}"
+[ -n "${ATTACK:-}" ]          && PY_EXTRA="$PY_EXTRA --attack ${ATTACK}"
+[ -n "${NOISE_SIGMA:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_sigma ${NOISE_SIGMA}"
+[ -n "${ROUNDS:-}" ]          && PY_EXTRA="$PY_EXTRA --rounds ${ROUNDS}"
+[ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
+
+# Tag results/job uniquely so parallel sweeps never collide.
+FR_TAG=""
+[ -n "${NUM_FREE_RIDERS:-}" ] && FR_TAG="-fr${NUM_FREE_RIDERS}"
+RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}${FR_TAG}_$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${MOUNT}/home/zu/results/${RUN_TAG}"
 DATA_ROOT="${MOUNT}/home/zu/data"
-JOB_NAME="faremark-cfg${CONFIG_IDX}-rep${REPEAT}-$(date +%H%M%S)"
+JOB_NAME="faremark-c${CONFIG_IDX}-r${REPEAT}${FR_TAG}-$(date +%H%M%S)"
 # =====================================================
 
 echo "=== Submitting $JOB_NAME (config_idx=$CONFIG_IDX repeat=$REPEAT) ==="
@@ -61,6 +74,7 @@ runai submit "$JOB_NAME" \
   -e "GIT_BRANCH=$GIT_BRANCH" \
   -e "PKG_SUBDIR=$PKG_SUBDIR" \
   -e "SCRIPT=$SCRIPT" \
+  -e "PY_EXTRA=$PY_EXTRA" \
   -e "DEBUG_HOLD=$DEBUG_HOLD" \
   --command -- bash -c '
     set -euo pipefail
@@ -80,14 +94,14 @@ runai submit "$JOB_NAME" \
     echo "repo top-level:"; ls -la /tmp/decentralizepy
     if [ ! -d "/tmp/decentralizepy/$PKG_SUBDIR" ]; then
       echo "ERROR: $PKG_SUBDIR/ not found in the repo."
-      echo "Did you commit+push faremark_greta/ to branch $GIT_BRANCH of $GIT_REPO?"
+      echo "Did you commit+push faremark_paper/ to branch $GIT_BRANCH of $GIT_REPO?"
       sync; sleep 2; exit 3
     fi
     export PYTHONPATH="/tmp/decentralizepy/$PKG_SUBDIR"
     cd "/tmp/decentralizepy/$PKG_SUBDIR"
     echo "package dir:"; ls -la
     set +e
-    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT"
+    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" $PY_EXTRA
     EXIT=$?
     set -e
     echo "experiment exit code: $EXIT"
@@ -97,12 +111,22 @@ runai submit "$JOB_NAME" \
   '
 
 
-# ---- wait for the pod, then report + clean up ----
-sleep 5
-POD_NAME=$(kubectl get pods -n "$NAMESPACE" --no-headers \
-  -o custom-columns=":metadata.name" | grep "^${JOB_NAME}-" | head -1 || true)
+# ---- wait for the pod to be created (can be slow if queued for a free GPU) ----
+POD_NAME=""
+for i in $(seq 1 60); do
+  POD_NAME=$(kubectl get pods -n "$NAMESPACE" --no-headers \
+    -o custom-columns=":metadata.name" 2>/dev/null | grep "^${JOB_NAME}-" | head -1 || true)
+  [ -n "$POD_NAME" ] && break
+  sleep 5
+done
 if [ -z "$POD_NAME" ]; then
-  echo "ERROR: could not find pod for job $JOB_NAME"; exit 1
+  echo ""
+  echo "Pod not created after ~5 min — the job is most likely queued for a free GPU."
+  echo "It is still submitted and will run when a GPU frees up. Check later with:"
+  echo "   runai describe job $JOB_NAME -p $PROJECT"
+  echo "   kubectl get pods -n $NAMESPACE | grep $JOB_NAME"
+  echo "Then tail it:  kubectl logs -n $NAMESPACE <pod-name> -f"
+  exit 0   # not a failure — the job lives on the cluster independently
 fi
 
 echo "Pod: $POD_NAME"
