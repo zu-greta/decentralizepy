@@ -30,11 +30,21 @@ from .client import Client
 
 
 # ---- weight-fabrication helpers (operate on CPU state dicts) ----------------
+def _is_norm_buffer(key: str) -> bool:
+    """BatchNorm/other running statistics. Extrapolating these (2*v_t - v_{t-1})
+    can push running_var negative -> sqrt(neg) -> NaN -> the model collapses to
+    chance accuracy. A real free-rider submitting a usable model would keep valid
+    normalization stats, so we copy these from the current global instead of
+    extrapolating/perturbing them. (Only matters for models with BatchNorm, e.g.
+    ResNet; SmallCNN has none, so the MNIST smoke is unaffected.)"""
+    return ("running_mean" in key) or ("running_var" in key)
+
+
 def _extrapolate(w_t: dict, w_prev: dict) -> dict:
-    """Elementwise 2*W_t - W_{t-1} over float tensors; copy non-float buffers."""
+    """Elementwise 2*W_t - W_{t-1} over float WEIGHTS; copy buffers/norm stats."""
     out = {}
     for k, v in w_t.items():
-        if v.is_floating_point() and k in w_prev:
+        if v.is_floating_point() and k in w_prev and not _is_norm_buffer(k):
             out[k] = 2.0 * v - w_prev[k]
         else:
             out[k] = v.clone()
@@ -44,7 +54,7 @@ def _extrapolate(w_t: dict, w_prev: dict) -> dict:
 def _add_noise(state: dict, sigma: float, generator=None) -> dict:
     out = {}
     for k, v in state.items():
-        if v.is_floating_point():
+        if v.is_floating_point() and not _is_norm_buffer(k):
             out[k] = v + torch.randn(v.shape, generator=generator) * sigma
         else:
             out[k] = v.clone()
