@@ -61,7 +61,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
     (benign kept + free-riders flagged), and false-positive rate.
     """
     fr_set = set(free_rider_indices)
-    benign_history = []          # accumulates benign BERs to calibrate eta (Eq.16)
+    benign_history = []          # per-round benign BER means, for calibrating eta
+    CAL_WINDOW = 15              # rounds of recent benign BER used for mu+3sigma
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):
@@ -86,9 +87,18 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             measured.append((cid, ber, cid in fr_set))
 
         # Calibrate the threshold from the benign BER distribution (Eq. 16):
-        # eta = mu + 3*sigma. `eta` arg is the floor / warmup default.
-        benign_history.extend(b for _, b, isfr in measured if not isfr)
-        eta_round = wm.calibrate_eta(benign_history, floor=eta) if benign_history else eta
+        # eta = mu + 3*sigma. Two guards make it robust to a transient model
+        # collapse (e.g. 80% free-riders), during which honest clients briefly
+        # cannot embed and benign BER spikes:
+        #   (1) use a sliding window of recent rounds, so eta recovers afterwards
+        #       (a cumulative mean stays poisoned forever);
+        #   (2) cap eta at 0.25 — a balanced watermark has benign BER->0 and a
+        #       random model ->0.5, so a threshold above 0.25 would flag nothing.
+        benign_now = [b for _, b, isfr in measured if not isfr]
+        if benign_now:
+            benign_history.append(sum(benign_now) / len(benign_now))
+        recent = benign_history[-CAL_WINDOW:]
+        eta_round = min(wm.calibrate_eta(recent, floor=eta) if recent else eta, 0.25)
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0

@@ -70,6 +70,7 @@ To contribute effectively to this project, we highly value:
 - attack: threshold is averaged
 
 - NOTE FOR DATA PARTITIONING
+- NOTE FOR calibrating n threshold
 
 ---
 ---
