@@ -71,7 +71,16 @@ class Server:
             acc = self._evaluate()
             record = {"round": r, "test_acc": acc, **verify_info}
             self.history.append(record)
-            self.logger.info(f"round {r:3d}/{rounds}  test_acc={acc:6.2f}%")
+            msg = f"round {r:3d}/{rounds}  test_acc={acc:6.2f}%"
+            # Surface watermark metrics so embedding/detection can be watched
+            # live (Fig. 8) instead of only via result.json.
+            if "wm_benign_ber" in verify_info:
+                msg += f"  benign_BER={verify_info['wm_benign_ber']:.3f}"
+                if verify_info.get("wm_fr_ber") is not None:
+                    msg += f"  fr_BER={verify_info['wm_fr_ber']:.3f}"
+                if verify_info.get("wm_detect_acc") is not None:
+                    msg += f"  det_acc={verify_info['wm_detect_acc']:.2f}"
+            self.logger.info(msg)
         return self.history
 
     def _evaluate(self) -> float:

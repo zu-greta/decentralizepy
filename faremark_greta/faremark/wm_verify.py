@@ -61,14 +61,15 @@ def make_verifier(registry, trigger_bank, verify_model, device,
     (benign kept + free-riders flagged), and false-positive rate.
     """
     fr_set = set(free_rider_indices)
+    benign_history = []          # accumulates benign BERs to calibrate eta (Eq.16)
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):
         if rnd % verify_every != 0:
             return {}
         verify_model.to(device).eval()
-        benign_bers, fr_bers = [], []
-        benign_flagged = fr_flagged = 0
+        # Pass 1: extract every client's watermark and measure BER (no flagging yet).
+        measured = []            # (cid, ber, is_free_rider)
         for cid, (state, _n) in enumerate(updates):
             entry = registry.entries.get(cid)
             if entry is None:
@@ -82,8 +83,18 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             bits = wm.extract_bits(probs, entry["key"].to(device),
                                    entry["kind"], entry["alpha"], exclude=tc)
             ber = wm.bit_error_rate(bits, entry["target_bits"])
-            flagged = not wm.detected(ber, eta)          # BER >= eta -> free-rider
-            if cid in fr_set:
+            measured.append((cid, ber, cid in fr_set))
+
+        # Calibrate the threshold from the benign BER distribution (Eq. 16):
+        # eta = mu + 3*sigma. `eta` arg is the floor / warmup default.
+        benign_history.extend(b for _, b, isfr in measured if not isfr)
+        eta_round = wm.calibrate_eta(benign_history, floor=eta) if benign_history else eta
+
+        benign_bers, fr_bers = [], []
+        benign_flagged = fr_flagged = 0
+        for cid, ber, is_fr in measured:
+            flagged = not wm.detected(ber, eta_round)    # BER >= eta_round -> free-rider
+            if is_fr:
                 fr_bers.append(ber); fr_flagged += int(flagged)
             else:
                 benign_bers.append(ber); benign_flagged += int(flagged)
@@ -95,8 +106,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             "wm_fr_ber": round(sum(fr_bers) / n_fr, 4) if n_fr else None,
             "wm_fpr": round(benign_flagged / n_benign, 4),
             "wm_fr_recall": round(fr_flagged / n_fr, 4) if n_fr else None,
+            "wm_eta_round": round(eta_round, 4),
         }
-        # detection accuracy = correctly-classified clients / total registered
         total = len(benign_bers) + n_fr
         correct = (len(benign_bers) - benign_flagged) + fr_flagged
         info["wm_detect_acc"] = round(correct / max(total, 1), 4)

@@ -11,7 +11,7 @@ so the foundation is always verified before the next layer is added.
 | 1 | Honest FedAvg (no free-riders, no watermark) | **done** | Table I FedAvg accuracies |
 | 2 | Free-rider attacks (Eq. 17 prev-models, Eq. 18 Gaussian) | **done** | Fig. 7 accuracy-drop trend |
 | 3 | Watermarking scheme (Eq. 1–16) + memory update (Eq. 14) | **done** | benign BER≈0; Tables II, VII |
-| 4 | Free-rider detection + robustness | planned | Tables III–VI, Figs. 9–10 |
+| 4 | Free-rider detection + robustness | **in progress** | Tables III–VII, Figs. 8–10 |
 
 > **Stages 1–3 are complete and verified.** Stage 1 is plain federated learning,
 > Stage 2 adds the free-rider *attacks*, and Stage 3 adds the *watermark*: honest
@@ -38,10 +38,12 @@ decentralizepy/
     │   ├── watermark.py          # Stage 3 core: smoothing f, projection, embed/extract, BER
     │   ├── wm_client.py          # Stage 3 WatermarkClient (embed L_wm) + memory update (Eq.14)
     │   ├── wm_verify.py          # Stage 3 registry + server-side extraction/detection
+    |   ├── robustness.py         # Stage 4 robustness tests: fine-tune, prune, DP (Opacus)
     │   ├── server.py             # FedAvg aggregator + round loop + verify_hook
     │   └── utils.py              # seeding, accuracy, logging
     ├── scripts/
     │   ├── run_experiment.py     # entry point: one (config, repeat) -> result.json
+    |   ├── run_robustness.py     # Stage 4 robustness sweeps (fine-tune, prune, DP)
     │   └── aggregate_results.py  # mean ± std over repeats (paper table format)
     ├── infra/
     │   ├── Dockerfile 
@@ -51,7 +53,7 @@ decentralizepy/
     │   ├── submit_sweep.sh       # config × repeats grid
     │   └── submit_fig7.sh        # free-rider-count sweep (Fig. 7)
     ├── FareMark.md               # paper deep-dive
-    ├── GRETA.md                  # project plan + notes
+    ├── GRETA.md                 # project plan + notes
     └── README.md
 ```
 
@@ -268,6 +270,13 @@ cd infra
 python ../scripts/aggregate_results.py /mnt/nfs/home/zu/results --fig7
 ```
 
+> **Sweeps submit all jobs at once.** `submit_sweep.sh` / `submit_fig7.sh` call
+> `submit_experiment.sh` in non-blocking mode (`WAIT=0`), so every job is queued
+> immediately and the cluster runs them as GPUs free up — you are not waiting for
+> one to finish before the next is submitted. A single `./submit_experiment.sh N M`
+> still blocks and waits (and auto-cleans up) as before. Because each job's name and
+> results dir carry a timestamp and a `-frN` tag, parallel jobs never collide.
+
 Each job writes its own `result.json`; `aggregate_results.py` walks the results
 root and groups by `(config, attack, #free-riders)` — so `--fig7` prints the
 accuracy-vs-free-rider trend, while plain repeats collapse into mean ± std.
@@ -295,9 +304,12 @@ Then on the cluster:
 
 ```bash
 cd infra
-./submit_experiment.sh 10 0     # fast watermark smoke (MNIST): embed + extract
-./submit_experiment.sh 11 0     # FIDELITY: ResNet-18/CIFAR-10, all honest + watermarked
+./submit_experiment.sh 10 0     # fast watermark smoke (MNIST): embed + extract 
+./submit_experiment.sh 11 0     # FIDELITY: ResNet-18/CIFAR-10, all honest + watermarked 
 ./submit_experiment.sh 12 0     # DETECTION: watermark + free-riders
+
+WM_NUM_TRIGGERS=100 ./submit_experiment.sh 11 0     # Table II (watermark accuracy)
+WM_NUM_TRIGGERS=50  ./submit_experiment.sh 12 0     # Table III (detection)
 ```
 
 What each piece maps to and the **expected output**:
@@ -332,6 +344,29 @@ probability would otherwise freeze a bit), and key rows are **sign-balanced**
 
 ---
 
+### Stage 4 — detection + robustness
+
+```bash
+./submit_fig7.sh 12 0 2 4 6 8
+python scripts/run_robustness.py --config_idx 11 --repeat 0 --output_dir $RESULTS/robust --data_root $DATA
+```
+
+Detection over time (Fig. 8) from the cfg-12 run, plot per-round `wm_benign_ber` vs `wm_fr_ber` from `history`. Expect benign to fall toward 0 within ~20-30 rounds while free-rider BER stays >~0.4. the 2 curves should visibly seperate and stay apart.
+Detection vs free-rider rate (Table III). Sweep `--num_free_riders` 2/4/6/8 (20–80%) in cfg-12; (reuse `submit_fig7.sh 12 0 2 4 6 8`). for each, confirm `wm_detect_acc` stays hiigh and `wm_fpr` low even as the free-rider fraction rises to 80%. Headline detection table.
+Adapive free-riders (Tables IV-V). Run with `attack=train_then_attack` (`attack_round=50`) and `attack=trigger_ony`, sweep `n_trigger_samples` (the N_T used for the attacker's fake watermark). Confirm the attack fails: `wm_fr_ber` should rise to ~0.5, and `wm_detect_acc` should stay high. The point to verify: train-then-attack is still flagged if it defected without enough honest training, and trigger-only fails verification because it overfits a few triggers and doesn't generalize to the held-out trigger bank.
+Robustness (Figs. 9–10, Table VI). Run `scripts/run_robustness.py --config_idx 11 --repeat 0` (the watermarked ResNet-18/CIFAR-10 config) and sweep the fine-tuning epochs, pruning ratio, or DP noise multiplier. Confirm the watermark holds up: `wm_benign_ber` should stay low and `wm_detect_acc` high even as the model is fine-tuned, pruned, or noised. check the expected shapes: fine-tuning drives task accuracy back toward baseline while watermark accuracy decays (Fig. 9); pruning tolerates ~50% with the watermark intact, then both collapse past ~60% (Fig. 10); quantization/DP show graceful watermark degradation.
+
+```bash
+./reproduce_paper.sh fidelity     # Table I + II   (watermark, 0 FR, 10 repeats)
+./reproduce_paper.sh fig7         # Fig. 7         (4 panels, both attacks)
+
+./reproduce_paper.sh detection    # Table III+Fig8 (FR sweep, both attacks)
+./reproduce_paper.sh robustness   # prints the run_robustness.py commands
+./reproduce_paper.sh all          # everything
+```
+
+---
+
 ## The seam for later stages
 
 `Client.produce_update(global_state, prev_global_state, round_idx)` is the single
@@ -356,3 +391,63 @@ stages won't require refactoring the loop.
   `runai delete job <name> -p sacs-zu`.
 - `PKG_SUBDIR` in `submit_experiment.sh` must point at the canonical package dir
   (`faremark_greta`); push code there before launching jobs.
+
+---
+
+## Reproducing the paper — settings, remaining work, and the experiment matrix
+
+**End goal:** reproduce every table and figure in Li et al. (IoT-J 2025). This
+section is the checklist to get there.
+
+### Settings per experiment (the paper is inconsistent — use these)
+
+The general settings prose says "local epoch 2, global epoch 100", but every
+specific experiment overrides it. Use the per-experiment numbers:
+
+| Experiment | Rounds × local epochs | Notes |
+|---|---|---|
+| Fidelity (Table I) | **50 × 5** | paper §V-B: "50 communication rounds … five epochs" |
+| Watermark detection (Table II) | **50 × 5** | N_T = 100 triggers |
+| Detection over time (Fig. 8) | ~60 rounds, 1 round = 10 epochs | benign →>98% by ~round 30 |
+| Single/multi FR detection (Table III) | ≥ 60 rounds | N_T = 50; FR rate swept 20–80% |
+| Fine-tune robustness (Fig. 9) | λ=0, validate every 10 epochs | — |
+
+Common to all: SGD, lr 0.01, batch 16, IID even split, **10 repeats averaged**,
+one distinct trigger class per client (so num_clients ≤ num_classes for the main
+tables). Momentum/weight-decay are **not** specified by the paper; we use 0.9 /
+5e-4 (state this as an assumption). So our `rounds=50, local_epochs=5` defaults
+are correct for Tables I–II; do **not** switch to 2×100.
+
+### Still to implement
+
+1. **Models:** add **ShuffleNet** and **GoogLeNet** to `models.py` (have ResNet-18,
+   AlexNet).
+2. **Dataset:** add **Food100** to `datasets.py` (confirm it's a Food-101 subset).
+3. **Baselines for the comparison columns:** **FedIPR** (feature-based N-bit +
+   backdoor-based) and **ST-/ATD-DAGMM** (free-rider anomaly detector). FareMark's
+   own numbers don't need these; they fill the "vs others" columns of Tables I–III.
+4. **Valid/test split** in `datasets.py` if you tune λ/β/η (avoid tuning on test).
+5. **Opacus** integration for a faithful Table VI (DP during training).
+
+### The experiment matrix (what to run for each result)
+
+| Paper result | Command(s) |
+|---|---|
+| Table I (fidelity) | `submit_sweep.sh "11" "0..9"` × {ResNet-18, AlexNet} × {MNIST, CIFAR-10/100} |
+| Fig. 7 (acc vs #FR) | `submit_fig7.sh 8 0 0 2 4 6 8` (+ cfg 9; + AlexNet/MNIST variants) |
+| Table II (Acc_wm) | cfg 11 runs; read `wm_benign_ber` → Acc_wm = 1−BER |
+| Fig. 8 (rate over rounds) | cfg 12; plot per-round `wm_benign_ber` vs `wm_fr_ber` |
+| Table III (FR detection) | cfg 12 with `--num_free_riders` 2/4/6/8 (20–80%) |
+| Table IV (train-then-attack) | `attack=train_then_attack`, `attack_round=50` |
+| Table V (trigger-only) | `attack=trigger_only`, sweep `n_trigger_samples` |
+| Table VI (DP) | `run_robustness.py` (or Opacus-trained client) |
+| Table VII (Acc_wm vs N_T) | cfg 11, sweep `wm_num_triggers` ∈ {10,50,100,…} |
+| Figs. 9–10 (finetune/prune) | `run_robustness.py --config_idx 11` |
+
+Each model×dataset×repeat is one `result.json`; `aggregate_results.py` turns the
+tree into the paper's mean ± std tables. Budget: the full matrix is large
+(4 models × 4 datasets × 10 repeats for Table I alone), so prioritize
+ResNet-18/CIFAR-10 and AlexNet/MNIST first — those cover Fig. 7 and Fig. 8/9/10.
+
+See `DOCUMENTATION.md` for the full code↔paper map and the "where to add things"
+guide for extending the framework.

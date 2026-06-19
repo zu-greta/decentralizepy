@@ -41,6 +41,10 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=2)
     # Optional overrides (handy for quick tests without editing the registry).
     p.add_argument("--rounds", type=int, default=None)
+    p.add_argument("--model", type=str, default=None)
+    p.add_argument("--dataset", type=str, default=None)
+    p.add_argument("--wm_num_triggers", type=int, default=None)
+    p.add_argument("--wm_bits", type=int, default=None)
     p.add_argument("--local_epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
     p.add_argument("--lr", type=float, default=None)
@@ -73,6 +77,14 @@ def main():
 
     cfg = get_config(args.config_idx)
     # Apply overrides.
+    if args.model is not None:
+        cfg.model = args.model
+    if args.dataset is not None:
+        cfg.dataset = args.dataset
+    if args.wm_num_triggers is not None:
+        cfg.wm_num_triggers = args.wm_num_triggers
+    if args.wm_bits is not None:
+        cfg.wm_bits = args.wm_bits
     if args.rounds is not None:
         cfg.rounds = args.rounds
     if args.local_epochs is not None:
@@ -154,24 +166,30 @@ def main():
     lo, hi = cfg.expected_acc
     passed = lo <= final_acc <= hi
 
-    # Stage 3 watermark summary: take the most recent round that has metrics.
+    # Stage 3 watermark summary: report the CONVERGED decision (Table III), i.e.
+    # averaged over the last K rounds, not a single noisy round.
     wm_summary = {}
     if getattr(cfg, "watermark", False):
         wm_rounds = [h for h in history if "wm_benign_ber" in h]
         if wm_rounds:
-            last = wm_rounds[-1]
-            # Paper's detection threshold (Eq. 16): eta = mu + 3 sigma over the
-            # benign bit-error-rate distribution across rounds.
             from faremark.watermark import calibrate_eta
+            K = min(10, len(wm_rounds))
+            tail = wm_rounds[-K:]                         # converged window
+
+            def _avg(key):
+                vals = [h.get(key) for h in tail if h.get(key) is not None]
+                return round(sum(vals) / len(vals), 4) if vals else None
+
             eta_cal = round(calibrate_eta([h.get("wm_benign_ber") for h in wm_rounds]), 4)
             wm_summary = {
-                "wm_benign_ber": last.get("wm_benign_ber"),
-                "wm_fr_ber": last.get("wm_fr_ber"),
-                "wm_detect_acc": last.get("wm_detect_acc"),
-                "wm_fpr": last.get("wm_fpr"),
-                "wm_fr_recall": last.get("wm_fr_recall"),
-                "wm_eta_used": cfg.wm_eta,
-                "wm_eta_calibrated": eta_cal,   # Eq. 16 mu+3sigma
+                "wm_benign_ber": _avg("wm_benign_ber"),   # mean over last K rounds
+                "wm_fr_ber": _avg("wm_fr_ber"),
+                "wm_detect_acc": _avg("wm_detect_acc"),
+                "wm_fpr": _avg("wm_fpr"),
+                "wm_fr_recall": _avg("wm_fr_recall"),
+                "wm_detect_window": K,                    # how many rounds averaged
+                "wm_eta_used": "calibrated (mu+3sigma)",  # verifier now flags adaptively
+                "wm_eta_calibrated": eta_cal,
             }
 
     result = {
