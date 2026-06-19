@@ -45,6 +45,40 @@ Setting up decentralizepy
 
 * (Optional) Download other datasets from LEAF <https://github.com/TalwalkarLab/leaf> and place them in ``eval/data/``.
  
+-----
+Note: for MacOS install using the following instructions.
+-----
+
+* Download and run the official installer ::
+    
+    curl -L https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh -o miniforge.sh
+    bash miniforge.sh
+
+* Accept the license, confirm ~/miniforge3 as install path, say yes to conda init
+* Restart the terminal and verify installation by running ``conda --version``.
+* Create and activate a conda environment (use decpy as the name to match the tutorial scripts). ::
+
+    conda create -n decpy python=3.10
+    conda activate decpy
+
+* Install pyzmq using conda. ::
+    
+    conda install -c conda-forge pyzmq
+
+* Install Pytorch (Apple Silicon compatible version) using conda. ::
+
+    pip install torch torchvision torchaudio
+
+* Clone and install decentralizepy for development. (zsh) ::
+
+    git clone https://github.com/sacs-epfl/decentralizepy
+    cd decentralizepy
+    pip install --editable .'[dev]'
+
+* Download CIFAR-10 using ``download_dataset.py``. ::
+
+    python download_dataset.py
+
 ----------------
 Running the code
 ----------------
