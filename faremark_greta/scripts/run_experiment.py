@@ -52,7 +52,8 @@ def parse_args():
     p.add_argument("--lr", type=float, default=None)
     # Stage 2 overrides.
     p.add_argument("--attack", type=str, default=None,
-                   choices=["none", "previous_models", "gaussian"])
+                   choices=["none", "previous_models", "gaussian",
+                            "train_then_attack", "trigger_only"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
