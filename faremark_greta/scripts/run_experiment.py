@@ -45,6 +45,8 @@ def parse_args():
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--wm_num_triggers", type=int, default=None)
     p.add_argument("--wm_bits", type=int, default=None)
+    p.add_argument("--attack_round", type=int, default=None)
+    p.add_argument("--n_trigger_samples", type=int, default=None)
     p.add_argument("--local_epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
     p.add_argument("--lr", type=float, default=None)
@@ -85,6 +87,10 @@ def main():
         cfg.wm_num_triggers = args.wm_num_triggers
     if args.wm_bits is not None:
         cfg.wm_bits = args.wm_bits
+    if args.attack_round is not None:
+        cfg.attack_round = args.attack_round
+    if args.n_trigger_samples is not None:
+        cfg.n_trigger_samples = args.n_trigger_samples
     if args.rounds is not None:
         cfg.rounds = args.rounds
     if args.local_epochs is not None:
@@ -180,7 +186,6 @@ def main():
                 vals = [h.get(key) for h in tail if h.get(key) is not None]
                 return round(sum(vals) / len(vals), 4) if vals else None
 
-            eta_cal = round(calibrate_eta([h.get("wm_benign_ber") for h in wm_rounds]), 4)
             wm_summary = {
                 "wm_benign_ber": _avg("wm_benign_ber"),   # mean over last K rounds
                 "wm_fr_ber": _avg("wm_fr_ber"),
@@ -188,8 +193,10 @@ def main():
                 "wm_fpr": _avg("wm_fpr"),
                 "wm_fr_recall": _avg("wm_fr_recall"),
                 "wm_detect_window": K,                    # how many rounds averaged
-                "wm_eta_used": "calibrated (mu+3sigma)",  # verifier now flags adaptively
-                "wm_eta_calibrated": eta_cal,
+                # Threshold actually used in the converged window (windowed+capped,
+                # Eq. 16). NOT the cumulative mu+3sigma, which a transient model
+                # collapse can poison.
+                "wm_eta_used": _avg("wm_eta_round"),
             }
 
     result = {

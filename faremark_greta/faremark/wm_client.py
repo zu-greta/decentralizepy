@@ -132,13 +132,30 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                       lr=cfg.lr, local_epochs=cfg.local_epochs,
                       momentum=cfg.momentum, weight_decay=cfg.weight_decay)
         if cid in fr_idx:
-            cls = ATTACKS[attack]
-            if cls is GaussianNoiseFreeRider:
-                clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),
-                                   noise_decay=getattr(cfg, "noise_decay", 0.0),
-                                   **common))
+            wm_args = dict(
+                trigger_class=trigger_class, key=key, target_bits=bits,
+                wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
+                wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing)
+            if attack == "train_then_attack":
+                # Table IV: trains (and embeds) until attack_round, then defects.
+                from .attacks import make_train_then_attack
+                cls = make_train_then_attack(WatermarkClient)
+                clients.append(cls(attack_round=getattr(cfg, "attack_round", 50),
+                                   **wm_args, **common))
+            elif attack == "trigger_only":
+                # Table V: trains on only a few trigger samples -> overfits.
+                from .attacks import make_trigger_only
+                cls = make_trigger_only(WatermarkClient)
+                clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
+                                   **wm_args, **common))
             else:
-                clients.append(cls(**common))
+                cls = ATTACKS[attack]
+                if cls is GaussianNoiseFreeRider:
+                    clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),
+                                       noise_decay=getattr(cfg, "noise_decay", 0.0),
+                                       **common))
+                else:
+                    clients.append(cls(**common))
         else:
             clients.append(WatermarkClient(
                 trigger_class=trigger_class, key=key, target_bits=bits,

@@ -44,6 +44,8 @@ class ExpConfig:
     num_free_riders: int = 0    # how many of num_clients are free-riders
     noise_sigma: float = 0.1    # GaussianNoiseFreeRider std
     noise_decay: float = 0.0    # >0 -> sigma_t = sigma0 * t^(-decay)
+    attack_round: int = 50      # train_then_attack: round at which the FR defects (Table IV)
+    n_trigger_samples: int = 8  # trigger_only: # trigger samples the FR overfits (Table V)
 
     # ---- Stage 3: watermarking ----
     watermark: bool = False     # honest clients embed an output-space watermark

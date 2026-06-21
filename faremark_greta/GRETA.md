@@ -71,6 +71,7 @@ To contribute effectively to this project, we highly value:
 
 - NOTE FOR DATA PARTITIONING
 - NOTE FOR calibrating n threshold
+- QUESTION: more free-riders - weaker embedding for honest minority clients ?
 
 ---
 ---
