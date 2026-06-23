@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""Stage 1 experiment runner: honest FedAvg, no free-riders, no watermark.
+"""Experiment runner
 
-Usage (mirrors your existing submit script):
+Usage:
     python -u scripts/run_experiment.py \
         --config_idx 0 --repeat 0 --device cuda \
         --output_dir /path/out --data_root /path/data
 
 It runs one (config, repeat), writes result.json to --output_dir, and prints a
-PASS/FAIL correctness verdict against the expected accuracy band in config.py.
+PASS/FAIL correctness verdict against the expected accuracy band in config.py
 """
 import argparse
 import json
@@ -17,7 +17,7 @@ import time
 
 import torch
 
-# Make `import faremark` work whether run from repo root or scripts/.
+# Make `import faremark` work whether run from repo root or scripts/
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from faremark.config import get_config, seed_for, CONFIGS
@@ -39,7 +39,7 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--data_root", type=str, default=None)
     p.add_argument("--num_workers", type=int, default=2)
-    # Optional overrides (handy for quick tests without editing the registry).
+    # Optional overrides 
     p.add_argument("--rounds", type=int, default=None)
     p.add_argument("--model", type=str, default=None)
     p.add_argument("--dataset", type=str, default=None)
@@ -50,14 +50,14 @@ def parse_args():
     p.add_argument("--local_epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
     p.add_argument("--lr", type=float, default=None)
-    # Stage 2 overrides.
+    # Free-rider attacks overrides
     p.add_argument("--attack", type=str, default=None,
                    choices=["none", "previous_models", "gaussian",
                             "train_then_attack", "trigger_only"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
-    # Stage 3 overrides.
+    # Watermarking overrides
     p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
     p.add_argument("--wm_lambda", type=float, default=None)
@@ -79,7 +79,7 @@ def main():
         sys.exit(f"error: missing required args: {', '.join('--' + m for m in missing)}")
 
     cfg = get_config(args.config_idx)
-    # Apply overrides.
+    # apply overrides from command line args (if not None)
     if args.model is not None:
         cfg.model = args.model
     if args.dataset is not None:
@@ -132,7 +132,7 @@ def main():
     data = build_data(cfg.dataset, args.data_root, cfg.num_clients,
                       cfg.batch_size, seed, num_workers=args.num_workers)
 
-    # Single shared model instance reused by every client (sequential sim).
+    # single shared model instance reused by every client (sequential sim)
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)
 
     registry = None
@@ -146,7 +146,7 @@ def main():
                     f"lambda={cfg.wm_lambda}, beta={cfg.wm_beta}")
         if free_rider_indices:
             logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
-        # Dedicated model instance for extraction (don't disturb the trainer).
+        # dedicated model instance for extraction (don't disturb the trainer)
         verify_model = build_model(cfg.model, data.num_classes, data.in_channels)
         classes = sorted({e["trigger_class"] for e in registry.entries.values()})
         trigger_bank = build_trigger_bank(data.test_dataset, classes,
@@ -173,8 +173,8 @@ def main():
     lo, hi = cfg.expected_acc
     passed = lo <= final_acc <= hi
 
-    # Stage 3 watermark summary: report the CONVERGED decision (Table III), i.e.
-    # averaged over the last K rounds, not a single noisy round.
+    # watermark summary: report the converged decision (Table III), i.e.
+    # averaged over the last K rounds, not a single noisy round
     wm_summary = {}
     if getattr(cfg, "watermark", False):
         wm_rounds = [h for h in history if "wm_benign_ber" in h]
@@ -196,7 +196,7 @@ def main():
                 "wm_detect_window": K,                    # how many rounds averaged
                 # Threshold actually used in the converged window (windowed+capped,
                 # Eq. 16). NOT the cumulative mu+3sigma, which a transient model
-                # collapse can poison.
+                # collapse can poison
                 "wm_eta_used": _avg("wm_eta_round"),
             }
 
@@ -229,7 +229,7 @@ def main():
                 f"(final {final_acc:.2f}% vs expected {lo}-{hi}%)")
     logger.info(f"wrote {out_path}")
 
-    # Non-zero exit on failure so a sweep / CI can detect it.
+    # non-zero exit on failure so a sweep / CI can detect it
     sys.exit(0 if passed else 2)
 
 

@@ -1,4 +1,6 @@
-"""Stage 4 (part 1): robustness of the watermark to removal attacks.
+"""
+TODO:
+Stage 4 (part 1): robustness of the watermark to removal attacks.
 
 Paper §V-E + Tables VI and Figs. 9-10. After a watermark is embedded, an
 adversary (or ordinary model maintenance) may try to remove it. We test whether

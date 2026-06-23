@@ -1,10 +1,12 @@
-"""Stage 2: free-rider attacks.
+"""Free-rider attacks
 
 A free-rider submits a fabricated local model instead of doing real training, to
-obtain the valuable global model "for free". We implement the paper's two
-constructions (Section V-A2). Both subclass Client and override ONLY
-`produce_update`, so they drop into the existing FedAvg loop with no other
-changes.
+obtain the valuable global model "for free". Free-riders still own a data shard
+in the simulation (so they report a normal sample count for FedAvg weighting) but 
+they simply never train on it. Implements the paper's two
+attack methods - Previous model attack and Gaussian noise attack. 
+Both subclass Client and override ONLY `produce_update`, so they drop into the 
+existing FedAvg loop with no other changes. Can be extended to implement other attacks
 
 PreviousModelsFreeRider (Eq. 17): build a plausible-looking update by
     extrapolating from the two most recent global models the client received,
@@ -17,9 +19,6 @@ GaussianNoiseFreeRider (Eq. 18): perturb the current global model with noise,
         W_free = W_t + N(0, sigma^2)
     Optionally decay sigma across rounds (Fraboni et al. use shrinking noise to
     better disguise the free-rider): sigma_t = sigma0 * t^(-gamma).
-
-Free-riders still "own" a data shard in the simulation (so they report a normal
-sample count for FedAvg weighting) — they simply never train on it.
 """
 import copy
 import random
@@ -34,9 +33,9 @@ def _is_norm_buffer(key: str) -> bool:
     """BatchNorm/other running statistics. Extrapolating these (2*v_t - v_{t-1})
     can push running_var negative -> sqrt(neg) -> NaN -> the model collapses to
     chance accuracy. A real free-rider submitting a usable model would keep valid
-    normalization stats, so we copy these from the current global instead of
+    normalization stats, so copy these from the current global instead of
     extrapolating/perturbing them. (Only matters for models with BatchNorm, e.g.
-    ResNet; SmallCNN has none, so the MNIST smoke is unaffected.)"""
+    ResNet; SmallCNN has none (MNIST smoke is unaffected))"""
     return ("running_mean" in key) or ("running_var" in key)
 
 
@@ -52,6 +51,7 @@ def _extrapolate(w_t: dict, w_prev: dict) -> dict:
 
 
 def _add_noise(state: dict, sigma: float, generator=None) -> dict:
+    """Add N(0, sigma^2) noise to float WEIGHTS; copy buffers/norm stats."""
     out = {}
     for k, v in state.items():
         if v.is_floating_point() and not _is_norm_buffer(k):
@@ -68,10 +68,12 @@ class PreviousModelsFreeRider(Client):
 
     def produce_update(self, global_state, prev_global_state, round_idx):
         if prev_global_state is None:
+            # first round, no W_{t-1} yet, so just resubmit W_t (Eq. 17)
             fake = copy.deepcopy(global_state)
         else:
+            # W_free = 2*W_t - W_(t-1)
             fake = _extrapolate(global_state, prev_global_state)
-        return fake, self.num_samples
+        return fake, self.num_samples # no training
 
 
 class GaussianNoiseFreeRider(Client):
@@ -81,17 +83,18 @@ class GaussianNoiseFreeRider(Client):
     def __init__(self, *args, noise_sigma: float = 0.1,
                  noise_decay: float = 0.0, **kwargs):
         super().__init__(*args, **kwargs)
-        self.noise_sigma = noise_sigma
-        self.noise_decay = noise_decay
+        self.noise_sigma = noise_sigma # initial stddev of Gaussian noise
+        self.noise_decay = noise_decay # exponent for decaying noise across rounds (Fraboni et al.'s shrinking noise)
 
     def produce_update(self, global_state, prev_global_state, round_idx):
         sigma = self.noise_sigma
-        if self.noise_decay > 0:
+        if self.noise_decay > 0: # decay sigma across rounds if requested
             sigma = self.noise_sigma * (round_idx ** (-self.noise_decay))
-        # Deterministic per (client, round) so runs are reproducible.
+        # deterministic per (client, round) so runs are reproducible
         g = torch.Generator().manual_seed(1234 + self.cid * 1000 + round_idx)
+        # W_free = W_t + N(0, sigma^2)
         fake = _add_noise(global_state, sigma, generator=g)
-        return fake, self.num_samples
+        return fake, self.num_samples # no training
 
 
 # Honest Client carries the same flags so callers can treat all clients uniformly.
@@ -146,6 +149,7 @@ def build_clients(cfg, client_loaders, model, device, seed):
     return clients, sorted(fr_idx)
 
 
+# TODO
 # ============================================================================
 # Stage 4 adaptive free-riders (paper §V-D3 / §V-D4, Tables IV-V).
 # These are *watermark-aware* free-riders used only in detection experiments;

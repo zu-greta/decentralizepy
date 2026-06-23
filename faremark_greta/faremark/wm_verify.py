@@ -1,4 +1,4 @@
-"""Stage 3/4 server side: registration, extraction and detection.
+"""Server side: registration, extraction and detection.
 
 The verification center registers every client's (trigger class, secret key,
 watermark bits). Each round it extracts the watermark from each submitted model
@@ -36,7 +36,7 @@ class WatermarkRegistry:
 
 
 def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
-    """Collect up to n_triggers samples per trigger class from the test set."""
+    """Collect up to n_triggers samples per trigger class from the test set"""
     g = torch.Generator().manual_seed(seed)
     by_class = {c: [] for c in classes}
     order = torch.randperm(len(test_dataset), generator=g).tolist()
@@ -58,7 +58,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
     """Return a verify_hook(server, round, updates) for Server.
 
     Records per-round: mean benign BER, mean free-rider BER, detection accuracy
-    (benign kept + free-riders flagged), and false-positive rate.
+    (benign kept + free-riders flagged), and false-positive rate
     """
     fr_set = set(free_rider_indices)
     benign_history = []          # per-round benign BER means, for calibrating eta
@@ -69,7 +69,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         if rnd % verify_every != 0:
             return {}
         verify_model.to(device).eval()
-        # Pass 1: extract every client's watermark and measure BER (no flagging yet).
+        # Pass 1: extract every client's watermark and measure BER (no flagging yet)
         measured = []            # (cid, ber, is_free_rider)
         for cid, (state, _n) in enumerate(updates):
             entry = registry.entries.get(cid)
@@ -86,8 +86,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             ber = wm.bit_error_rate(bits, entry["target_bits"])
             measured.append((cid, ber, cid in fr_set))
 
-        # Calibrate the threshold from the benign BER distribution (Eq. 16):
-        # eta = mu + 3*sigma. Two guards make it robust to a transient model
+        # Calibrate the threshold from the benign BER distribution (Eq. 16): eta = mu + 3*sigma. 
+        # NOTE: Two guards make it robust to a transient model
         # collapse (e.g. 80% free-riders), during which honest clients briefly
         # cannot embed and benign BER spikes:
         #   (1) use a sliding window of recent rounds, so eta recovers afterwards

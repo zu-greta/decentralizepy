@@ -31,7 +31,7 @@ To contribute effectively to this project, we highly value:
 | June 9 | [x] initial code exploration <br> [x] initial concepts and FareMark paper review | - |
 | June 11 | [1] check which papers cite FareMark <br> [x] [paper deep dive](FareMark.md) and watermarking procedure <br> [x] potential issues for DFL vs. FL <br> [2] trigger classes (do they need to be unique for each client) <br> [3] trigger class weaknesses | [1] only 2 papers cite it. they talk about [AIIP-Chain: Fair Copyright Sharing With Credible Ownership Verification in AI Model Trading](https://ieeexplore.ieee.org/abstract/document/11239438) (brief mention of watermarking as a method to detect free-riders) and [Intellectual property protection for deep learning model and dataset intelligence](https://www.sciencedirect.com/science/article/pii/S0952197625030556#b64) (table 7 quick mention) <br> [2] best case scenario yes (server just stores the class label at verification and picls any images in the class to verify). in case there are more, the empirical data shows that it's fine and the server just pre-specify and stores the exact imaes used by each client (storage increase). **potential better solution**: different paritition based on features instead <br> [3] **potential issue 1**: partial free-rider attack by only training the trigger classes + trigger class needs to remain the same throughout training and testing - **potential issue 2**: mainly for DFL, dynamic client participation |
 | June 16 | [X] emailed Xinpeng Zhang and Li Li for code <br> [X] basic re-implementation using Claude | - |
-| June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
+| June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
 
 ---
 
@@ -41,8 +41,8 @@ To contribute effectively to this project, we highly value:
 | June 2 | [x] brainstorm ideas |
 | June 9 | [x] explore codebase and understand the framework (see Milos for setup and help) <br> [x] read and review FareMark paper |
 | June 16 | [X] setup GPU clusters (Milos instructions) <br> [] get Claude pro |
-| June 23 | [] implement the FareMark paper and reproduce the results <br> [] run all basic experiments from the paper and obtain proof that code is good <br> [] deep dive into code - documentation and compare with algorithm in paper to make sure everything is correct <br> [] short presentation for JSM  to prove everything is working <br> [] deep dive into the paper and code |
-| July 2 | [] send a follow up email to authors <br> [] next steps for the project ? |
+| June 23 | [x] implement the FareMark paper and reproduce the results <br> [x] run all basic experiments from the paper and obtain proof that code is good <br> [x] deep dive into code - documentation and compare with algorithm in paper to make sure everything is correct <br> [x] short presentation for JSM  to prove everything is working <br> [x] deep dive into the paper and code |
+| July 2 | [] send a follow up email to authors <br> [] finish up code <br> [] play around with settings and figure out new attacks <br> [] create plots and graphs for next JSM presentation |
 | July 7 | [] |
 | July 14 | [] |
 | July 21 | [] start writing report ? |
@@ -63,15 +63,18 @@ To contribute effectively to this project, we highly value:
 ### NOTES/questions
 - graph colouring - number of nodes and number of colours = number of unique classes needed for watermarking
 - federated learning but no data privacy ?
-- goal: attack method that utilizes the least amount of resources (eg. only train on the trigger class) to be a free-rider and then test the detection method on it that based on watermarking in outer layer. no matter the data boundary, the free-rider will be detected.
+- goal: attack method that utilizes the least amount of resources (eg. only train on the trigger class) to be a free-rider and then test the detection method on it that based on watermarking in outer layer. no matter the data boundary, the free-rider will be detected. => watermaking/fingerprinting on output layer is impossible (with certain conditions).
 - collusion attack ? every random amout of rounds ? neighbouring clients ?
+- train-then-attack on varying random rounds instead of just beginning ? only trigger sample + certain from others ? mixed attacks etc. predict when to free-ride ?
 - penalty for free-riders ? how to mitigate them ?
 - facking fairness paper ? optimal transport ?
 - attack: threshold is averaged
 
-- NOTE FOR DATA PARTITIONING
-- NOTE FOR calibrating n threshold
-- QUESTION: more free-riders - weaker embedding for honest minority clients ?
+- NOTE FOR DATA PARTITIONING - IID for controlled -> QUESTION: more clients than classes table IX
+- NOTE FOR calibrating n threshold + sliding window ?
+- TODO: test on non-iid
+- NOTE: more graphs and plots for the results and experiments
+- reputation system for claculting threshold ? dynamic for rounds
 
 ---
 ---

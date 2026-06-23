@@ -1,6 +1,6 @@
-"""Stage 3 end-to-end test on synthetic data (no dataset download).
+"""Watermarking end-to-end test on synthetic data (quick)
 
-Exercises the real WatermarkClient, Server, Aggregator, WatermarkRegistry and
+WatermarkClient, Server, Aggregator, WatermarkRegistry and
 verifier over a few FL rounds and checks:
   (a) EMBEDDING + EXTRACTION : mean benign BER is low (watermark recovered).
   (b) FIDELITY               : global test accuracy climbs (task still learned).

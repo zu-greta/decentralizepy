@@ -62,7 +62,7 @@ distributes → collects → aggregates → evaluates each round; keeps `W_{t-1}
 | `project_logits(probs, key, …, exclude)` | `z_k = Σ_j f(p_j)·M_{k,j}` (Eq. 1/13) |
 | `watermark_loss(...)` | `L_wm` = BCE driving sign(z_k)→b_k (Eq. 11–12) |
 | `extract_bits(...)` | average z over N_T triggers, then sign (Eq. 15) |
-| `bit_error_rate`, `detected` | `BER = (1/m)Σ|b̂−b|`, `BER < η` (Eq. 16) |
+| `bit_error_rate`, `detected` | `BER = (1/m)Σ|b̂−b|` , `BER < η` (Eq. 16) |
 | `calibrate_eta(...)` | `η = μ + 3σ` of benign BER (Eq. 16) |
 | `dominance_ratio(...)` | `f(p_max)/Σf < 0.5` diagnostic (Eq. 4–6/10) |
 
@@ -162,6 +162,35 @@ Baselines for the comparison columns (**not yet implemented**): **FedAvg** (set
 and **ST-/ATD-DAGMM** (anomaly-detection free-rider baseline, threshold 13).
 These reproduce the "vs others" columns of Tables I–III; FareMark's own numbers
 do not need them.
+
+### 4a. Validated Stage-4 detection results (single repeat, converged over last 10 rounds)
+
+All FPR are at convergence; transient early-round FPR (model not yet able to carry the
+watermark) is expected and decays as the task model trains.
+
+| Scenario | det. acc (FR 20→80%) | FPR | Notes |
+|---|---|---|---|
+| prev-models · CIFAR-10 | 0.99 / 1.0 / 1.0 / 0.94 | 0 | FR=8 dip = 4-bit luck (see below) |
+| Gaussian · CIFAR-10 | 1.0 / 0.99 / 0.97 / 1.0 | 0 | cleaner than prev-models (no benign collapse); task crashes at 80% but detection holds |
+| prev-models · CIFAR-100 | 1.0 / 1.0 / 1.0 / 1.0 | 0 | clean threshold story — ~49 bits, fr_BER pinned ≈0.5 |
+| train-then-attack (Table IV) | 0.99 → 0.80 as defect round 10→50 | 0 | matches paper |
+| trigger-only · CIFAR-10 (Table V) | 0.85–0.94 (recall 0.25–0.7) | 0 | muddied by 4-bit code — re-run on CIFAR-100 |
+
+**Table IV interpretation (faithful).** `attack_round` = number of honest rounds before
+the client defects. Paper §V-D3: *few initial training rounds → watermark fails to persist
+→ easy to detect; more rounds → detection progressively decreases.* Our sweep reproduces
+this monotonic curve. The `attack_round = rounds` endpoint (defect only on the last round)
+correctly yields ~0 recall: a client that trained honestly the whole time genuinely embedded
+the watermark and is indistinguishable from honest — not a bug.
+
+**Table V interpretation + caveat.** Paper §V-D4: training on a few trigger samples overfits,
+so the watermark does not generalize to the verifier's held-out trigger bank → high BER →
+free-rider detected. On **CIFAR-10 this is not cleanly reproducible**: the 4-bit code (10
+classes → ⌊(10-1)/2⌋ = 4 bits) lets an attacker that overfits even 2 trigger samples match
+~3/4 bits by chance (fr_BER 0.16–0.29, not ≈0.5), so recall is only ~0.5 and drifts down as
+samples rise. This is the **same 4-bit artifact** as the prev-models FR=8 dip, *not* a code
+defect — the `make_trigger_only` attacker is wired correctly. Reproduce Table V on
+**CIFAR-100** (~49 bits), where overfitting genuinely fails to generalize and BER → ≈0.5.
 
 ---
 

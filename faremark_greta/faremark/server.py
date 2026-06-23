@@ -1,8 +1,8 @@
 """Server side: FedAvg aggregation + round orchestration.
 
-The server keeps the last two global states so Stage 2 free-riders (which need
-W_t and W_{t-1}) work without changing the loop. `verify_hook` is a no-op now;
-in Stage 3/4 it becomes per-client watermark extraction + detection.
+The server keeps the last two global states so free-riders (which need
+W_t and W_{t-1}) work without changing the loop. `verify_hook` is per-client 
+watermark extraction + detection.
 """
 import copy
 
@@ -21,6 +21,7 @@ class Aggregator:
         total = sum(n for _, n in updates)
         agg = {}
         first = updates[0][0]
+        # weighted mean per param tensor
         for key, ref in first.items():
             if ref.is_floating_point():
                 acc = torch.zeros_like(ref, dtype=torch.float64)
@@ -28,7 +29,7 @@ class Aggregator:
                     acc += state[key].double() * (n / total)
                 agg[key] = acc.to(ref.dtype)
             else:
-                # Integer buffers (e.g. num_batches_tracked): copy, don't average.
+                # integer buffers (e.g. num_batches_tracked): copy, don't average
                 agg[key] = ref.clone()
         return agg
 
@@ -53,27 +54,26 @@ class Server:
         for r in range(1, rounds + 1):
             updates = []
             for client in self.clients:
-                state, n = client.produce_update(
+                state, n = client.produce_update( 
                     copy.deepcopy(self.global_state),
                     copy.deepcopy(self.prev_global_state),
                     r,
                 )
                 updates.append((state, n))
 
-            # Stage 3/4 will plug watermark verification in here.
+            # watermark verification
             verify_info = {}
             if self.verify_hook is not None:
                 verify_info = self.verify_hook(self, r, updates) or {}
 
             self.prev_global_state = self.global_state
-            self.global_state = self.aggregator.aggregate(updates)
+            self.global_state = self.aggregator.aggregate(updates) # FedAvg aggregation
 
             acc = self._evaluate()
             record = {"round": r, "test_acc": acc, **verify_info}
             self.history.append(record)
             msg = f"round {r:3d}/{rounds}  test_acc={acc:6.2f}%"
-            # Surface watermark metrics so embedding/detection can be watched
-            # live (Fig. 8) instead of only via result.json.
+            # surface watermark metrics so embedding/detection can be watched
             if "wm_benign_ber" in verify_info:
                 msg += f"  benign_BER={verify_info['wm_benign_ber']:.3f}"
                 if verify_info.get("wm_fr_ber") is not None:

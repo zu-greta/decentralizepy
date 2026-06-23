@@ -1,15 +1,13 @@
-"""FareMark reproduction — a minimal, modular federated-learning simulator.
+"""FareMark reproduction — a minimal, modular federated-learning simulator
 
-Stage 1 (this module set) implements honest FedAvg with no free-riders and no
-watermarking. The design leaves explicit seams for the later stages:
+Honest FedAvg with no free-riders and no watermarking
 
   * Client.produce_update(global_state, prev_global_state, round_idx)
-        -> the single hook a free-rider (Stage 2) or watermark-embedding client
-           (Stage 3) overrides.
+        -> the single hook a free-rider or watermark-embedding client overrides
   * Aggregator.aggregate(updates)
-        -> FedAvg now; can be swapped/extended later.
+        -> FedAvg by default; can be swapped/extended
   * Server.verify_hook
-        -> no-op now; becomes watermark extraction + detection in Stage 3/4.
+        -> no-op by default; becomes watermark extraction + detection
 """
 
 from .config import CONFIGS, get_config, seed_for

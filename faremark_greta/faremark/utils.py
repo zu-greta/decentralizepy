@@ -1,4 +1,4 @@
-"""Small helpers shared across the simulator."""
+"""Helper functions"""
 from __future__ import annotations  
 
 import logging
@@ -11,12 +11,12 @@ import torch
 
 
 def set_seed(seed: int) -> None:
-    """Seed every RNG we touch so a (config, repeat) pair is reproducible."""
+    """Seed every RNG we touch so a (config, repeat) pair is reproducible"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # cuDNN determinism trades a little speed for reproducibility. Keep it on
+    # TODO: cuDNN determinism trades a little speed for reproducibility. Keep it on
     # while we are validating correctness; you can flip it off for big sweeps.
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -43,7 +43,7 @@ def get_logger(name: str = "faremark", logfile: str | None = None) -> logging.Lo
 
 @torch.no_grad()
 def evaluate_accuracy(model, loader, device) -> float:
-    """Top-1 accuracy (%) over a data loader."""
+    """Top-1 accuracy (%) over a data loader"""
     model.eval()
     correct, total = 0, 0
     for x, y in loader:

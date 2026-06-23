@@ -53,7 +53,8 @@ decentralizepy/
     │   ├── submit_sweep.sh       # config × repeats grid
     │   └── submit_fig7.sh        # free-rider-count sweep (Fig. 7)
     ├── FareMark.md               # paper deep-dive
-    ├── GRETA.md                 # project plan + notes
+    ├── DOCUMENTATION.md          # code walkthrough
+    ├── GRETA.md                  # project plan + notes
     └── README.md
 ```
 
@@ -379,18 +380,6 @@ method Stages 2 and 3 override:
 `Server.verify_hook(server, round, updates)` is where Stage 3/4 plug watermark
 extraction + detection (Eq. 15–16). Both exist as no-ops today, so adding the
 stages won't require refactoring the loop.
-
----
-
-## Operational notes (lessons from cluster bring-up)
-
-- The submit command passes paths as **env vars** (`-e`) and keeps the pod
-  command on single lines — RunAI mangles backslash line-continuations and
-  re-parsed quoting, which silently emptied variables in early versions.
-- Failed pods are **kept** for inspection; clean up with
-  `runai delete job <name> -p sacs-zu`.
-- `PKG_SUBDIR` in `submit_experiment.sh` must point at the canonical package dir
-  (`faremark_greta`); push code there before launching jobs.
 
 ---
 

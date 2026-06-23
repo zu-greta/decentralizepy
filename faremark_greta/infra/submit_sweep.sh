@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # ===================================================
-#  Launch a grid of jobs: CONFIG_IDXS x REPEATS.
-#  The paper averages over 10 repeats; this fires one job per (config, repeat).
+#  Launch a grid of jobs: CONFIG_IDXS x REPEATS
+#  The paper averages over 10 repeats; this fires one job per (config, repeat)
 #
 #  Usage:
 #     ./submit_sweep.sh "1 2" "0 1 2"     # configs 1,2 x repeats 0,1,2 = 6 jobs
@@ -18,9 +18,6 @@ n=0
 for cfg in $CONFIG_IDXS; do
   for rep in $REPEATS; do
     echo ">>> launching config_idx=$cfg repeat=$rep"
-    # Run submit in the background-friendly "fire and forget" style: each job
-    # is independent on the cluster. Remove the trailing '&' if your runai
-    # quota requires serial submission.
     WAIT=0 "$SCRIPT_DIR/submit_experiment.sh" "$cfg" "$rep"
     n=$((n + 1))
     sleep 2

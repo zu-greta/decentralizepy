@@ -1,13 +1,13 @@
-"""Client side of the simulation.
+"""Client-side logic for FedAvg training and free-rider attacks
 
 `produce_update` is the ONE method later stages override:
 
-  * Stage 2 free-rider: ignore the data, fabricate weights from the global
+  * Free-rider: ignore the data, fabricate weights from the global
     history (`global_state`, `prev_global_state`) per Eq. 17 / Eq. 18.
-  * Stage 3 watermark client: split data into trigger / common classes, add the
+  * Watermark client: split data into trigger / common classes, add the
     L_wm regularizer (Eq. 11-12), and apply the memory-enhanced update (Eq. 14).
 
-The honest client below just does standard local SGD starting from the current
+The honest client just does standard local SGD starting from the current
 global weights — i.e. textbook FedAvg.
 """
 from __future__ import annotations  
@@ -18,7 +18,8 @@ import torch
 import torch.nn as nn
 
 
-def _to_cpu_state(model) -> dict:
+# helper to detach and move a state dict to CPU for aggregation
+def _to_cpu_state(model) -> dict: 
     return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
 
@@ -45,20 +46,20 @@ class Client:
         Honest behaviour: load the global model, run local SGD, return weights.
         """
         self.model.load_state_dict(global_state)
-        self._local_train()
+        self._local_train() # SGD on local data
         return _to_cpu_state(self.model), self.num_samples
 
     # ---- honest local training --------------------------------------------
     def _local_train(self):
-        self.model.train()
+        self.model.train() 
         optimizer = torch.optim.SGD(
             self.model.parameters(), lr=self.lr,
             momentum=self.momentum, weight_decay=self.weight_decay,
         )
         for _ in range(self.local_epochs):
-            for x, y in self.loader:
+            for x, y in self.loader: # iter over local data only 
                 x, y = x.to(self.device), y.to(self.device)
-                optimizer.zero_grad()
-                loss = self.criterion(self.model(x), y)
+                optimizer.zero_grad() 
+                loss = self.criterion(self.model(x), y) # cross-entropy on local data
                 loss.backward()
                 optimizer.step()

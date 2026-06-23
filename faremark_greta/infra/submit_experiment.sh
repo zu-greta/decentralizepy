@@ -7,7 +7,7 @@ set -euo pipefail
 #  Example (smoke test):       ./submit_experiment.sh 0 0
 #  Example (Table I RN18/C10): ./submit_experiment.sh 1 0
 #
-#  Optional env overrides (handy for Stage-2 Fig.7 sweeps):
+#  Optional env overrides (see the script for the full list):
 #     NUM_FREE_RIDERS=4 ATTACK=previous_models ./submit_experiment.sh 8 0
 #     ROUNDS=10 BATCH_SIZE=64 ./submit_experiment.sh 7 0
 #  Set DEBUG_HOLD=1 to keep the pod alive 1h after the run for inspection.
@@ -16,16 +16,36 @@ CONFIG_IDX="${1:-0}"
 REPEAT="${2:-0}"
 DEBUG_HOLD="${DEBUG_HOLD:-0}"
 
+# Setup .env file based on .env_example
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+else
+    echo "Error: .env file not found!"
+    exit 1
+fi
+
+# check variables imported
+echo "=== Checking env variables ==="
+echo "PROJECT=$PROJECT"
+echo "IMAGE=$IMAGE"
+echo "PVC=$PVC"
+echo "MOUNT=$MOUNT"
+echo "USER_UID=$USER_UID"
+echo "USER_GID=$USER_GID"
+echo "MEMORY=$MEMORY"
+echo "NAMESPACE=$NAMESPACE"
+
 # ---- Cluster / account config ----
-PROJECT="sacs-zu"
-# Must match infra/build.sh IMAGE_NAME.
-IMAGE="registry.rcp.epfl.ch/sacs-zu/faremark:latest"
-PVC="sacs-scratch"
-MOUNT="/mnt/nfs"
-USER_UID=325874
-USER_GID=11259
-MEMORY="32Gi"
-NAMESPACE="runai-sacs-zu"
+PROJECT="$PROJECT"
+IMAGE="$IMAGE" # Note: must match infra/build.sh IMAGE_NAME
+PVC="$PVC"
+MOUNT="$MOUNT"
+USER_UID="$USER_UID"
+USER_GID="$USER_GID"
+MEMORY="$MEMORY"
+NAMESPACE="$NAMESPACE"
 
 # ---- Code + paths ----
 GIT_REPO="https://github.com/zu-greta/decentralizepy.git"
@@ -34,7 +54,7 @@ PKG_SUBDIR="faremark_greta"
 SCRIPT="scripts/run_experiment.py"
 
 # ---- Optional Python overrides assembled from env vars ----
-# Only the ones you set get forwarded; everything else uses the config defaults.
+# Only the ones you set get forwarded; everything else uses the config defaults
 PY_EXTRA=""
 [ -n "${MODEL:-}" ]            && PY_EXTRA="$PY_EXTRA --model ${MODEL}"
 [ -n "${DATASET:-}" ]          && PY_EXTRA="$PY_EXTRA --dataset ${DATASET}"
@@ -51,7 +71,7 @@ PY_EXTRA=""
 [ -n "${ROUNDS:-}" ]          && PY_EXTRA="$PY_EXTRA --rounds ${ROUNDS}"
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 
-# Tag results/job uniquely so parallel sweeps never collide.
+# Tag results/job uniquely 
 FR_TAG=""
 [ -n "${NUM_FREE_RIDERS:-}" ] && FR_TAG="-fr${NUM_FREE_RIDERS}"
 RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}${FR_TAG}_$(date +%Y%m%d_%H%M%S)"
@@ -65,8 +85,7 @@ echo "=== Submitting $JOB_NAME (config_idx=$CONFIG_IDX repeat=$REPEAT) ==="
 # Pass all paths/values as ENV VARS (-e), expanded here by the outer shell into
 # simple KEY=VALUE flags (safe — no nested quoting). The command script below is
 # wrapped in SINGLE quotes so the outer shell does NOT touch it; every $VAR in it
-# is expanded by the CONTAINER's bash from the env we injected. This avoids the
-# quoting trap where variables vanish when runai re-parses the command string.
+# is expanded by the CONTAINER's bash from the env we injected
 runai submit "$JOB_NAME" \
   --project "$PROJECT" \
   -g 1 \
@@ -89,8 +108,7 @@ runai submit "$JOB_NAME" \
     set -euo pipefail
     export USER=zu
     mkdir -p "$OUTPUT_DIR" "$DATA_ROOT"
-    # Mirror ALL output to a log on the PVC so the run is debuggable even if the
-    # pod dies abruptly (kubectl logs may be gone; NFS stdout buffers can be lost).
+    # Mirror all output to a log on the PVC so the run is debuggable even if the pod dies
     exec > >(tee "$OUTPUT_DIR/pod.log") 2>&1
     echo "=== pod start: $(date) ==="
     echo "OUTPUT_DIR=$OUTPUT_DIR"
@@ -103,7 +121,7 @@ runai submit "$JOB_NAME" \
     echo "repo top-level:"; ls -la /tmp/decentralizepy
     if [ ! -d "/tmp/decentralizepy/$PKG_SUBDIR" ]; then
       echo "ERROR: $PKG_SUBDIR/ not found in the repo."
-      echo "Did you commit+push faremark_paper/ to branch $GIT_BRANCH of $GIT_REPO?"
+      echo "Did you commit+push faremark_greta/ to branch $GIT_BRANCH of $GIT_REPO?"
       sync; sleep 2; exit 3
     fi
     export PYTHONPATH="/tmp/decentralizepy/$PKG_SUBDIR"
@@ -120,10 +138,9 @@ runai submit "$JOB_NAME" \
   '
 
 
-# ---- fire-and-forget mode (WAIT=0): used by the sweep scripts ----
-# Submit the job and return immediately so many jobs can be queued at once and
-# the cluster runs them as GPUs free up. Default WAIT=1 keeps the old blocking
-# behaviour (wait for completion + auto-cleanup) for single interactive runs.
+# ---- fire-and-forget mode (WAIT=0): sweep scripts ----
+# submit jobs in a queue. Default WAIT=1 keeps the old blocking
+# behaviour (wait for completion + auto-cleanup) for single interactive runs
 if [ "${WAIT:-1}" = "0" ]; then
   echo "Submitted (fire-and-forget): $JOB_NAME"
   echo "Results -> $OUTPUT_DIR"

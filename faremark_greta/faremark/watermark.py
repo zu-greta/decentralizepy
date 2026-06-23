@@ -1,11 +1,11 @@
-"""Stage 3: the box-free, output-space watermarking scheme (paper §IV-A/B/D).
+"""Watermarking: box-free, output-space watermarking scheme 
 
 The watermark of client i is an m-bit string B^i embedded into the model's
-SOFTMAX OUTPUT on inputs of that client's trigger class. Nothing is read from
-the weights — verification only needs model outputs (hence "box-free").
+softmax output on inputs of that client's trigger class. Nothing is read from
+the weights, verification only needs model outputs ("box-free")
 
 Pipeline (equation numbers refer to the paper):
-  1. Split the n-dim softmax P into m groups of size l = n // m.            (§IV-A)
+  1. Split the n-dim softmax P into m groups of size l = n // m.            (section IV-A)
   2. Smooth each probability with f() so the argmax doesn't dominate.    (Eq. 7-9)
   3. Project each group onto a per-client pseudo-random +/-1 key row M.  (Eq. 1/13)
         z_k = sum_j f(p_{k,j}) * M_{k,j}
@@ -14,11 +14,11 @@ Pipeline (equation numbers refer to the paper):
   6. Extract by averaging z over N_T trigger samples, then sign.          (Eq. 15)
   7. Detect via bit-error-rate vs the registered bits, threshold eta.     (Eq. 16)
 
-Why smoothing is needed: cross-entropy makes the softmax steep (one class ~1,
+Smoothing: cross-entropy makes the softmax steep (one class ~1,
 the rest ~0), so the projection would be decided by the argmax alone and the
 watermark couldn't be shaped without hurting accuracy. f(x)=x^a with 0<a<1
 amplifies the small tail probabilities so they can carry the bits while the
-argmax (the true class) is preserved. (§IV-A, Fig. 6.)
+argmax (the true class) is preserved. (section IV-A, Fig. 6.)
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ import torch.nn.functional as F
 
 
 # ============================================================================
-# PAPER MAPPING (verified against the FareMark PDF, §IV)
+# FAREMARK PAPER MAPPING 
 #   Eq. 1/13  z_k = sum_j f(p_{k,j}) * M_{i,k,j}        -> project_logits()
 #   Eq. 2     b_k = 1 if z_k >= 0 else 0                -> extract_bits() / sign
 #   Eq. 4-6   within-group anti-dominance (p_max<=0.5)  -> dominance_ratio()
@@ -40,7 +40,7 @@ import torch.nn.functional as F
 #   Grouping  "the (l*(k-1)+j)-th element" => consecutive blocks of size l = n//m,
 #             using the first m*l softmax outputs (paper: only {p_1..p_{m*l}}).
 #
-# TWO DOCUMENTED REFINEMENTS (faithful to intent, needed for the small-group case):
+# NOTE: changes from claude (faithful to intent, needed for the small-group case):
 #   (1) `exclude` the trigger class from the projection. The paper handles the
 #       dominant class with the Eq. 4-6/10 constraint (p_max<=0.5 in a group).
 #       With a small group size (l=2) and argmax==trigger that constraint cannot
@@ -52,7 +52,7 @@ import torch.nn.functional as F
 #       large l a random row is almost surely mixed-sign. With l=2 a same-sign
 #       row (e.g. [-1,-1]) forces z<0 for every input because f(p)>=0, making a
 #       bit unembeddable. Balancing rows is the discrete-l realization of the
-#       paper's mixed-sign example M=[1,-1,1] (§IV-A) and guarantees embeddability.
+#       paper's mixed-sign example M=[1,-1,1] (section IV-A) and guarantees embeddability.
 # ============================================================================
 
 
@@ -76,7 +76,7 @@ def smooth(p: torch.Tensor, kind: str = "power", alpha: float = 0.4,
 
 
 # ----------------------------------------------------------------------------
-# Per-client secret key M  (the +/-1 projection matrix, §IV-A)
+# Per-client secret key M  (the +/-1 projection matrix, section IV-A)
 # ----------------------------------------------------------------------------
 def make_key(num_bits: int, group_size: int, seed: int) -> torch.Tensor:
     """Per-client secret projection matrix M, shape [m, l], entries +/-1.

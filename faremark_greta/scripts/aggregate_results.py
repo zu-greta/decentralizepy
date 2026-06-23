@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Aggregate result.json files into mean +/- std summaries.
+"""Aggregate result.json files into mean +/- std summaries
 
 One RunAI job writes one result.json into its own timestamped directory. This
 script walks a results root, finds every result.json, and groups them so you
-get the paper's table format without merging anything by hand.
+get the paper's table format without merging anything by hand
 
 Grouping key = (config name, attack, num_free_riders). That means:
   * submit_sweep.sh  (same config x many repeats, free-riders fixed)
@@ -13,8 +13,8 @@ Grouping key = (config name, attack, num_free_riders). That means:
            (accuracy falls as free-riders rise). If you also did repeats at
            each count, they are averaged within the count.
 
-Stage-3 watermark metrics (benign BER, free-rider BER, detection accuracy) are
-shown automatically when present.
+Watermark metrics (benign BER, free-rider BER, detection accuracy) are
+shown automatically when present
 
 Usage:
     python scripts/aggregate_results.py /mnt/nfs/home/zu/results

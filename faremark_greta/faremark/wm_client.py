@@ -1,9 +1,9 @@
-"""Stage 3 client: embeds an output-space watermark and uses the
+"""Watermarking client: embeds an output-space watermark and uses the
 memory-enhanced update so the watermark survives FedAvg aggregation.
 
 Maps to the paper:
-  * trigger / common split + L = L_cl + lambda * L_wm        (§IV-B, Eq. 11-12)
-  * memory-enhanced parameter update                          (§IV-C, Eq. 14)
+  * trigger / common split + L = L_cl + lambda * L_wm        (section IV-B, Eq. 11-12)
+  * memory-enhanced parameter update                          (section IV-C, Eq. 14)
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from . import watermark as wm
 
 
 class WatermarkClient(Client):
-    """An honest client that also embeds its private watermark.
+    """Honest client that also embeds its private watermark
 
     Extra args:
       trigger_class : the class whose samples carry this client's watermark
@@ -63,7 +63,8 @@ class WatermarkClient(Client):
                 x, y = x.to(self.device), y.to(self.device)
                 opt.zero_grad()
                 logits = self.model(x)
-                loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing)
+                # keep the softmax tail movable so bits can be shaped
+                loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing) 
                 tmask = (y == self.trigger_class)            # trigger samples only
                 if tmask.any():
                     probs = F.softmax(logits[tmask], dim=1)
@@ -77,17 +78,17 @@ class WatermarkClient(Client):
     def _memory_update(self, global_state: dict, w_sgd: dict) -> dict:
         """W^j_{i+1} = beta * (W^j_i + delta) + (1 - beta) * W^g_i,
         where delta = W_sgd - W^g_i is this round's local gradient step and
-        W^j_i is the client's own model from last round (its "memory").
+        W^j_i is the client's own model from last round (memory)
 
-        Intuition: instead of fully resetting to the aggregated global each
+        Instead of fully resetting to the aggregated global each
         round (which washes the watermark out), the client keeps its own
         watermarked trajectory and only partially adopts the global. beta=0
         recovers plain FedAvg local training; higher beta preserves the
-        watermark more strongly (at some cost to convergence speed).
+        watermark more strongly (at some cost to convergence speed)
 
-        Note: Eq. 14's notation in the paper is ambiguous; this is our explicit,
-        reproducible reading of it. Non-float buffers (e.g. BatchNorm counts)
-        are taken from the freshly trained model rather than blended.
+        NOTE: (claude interpretation) Eq. 14's notation in the paper is ambiguous 
+        Non-float buffers (e.g. BatchNorm counts)
+        are taken from the freshly trained model rather than blended
         """
         beta = self.wm_beta
         if self.memory is None:
@@ -95,27 +96,28 @@ class WatermarkClient(Client):
         w_new = {}
         for k, vg in global_state.items():
             if torch.is_floating_point(vg):
-                delta = w_sgd[k] - vg
+                delta = w_sgd[k] - vg # this round's local SGD step (Eq. 14's "delta")
+                # blend memory with global 
                 w_new[k] = beta * (self.memory[k] + delta) + (1.0 - beta) * vg
             else:
                 w_new[k] = w_sgd[k].clone()
-        self.memory = {k: v.clone() for k, v in w_new.items()}
+        self.memory = {k: v.clone() for k, v in w_new.items()} # persist
         return w_new
 
 
 def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                               num_classes, registry):
-    """Stage 3 client factory.
+    """Watermarking client factory
 
     Each client slot gets a unique trigger class and its own secret key + bits,
     all registered with `registry`. Honest slots are WatermarkClients (they
-    embed); free-rider slots use the Stage-2 attack clients (they fabricate and
-    therefore fail extraction). Returns (clients, free_rider_indices).
+    embed); free-rider slots use the attack clients (they fabricate and
+    therefore fail extraction). Returns (clients, free_rider_indices)
     """
     from .attacks import (choose_free_riders, ATTACKS, GaussianNoiseFreeRider)
 
     m = cfg.wm_bits or (num_classes - 1) // 2          # default l = 2
-    l = wm.grouping(num_classes - 1, m)                # trigger class excluded
+    l = wm.grouping(num_classes - 1, m)                # NOTE: trigger class excluded
     fr_idx = set(choose_free_riders(len(client_loaders),
                                     getattr(cfg, "num_free_riders", 0), seed))
     attack = getattr(cfg, "attack", "none")
@@ -136,6 +138,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing)
+            # TODO support watermarking aware free-riders
             if attack == "train_then_attack":
                 # Table IV: trains (and embeds) until attack_round, then defects.
                 from .attacks import make_train_then_attack
