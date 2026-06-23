@@ -151,6 +151,17 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 cls = make_trigger_only(WatermarkClient)
                 clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
                                    **wm_args, **common))
+            elif attack == "random_round":
+                from .attacks import make_random_round_attack
+                cls = make_random_round_attack(WatermarkClient)
+                clients.append(cls(honest_prob=getattr(cfg, "honest_prob", 0.5),
+                                   **wm_args, **common))
+            elif attack == "mixed":
+                from .attacks import make_mixed_attack
+                cls = make_mixed_attack(WatermarkClient)
+                clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
+                                   blend=getattr(cfg, "blend", 0.5),
+                                   **wm_args, **common))
             else:
                 cls = ATTACKS[attack]
                 if cls is GaussianNoiseFreeRider:

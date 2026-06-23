@@ -47,13 +47,19 @@ def parse_args():
     p.add_argument("--wm_bits", type=int, default=None)
     p.add_argument("--attack_round", type=int, default=None)
     p.add_argument("--n_trigger_samples", type=int, default=None)
+    p.add_argument("--honest_prob", type=float, default=None)
+    p.add_argument("--blend", type=float, default=None)
+    p.add_argument("--partition", type=str, default=None,
+                   choices=["iid", "dirichlet", "noniid"])
+    p.add_argument("--dirichlet_alpha", type=float, default=None)
     p.add_argument("--local_epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
     p.add_argument("--lr", type=float, default=None)
     # Free-rider attacks overrides
     p.add_argument("--attack", type=str, default=None,
                    choices=["none", "previous_models", "gaussian",
-                            "train_then_attack", "trigger_only"])
+                            "train_then_attack", "trigger_only",
+                            "random_round", "mixed"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
@@ -92,6 +98,14 @@ def main():
         cfg.attack_round = args.attack_round
     if args.n_trigger_samples is not None:
         cfg.n_trigger_samples = args.n_trigger_samples
+    if args.honest_prob is not None:
+        cfg.honest_prob = args.honest_prob
+    if args.blend is not None:
+        cfg.blend = args.blend
+    if args.partition is not None:
+        cfg.partition = args.partition
+    if args.dirichlet_alpha is not None:
+        cfg.dirichlet_alpha = args.dirichlet_alpha
     if args.rounds is not None:
         cfg.rounds = args.rounds
     if args.local_epochs is not None:
@@ -130,7 +144,8 @@ def main():
     logger.info(json.dumps(cfg.to_dict()))
 
     data = build_data(cfg.dataset, args.data_root, cfg.num_clients,
-                      cfg.batch_size, seed, num_workers=args.num_workers)
+                      cfg.batch_size, seed, num_workers=args.num_workers,
+                      partition=cfg.partition, dirichlet_alpha=cfg.dirichlet_alpha)
 
     # single shared model instance reused by every client (sequential sim)
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)

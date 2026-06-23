@@ -1,4 +1,4 @@
-"""Experiment configs 
+"""Experiment configs
 
 `config_idx` selects an experiment; `repeat` selects a seed (the paper averages
 over 10 repeats). Matches the existing submit script's
@@ -45,7 +45,11 @@ class ExpConfig:
     noise_sigma: float = 0.1    # GaussianNoiseFreeRider std
     noise_decay: float = 0.0    # >0 -> sigma_t = sigma0 * t^(-decay)
     attack_round: int = 50      # train_then_attack: round at which the FR defects (Table IV)
-    n_trigger_samples: int = 8  # trigger_only: # trigger samples the FR overfits (Table V)
+    n_trigger_samples: int = 8  # trigger_only / mixed: # trigger samples the FR uses (Table V)
+    honest_prob: float = 0.5    # random_round: per-round prob the FR trains honestly
+    blend: float = 0.5          # mixed: weight on the FR's own (lightly-trained) weights
+    partition: str = "iid"      # data split: 'iid' or 'dirichlet' (non-IID)
+    dirichlet_alpha: float = 0.5  # dirichlet skew; small=severe non-IID, large~=IID
 
     # ---- watermarking ----
     watermark: bool = False     # honest clients embed an output-space watermark

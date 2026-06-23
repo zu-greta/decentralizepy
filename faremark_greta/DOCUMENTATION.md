@@ -62,7 +62,7 @@ distributes → collects → aggregates → evaluates each round; keeps `W_{t-1}
 | `project_logits(probs, key, …, exclude)` | `z_k = Σ_j f(p_j)·M_{k,j}` (Eq. 1/13) |
 | `watermark_loss(...)` | `L_wm` = BCE driving sign(z_k)→b_k (Eq. 11–12) |
 | `extract_bits(...)` | average z over N_T triggers, then sign (Eq. 15) |
-| `bit_error_rate`, `detected` | `BER = (1/m)Σ|b̂−b|` , `BER < η` (Eq. 16) |
+| `bit_error_rate`, `detected` | `BER = (1/m)Σ|b̂−b|`, `BER < η` (Eq. 16) |
 | `calibrate_eta(...)` | `η = μ + 3σ` of benign BER (Eq. 16) |
 | `dominance_ratio(...)` | `f(p_max)/Σf < 0.5` diagnostic (Eq. 4–6/10) |
 
@@ -163,7 +163,53 @@ and **ST-/ATD-DAGMM** (anomaly-detection free-rider baseline, threshold 13).
 These reproduce the "vs others" columns of Tables I–III; FareMark's own numbers
 do not need them.
 
-### 4a. Validated Stage-4 detection results (single repeat, converged over last 10 rounds)
+### 4b. Non-IID data, extended attacks, plotting (impossibility-thesis tooling)
+
+**Project framing.** The goal is to characterise *when output-layer (box-free)
+watermark detection fails*. Detection works only when the honest-BER and
+free-rider-BER distributions are separable by a threshold η; the experiments
+below probe regimes where they overlap (few bits, model collapse, forgeable
+watermark, non-IID drift), which is where detection is impossible in principle.
+
+**Non-IID partitioning (`datasets.py`).** `--partition dirichlet
+--dirichlet_alpha A` gives a label-skewed split (Hsu et al. 2019): per class,
+sample sizes across clients ~ Dirichlet(A). Small A (0.1) = severe skew (each
+client sees few classes); A=0.5 = standard FL non-IID benchmark; A>=100 ~ IID.
+Why it matters here: a client's trigger class may be rare or absent in its own
+shard, weakening or preventing watermark embedding -> benign BER rises ->
+overlaps the free-rider distribution -> false positives. `--partition iid` is
+the default and unchanged.
+
+**Attack taxonomy (`attacks.py`), all selectable via `--attack`:**
+- `previous_models`, `gaussian` — non-adaptive fabrication (Eq. 17/18).
+- `train_then_attack` (`--attack_round R`) — Table IV; defects after R honest rounds.
+- `trigger_only` (`--n_trigger_samples k`) — Table V; cheap overfit embed.
+- `random_round` (`--honest_prob p`) — NEW; free-rides on a random subset of
+  rounds (honest w.p. p each round). Probes whether sporadic honest
+  participation keeps the watermark fresh enough to evade a detector tuned for
+  clean defectors.
+- `mixed` (`--n_trigger_samples k --blend b`) — NEW; strongest cheap disguise:
+  minimal trigger-only embed blended into a mostly-replayed global update
+  (`b*own + (1-b)*extrapolated_global`). Lowers the FR's own BER while masking
+  the fabrication. The key adversary for the impossibility argument: it
+  directly pushes FR BER toward the honest cluster.
+
+**Plotting (`scripts/plot_results.py`).** Turns any result.json (or directory)
+into figures: per-run BER trajectories, an auto-detected sweep summary, and
+`separability.png` — the central instrument: the honest vs free-rider BER
+distributions plus the detection-accuracy-vs-η curve. A wide flat plateau at
+1.0 = separable; a peak below 1.0 with overlapping clusters = no η works =
+detection impossible in that regime. Every experiment should be run through it.
+
+**Thesis experiment plan (run each as a sweep, plot each):**
+1. Bit-count: detection vs #classes/bits (CIFAR-10 4-bit overlap vs CIFAR-100 separable). DONE - separable on C-100, jittery on C-10.
+2. Forgeability: `mixed` and `trigger_only` BER vs effort (samples, blend) -> show FR BER crossing below η as effort rises.
+3. Threshold fragility: η (μ+3σ, windowed, capped, optimal) vs detection under collapse / high FR.
+4. Non-IID: benign BER and FPR vs dirichlet_alpha -> honest clients misflagged as skew increases.
+5. Adaptive timing: `random_round` detection vs honest_prob; `train_then_attack` vs random vs fixed defect rounds.
+Each produces a result.json -> plot_results.py -> a figure for the deck (no code on slides).
+
+ (single repeat, converged over last 10 rounds)
 
 All FPR are at convergence; transient early-round FPR (model not yet able to carry the
 watermark) is expected and decays as the task model trains.

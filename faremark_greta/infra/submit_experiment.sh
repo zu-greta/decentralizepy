@@ -51,7 +51,7 @@ NAMESPACE="$NAMESPACE"
 GIT_REPO="https://github.com/zu-greta/decentralizepy.git"
 GIT_BRANCH="main"
 PKG_SUBDIR="faremark_greta"
-SCRIPT="scripts/run_experiment.py"
+SCRIPT="${SCRIPT:-scripts/run_experiment.py}"   # override: SCRIPT=scripts/run_robustness.py
 
 # ---- Optional Python overrides assembled from env vars ----
 # Only the ones you set get forwarded; everything else uses the config defaults
@@ -63,6 +63,10 @@ PY_EXTRA=""
 [ -n "${WM_LAMBDA:-}" ]        && PY_EXTRA="$PY_EXTRA --wm_lambda ${WM_LAMBDA}"
 [ -n "${ATTACK_ROUND:-}" ]     && PY_EXTRA="$PY_EXTRA --attack_round ${ATTACK_ROUND}"
 [ -n "${N_TRIGGER_SAMPLES:-}" ] && PY_EXTRA="$PY_EXTRA --n_trigger_samples ${N_TRIGGER_SAMPLES}"
+[ -n "${HONEST_PROB:-}" ]      && PY_EXTRA="$PY_EXTRA --honest_prob ${HONEST_PROB}"
+[ -n "${BLEND:-}" ]            && PY_EXTRA="$PY_EXTRA --blend ${BLEND}"
+[ -n "${PARTITION:-}" ]        && PY_EXTRA="$PY_EXTRA --partition ${PARTITION}"
+[ -n "${DIRICHLET_ALPHA:-}" ]  && PY_EXTRA="$PY_EXTRA --dirichlet_alpha ${DIRICHLET_ALPHA}"
 [ -n "${LOCAL_EPOCHS:-}" ]     && PY_EXTRA="$PY_EXTRA --local_epochs ${LOCAL_EPOCHS}"
 [ -n "${WATERMARK:-}" ]        && PY_EXTRA="$PY_EXTRA --watermark"
 [ -n "${NUM_FREE_RIDERS:-}" ] && PY_EXTRA="$PY_EXTRA --num_free_riders ${NUM_FREE_RIDERS}"
@@ -74,10 +78,11 @@ PY_EXTRA=""
 # Tag results/job uniquely 
 FR_TAG=""
 [ -n "${NUM_FREE_RIDERS:-}" ] && FR_TAG="-fr${NUM_FREE_RIDERS}"
-RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}${FR_TAG}_$(date +%Y%m%d_%H%M%S)"
+USER_TAG="${TAG:+-${TAG}}"     # optional: TAG=mixblend03 -> dir/job suffixed with it
+RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}${FR_TAG}${USER_TAG}_$(date +%Y%m%d_%H%M%S)"
 OUTPUT_DIR="${MOUNT}/home/zu/results/${RUN_TAG}"
 DATA_ROOT="${MOUNT}/home/zu/data"
-JOB_NAME="faremark-c${CONFIG_IDX}-r${REPEAT}${FR_TAG}-$(date +%H%M%S)"
+JOB_NAME="faremark-c${CONFIG_IDX}-r${REPEAT}${FR_TAG}${USER_TAG}-$(date +%H%M%S)"
 # =====================================================
 
 echo "=== Submitting $JOB_NAME (config_idx=$CONFIG_IDX repeat=$REPEAT) ==="

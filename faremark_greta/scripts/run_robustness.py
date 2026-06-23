@@ -59,7 +59,7 @@ def main():
     cfg.num_free_riders = 0                      # fidelity setup: everyone honest
     seed = seed_for(cfg, args.repeat); set_seed(seed)
     log = get_logger()
-    data = build_data(cfg.dataset, cfg.num_clients, args.data_root, cfg.batch_size, seed)
+    data = build_data(cfg.dataset, args.data_root, cfg.num_clients, cfg.batch_size, seed)
     model = build_model(cfg.model, data.num_classes, data.in_channels)
 
     registry = WatermarkRegistry()

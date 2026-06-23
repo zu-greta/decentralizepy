@@ -1,8 +1,7 @@
 """Dataset loading and the IID partition across clients
 
-The paper mostly divides the training set *evenly* among clients (IID). 
-A `partition` field is left in the signature so a later stage can add
-non-IID (Dirichlet) splits without changing call sites.
+The paper divides the training set *evenly* among clients (IID)
+Non-IID (Dirichlet) splits without changing call sites for testing as well
 """
 from dataclasses import dataclass
 
@@ -68,14 +67,51 @@ def iid_partition(num_samples: int, num_clients: int, seed: int) -> list:
     return [list(shard) for shard in np.array_split(idx, num_clients)]
 
 
+def dirichlet_partition(labels, num_clients: int, alpha: float, seed: int) -> list:
+    """Label-skewed non-IID split (Hsu et al. 2019).
+
+    For each class, draw a Dirichlet(alpha) vector over clients and hand out that
+    class's samples in those proportions. Small alpha -> each client sees only a
+    few classes (severe skew); large alpha -> approaches IID. alpha~=0.5 is the
+    common FL non-IID benchmark; alpha>=100 is effectively IID.
+    """
+    labels = np.asarray(labels)
+    rng = np.random.default_rng(seed)
+    n_classes = int(labels.max()) + 1
+    shards = [[] for _ in range(num_clients)]
+    for c in range(n_classes):
+        idx_c = np.where(labels == c)[0]
+        rng.shuffle(idx_c)
+        props = rng.dirichlet(alpha * np.ones(num_clients))
+        cuts = (np.cumsum(props) * len(idx_c)).astype(int)[:-1]
+        for cid, part in enumerate(np.split(idx_c, cuts)):
+            shards[cid] += part.tolist()
+    for s in shards:
+        rng.shuffle(s)
+    return shards
+
+
+def _labels_of(dataset):
+    for attr in ("targets", "labels"):
+        if hasattr(dataset, attr):
+            return np.asarray(getattr(dataset, attr))
+    return np.asarray([int(y) for _, y in dataset])   # fallback (slow)
+
+
 def build_data(name: str, data_root: str, num_clients: int, batch_size: int,
-               seed: int, num_workers: int = 2, partition: str = "iid") -> DataBundle:
-    """Returns DataBundle with client_loaders (one per client) and test_loader (global)."""
+               seed: int, num_workers: int = 2, partition: str = "iid",
+               dirichlet_alpha: float = 0.5) -> DataBundle:
+    """Load a dataset and split it into `num_clients` shards (IID or Dirichlet)."""
     train, test, num_classes, in_channels = _load_raw(name, data_root)
 
-    if partition != "iid":
-        raise NotImplementedError("Only IID is implemented for now")
-    shards = iid_partition(len(train), num_clients, seed)
+    if partition == "iid":
+        shards = iid_partition(len(train), num_clients, seed)
+    elif partition in ("dirichlet", "noniid"):
+        shards = dirichlet_partition(_labels_of(train), num_clients,
+                                     dirichlet_alpha, seed)
+    else:
+        raise ValueError(f"unknown partition '{partition}' "
+                         f"(use 'iid' or 'dirichlet')")
 
     client_loaders = [
         # shuffling to add randomness to the local batches

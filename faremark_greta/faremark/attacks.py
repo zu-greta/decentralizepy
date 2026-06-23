@@ -209,3 +209,75 @@ def make_trigger_only(base_cls):
                 self.loader = DataLoader(TensorDataset(x, y), batch_size=len(x))
             super()._local_train_wm()
     return TriggerOnlyFreeRider
+
+
+def make_random_round_attack(base_cls):
+    class RandomRoundFreeRider(base_cls):
+        """Generalises train-then-attack: instead of defecting after a fixed
+        round, the client free-rides on a RANDOM subset of rounds and trains
+        honestly on the rest (each round honest with prob `honest_prob`, decided
+        deterministically per (client, round)). Tests whether sporadic honest
+        participation keeps the embedded watermark 'fresh' enough to evade a
+        detector tuned for clean defectors."""
+        is_free_rider = True
+        attack_name = "random_round"
+
+        def __init__(self, *a, honest_prob: float = 0.5, **kw):
+            super().__init__(*a, **kw)
+            self.honest_prob = honest_prob
+
+        def produce_update(self, global_state, prev_global_state, round_idx):
+            import random
+            r = random.Random(1000 * getattr(self, "cid", 0) + round_idx)
+            if r.random() < self.honest_prob:
+                return super().produce_update(global_state, prev_global_state, round_idx)
+            fake = (copy.deepcopy(global_state) if prev_global_state is None
+                    else _extrapolate(global_state, prev_global_state))
+            return fake, self.num_samples
+    return RandomRoundFreeRider
+
+
+def make_mixed_attack(base_cls):
+    class MixedDisguiseFreeRider(base_cls):
+        """Strongest cheap disguise: do a minimal trigger-only embed (a few
+        trigger samples, so the client's OWN watermark BER drops) AND hide that
+        inside a mostly-replayed global update (so the submission also looks like
+        a normal contribution rather than noise). Submits
+        blend * (lightly-trained weights) + (1-blend) * extrapolated-global.
+        Tests detection against a free-rider that spends minimal effort to fake
+        the mark while masking the fabrication."""
+        is_free_rider = True
+        attack_name = "mixed"
+
+        def __init__(self, *a, n_trigger_samples: int = 8, blend: float = 0.5, **kw):
+            super().__init__(*a, **kw)
+            self.n_trigger_samples = n_trigger_samples
+            self.blend = blend
+
+        def _local_train_wm(self):
+            import torch
+            from torch.utils.data import DataLoader, TensorDataset
+            xs, ys = [], []
+            for x, y in self.loader:
+                m = (y == self.trigger_class)
+                if m.any():
+                    xs.append(x[m]); ys.append(y[m])
+                if sum(len(t) for t in ys) >= self.n_trigger_samples:
+                    break
+            if xs:
+                x = torch.cat(xs)[: self.n_trigger_samples]
+                y = torch.cat(ys)[: self.n_trigger_samples]
+                self.loader = DataLoader(TensorDataset(x, y), batch_size=len(x))
+            super()._local_train_wm()
+
+        def produce_update(self, global_state, prev_global_state, round_idx):
+            import torch
+            w_self, n = super().produce_update(global_state, prev_global_state, round_idx)
+            fake = (copy.deepcopy(global_state) if prev_global_state is None
+                    else _extrapolate(global_state, prev_global_state))
+            b = self.blend
+            blended = {k: b * w_self[k] + (1 - b) * fake[k]
+                       if torch.is_floating_point(w_self[k]) else w_self[k]
+                       for k in w_self}
+            return blended, n
+    return MixedDisguiseFreeRider
