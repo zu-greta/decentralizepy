@@ -1,58 +1,127 @@
-# Project Plan — Limits of Output-Layer Watermarking for Free-Rider Detection
+# Project Plan — Limits of Output-Layer Watermarking for Free-Rider Detection in Federated Learning
 
-Status: reproduction of FareMark essentially complete; pivoting to an attack /
-limitations study. This document is the working reference for the new goal,
-the definitions it rests on, the weaknesses to demonstrate, and the exact
-experiments to run next.
+Status: 
+[x] Reproduction of FareMark paper codebase 
+[~] Repoduction of FareMark paper results
+[] Define limits of FareMark paper design and detection scheme
+[] Implement new attacks to demonstrate limits
+[] Run experiments to demonstrate limits
+[] Define and implement new detection scheme to overcome limits
+[] Run experiments to demonstrate new detection scheme
+[] Write up results
 
 ---
 
-## 1. Goal (reframed)
+## 1. Goal 
 
-Show that **box-free, output-layer watermarking cannot reliably detect
+Show that **output-layer watermarking/fingerprinting cannot reliably detect
 free-riders under identifiable conditions** — i.e. detection is not just hard
-but *impossible* in regimes that occur in normal federated learning.
+but *impossible* under certain conditions.
 
-The entire argument reduces to one question, asked over and over in different
-settings:
+### Things to consider
 
-> Are the honest-client and free-rider **bit-error-rate (BER)** distributions
-> separable by a single threshold η?
->
-> - **Disjoint** → a band of η gives perfect detection (the scheme works).
-> - **Overlapping** → no η separates them → detection is impossible *here*.
-
-Every experiment below produces a *separability figure* answering this for one
-regime. The collection of regimes where the gap closes **is** the paper.
+1. **Threshold fragility** — the paper's detection threshold is `η = μ + 3σ` 
+2. **Forgeability** — a free-rider with the key + a few trigger samples can re-embed the mark
+3. **Collusion** — multiple free-riders can combine their updates to evade detection
+4. **Non-IID false positives** — skewed data → some honest clients can't embed → their BER rises → they get misflagged
+5. **Train-then-attack** - on random rounds, a free-rider can train on the global model and then attack, which may allow it to evade detection
+6. **Trigger-sample only + pick and choose** - a free-rider can train trigger sample class only + a select few from the rest of the dataset, which may allow it to evade detection
 
 ---
 
 ## 2. Definitions
 
-**Bit.** One yes/no piece of a client's secret watermark message. The scheme
-can pack only about `(num_classes − 1) / 2` bits into the output layer, so the
-message length is **m = 4 bits on CIFAR-10** and **m ≈ 49 on CIFAR-100**.
+> **Note:** BER (bit-error-rate) is not defined as such in the paper but rather
+> as the left-hand side of Eq. 16. The paper never names it, and it reports
+> only the complement `1 − BER` as "watermark detection rate" / `Acc_wm`. 
+> Using BER for consistent vocabulary. 
+> Per-client bit budget m = 4 on CIFAR-10 is a derivation under our embeddability 
+> assumptions; the paper leaves m as an unspecified free parameter. 
+
+**Bit.** One yes/no piece of a client's secret watermark message. The paper
+treats the message length **m as a free parameter**: it states only that
+`n ≥ m`, that the group size is `l = n / m`, and that the first `m·l` softmax
+outputs carry the watermark (section IV-A, Eq. 1). It never reports the m it used for
+its own detection experiments. (The `N = 100` in Table I and `N_T = 50/100`
+elsewhere are *not* this m — the former is the FedIPR baseline's feature-bit
+length, the latter the trigger-*sample* count.)
+
+**Bit budget m = (n−1)/2 — derived from the paper.** In `config.py`,
+the default sets `m = (num_classes − 1)//2`, giving **m = 4 on CIFAR-10** (10
+classes) and **m ≈ 49 on CIFAR-100** (100 classes). This follows from 2
+implementation choices made drifting apart from the paper:
+- **Excluding the trigger class** from the projection (its softmax peak would
+  freeze one bit at small l), leaving `n − 1` usable classes.
+- Requiring **sign-balanced ±1 key rows**, which need group size `l ≥ 2` to be
+  embeddable, so at most `(n−1)//2` groups fit.
+The paper's worked example instead uses a mixed-sign row `M = [1,−1,1]` over a
+group of 3 on the full softmax, so it is not bound to 4 either. Treat the
+small-m regime as an unexamined gap we are entitled to probe, since the
+paper never pins m down — and present the "few classes → few bits → overlap"
+argument as our analysis, not a reproduced FareMark finding.
 
 **Watermark (B^i).** Each client `i` has its own m-bit string `B^i` plus a
-secret ±1 key `M`, embedded into the model's softmax on that client's *trigger
-class*.
+secret ±1 key `M`, embedded into the model's softmax on that client's *trigger class*.
 
-**Bit-error-rate (BER).** The fraction of the m recovered bits that disagree
-with the registered target bits:
+**Bit-error-rate (BER) — Eq. 16.** The paper thresholds, in Eq. 16, the 
+fraction of recovered bits that disagree with the registered bits:
 
 ```
-BER = (number of wrong bits) / m        ∈ [0, 1]
+(1/m) · Σ_k | b̂_k − b_k |  < η          (paper Eq. 16, left-hand side)
 ```
 
-- Honest client (trained the watermark in) → bits come back correct → **BER ≈ 0**.
+We call this left-hand side the **bit-error-rate (BER)**. The paper never uses
+that term; the only place it names the quantity at all is the sentence after
+Eq. 16 ("typical error rate for legitimate clients ... η = μ + 3σ"). Everywhere
+else it reports the **complement**:
+
+| our term | paper's term | where |
+|---|---|---|
+| BER = (1/m)Σ\|b̂−b\| | (unnamed) Eq. 16 error rate | Eq. 16 |
+| 1 − BER ("watermark accuracy") | "watermark detection rate" / `Acc_wm` | Fig. 8, Tables II, VII |
+| "BER ≥ η → free-rider" | Eq. 16 detection rule | Eq. 16 |
+| η = μ+3σ of benign BER | same | text after Eq. 16 |
+
+- Honest client (trained the watermark in) → bits come back correct → **BER ≈ 0**
+  (paper: detection rate ≈ 100%).
 - Free-rider (fabricated its update) → each bit is a coin-flip vs the secret
-  target → on average half wrong → **BER ≈ 0.5**.
+  target → on average half wrong → **BER ≈ 0.5** (paper: rate < ~40%, Fig. 8).
 
 So BER is the single scalar that says "is the watermark present in this model?"
-0 = present (contributor), 0.5 = absent (free-rider).
+0 = present (contributor), 0.5 = absent (free-rider). In a writeup, introduce it
+once as "we refer to the Eq. 16 error rate as the BER," then use it freely.
 
-**Watermark accuracy.** `1 − BER`, expressed as a percentage. This is how the
-paper reports fidelity and robustness (a recovered watermark = ~100%).
+**Watermark accuracy.** `1 − BER`, as a percentage — this *is* the paper's
+"watermark detection rate" / `Acc_wm` (a recovered watermark ≈ 100%).
+
+**Which metric, and why FareMark uses BER (not trigger accuracy).** Two metric
+families exist in DNN watermarking, and it is easy to attach the wrong one:
+
+| Watermark family | Payload | Recovered from | Metric |
+|---|---|---|---|
+| Feature-based (white-box): Uchida, FedIPR-feature | literal bit-string | model **weights** | **BER** |
+| Backdoor-based (black-box): Adi, WAFFLE, FedIPR-backdoor | (input → assigned-label) pairs | model **predictions** on trigger images | **trigger / task accuracy** |
+| **FareMark (box-free, output-space)** | literal bit-string | model **softmax outputs** on trigger-class inputs | **BER** |
+
+So the common rule of thumb — "BER for a bit-string payload, trigger accuracy
+for prediction behavior on trigger images" — is right as a *general* taxonomy,
+but two things must be stated correctly for FareMark:
+- FareMark's BER is on a bit-string extracted from **outputs, not weights**
+  (Eq. 1/13/15 act on the probability vector p̂). The "from the weights" phrasing
+  applies only to feature-based schemes; FareMark is box-free precisely to avoid
+  weight access.
+- The "trigger prediction error rate" branch describes **backdoor-based**
+  watermarking, which FareMark defines itself *against*. FareMark still
+  classifies trigger-class images to their **true** label; the mark lives in the
+  *shape of the tail probabilities*, not in the predicted class. There is no
+  trigger-prediction error rate in FareMark's verification — measuring one would
+  just be measuring main-task accuracy.
+
+**Terminology collision to avoid.** FareMark *does* report a "task accuracy,"
+but that is the **fidelity** metric (main-task classification over the whole
+test set, Table I) — a separate axis from watermark BER. Never let "trigger
+accuracy" (a backdoor metric absent here) blur into either FareMark's BER or its
+fidelity accuracy.
 
 **Threshold η.** Decision boundary on BER. A client is flagged as a free-rider
 when `BER ≥ η`. The paper sets `η = μ + 3σ` of the benign BER distribution.
@@ -70,21 +139,23 @@ separable; ≤ 0 = overlap = impossible.
 
 ---
 
-## 3. How FareMark uses BER to evaluate (three roles)
+## 3. How the paper evaluates (all via the Eq. 16 error rate = our BER)
 
-BER (usually reported as `1 − BER` = "watermark accuracy") is the measurement
-behind almost every table in the paper:
+The Eq. 16 error rate — which we call BER, and which the paper reports as its
+complement `1 − BER` ("watermark detection rate" / `Acc_wm`) — is the
+measurement behind almost every table:
 
-| Paper section | What they measure with BER | Pass condition |
-|---|---|---|
-| **Fidelity** (Tables II, VII) | Watermark accuracy `1−BER` after embedding — does the mark survive training + FedAvg aggregation? | `1−BER ≈ 100%` while task accuracy stays near baseline |
-| **Free-rider detection** (Tables III–V, Fig. 8) | Each client's BER → threshold η → `Acc_fr`, recall, FPR | honest BER≈0, free-rider BER≈0.5, high `Acc_fr` |
-| **Robustness** (Figs 9–10, Table VI) | Watermark accuracy `1−BER` after a removal attack (fine-tune / prune / quantize / DP) vs attack strength | watermark accuracy stays high until the attack also destroys task accuracy |
+| Paper section | What is measured (in the paper's words) | = in our BER terms | Pass condition |
+|---|---|---|---|
+| **Fidelity** (Tables II, VII) | watermark detection rate `Acc_wm` after embedding | `1 − BER` | `Acc_wm ≈ 100%` while task accuracy stays near baseline |
+| **Free-rider detection** (Tables III–V, Fig. 8) | `Acc_fr`, FPR via the Eq. 16 threshold | benign BER ≈ 0, free-rider BER ≈ 0.5, high `Acc_fr` | clean separation by η |
+| **Robustness** (Figs 9–10, Table VI) | watermark recovery rate after fine-tune / prune / quantize / DP | `1 − BER` vs attack strength | recovery stays high until the attack also destroys task accuracy |
 
-In other words: the paper never evaluates "detection" directly — it evaluates
-**BER**, and detection/fidelity/robustness are all thresholds or trends on BER.
-That is exactly why the project attacks BER separability: break the BER gap and
-you break every claim at once.
+In other words: the paper never evaluates "detection" as a standalone quantity —
+it evaluates the Eq. 16 error rate (our BER) and dresses it up as detection
+rate, `Acc_fr`, and robustness curves. That is exactly why this project attacks
+BER separability: collapse the gap between the benign and free-rider error-rate
+distributions and every one of these claims fails at once.
 
 ---
 
@@ -113,8 +184,11 @@ not a reproduction question.
 
 ## 5. Weaknesses to demonstrate (thesis pillars)
 
-1. **Bit-count ceiling.** Few classes → few bits → free-rider matches by luck
-   (~⅓ of the time on 4 bits) → distributions overlap. Information-theoretic.
+1. **Bit-count ceiling (our analysis, not a paper finding).** The paper leaves
+   m open; under our embeddability assumptions m = (n−1)/2, so few classes → few
+   bits → a random free-rider's BER lands under η by chance (~⅓ of the time at
+   m = 4) → the distributions overlap. Information-theoretic, and an
+   unexamined gap in the paper.
 2. **Forgeability.** A free-rider with the key + a few trigger samples re-embeds
    the mark; its BER falls with effort. Detection silently assumes the attacker
    won't try.
