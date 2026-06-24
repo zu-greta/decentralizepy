@@ -78,16 +78,24 @@ def smooth(p: torch.Tensor, kind: str = "power", alpha: float = 0.4,
 # ----------------------------------------------------------------------------
 # Per-client secret key M  (the +/-1 projection matrix, section IV-A)
 # ----------------------------------------------------------------------------
-def make_key(num_bits: int, group_size: int, seed: int) -> torch.Tensor:
+def make_key(num_bits: int, group_size: int, seed: int,
+             balanced: bool = True) -> torch.Tensor:
     """Per-client secret projection matrix M, shape [m, l], entries +/-1.
 
-    Each ROW is sign-balanced (equal +1 / -1, shuffled). This is required, not
-    cosmetic: probabilities are non-negative and f(p) >= 0, so a same-sign row
-    (e.g. [-1,-1]) would force z_k < 0 regardless of the input -> that bit could
-    never be embedded. Balanced rows make z_k = sum_j f(p_j) M_{k,j} shapeable to
-    either sign, so any target bit is reachable.
+    balanced=True (default): each ROW is sign-balanced (equal +1/-1, shuffled).
+    With small l this is required, not cosmetic: probabilities are non-negative
+    and f(p) >= 0, so a same-sign row (e.g. [-1,-1]) would force z_k < 0
+    regardless of input -> that bit could never be embedded. Balanced rows make
+    z_k = sum_j f(p_j) M_{k,j} shapeable to either sign.
+
+    balanced=False: paper-exact pseudo-random +/-1 entries (the paper's M is
+    drawn at random). Safe only when l is large enough that a random row is
+    almost surely mixed-sign; otherwise some bits are unembeddable by construction.
     """
     g = torch.Generator().manual_seed(seed)
+    if not balanced:
+        return (torch.randint(0, 2, (num_bits, group_size), generator=g)
+                .float() * 2 - 1)                       # +/-1, fully random
     half = group_size // 2
     base = torch.tensor([1.0] * half + [-1.0] * (group_size - half))
     rows = [base[torch.randperm(group_size, generator=g)] for _ in range(num_bits)]
