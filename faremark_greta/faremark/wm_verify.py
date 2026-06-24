@@ -27,9 +27,14 @@ class WatermarkRegistry:
     def __init__(self):
         self.entries: dict[int, dict] = {}
 
-    def register(self, cid, trigger_class, key, target_bits, kind="power", alpha=0.4):
+    def register(self, cid, trigger_class, key, target_bits, kind="power",
+                 alpha=0.4, exclude="trigger"):
+        # exclude: which projection column the verifier drops. "trigger" sentinel
+        # -> use trigger_class (our mode); None -> paper-faithful full softmax.
+        exc = trigger_class if exclude == "trigger" else exclude
         self.entries[cid] = dict(trigger_class=trigger_class, key=key,
-                                 target_bits=target_bits, kind=kind, alpha=alpha)
+                                 target_bits=target_bits, kind=kind, alpha=alpha,
+                                 exclude=exc)
 
     def __len__(self):
         return len(self.entries)
@@ -54,15 +59,19 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 
 
 def make_verifier(registry, trigger_bank, verify_model, device,
-                  free_rider_indices, eta=0.25, verify_every=1):
+                  free_rider_indices, eta=0.25, verify_every=1,
+                  paper_faithful=False, calib_on_all=False):
     """Return a verify_hook(server, round, updates) for Server.
 
-    Records per-round: mean benign BER, mean free-rider BER, detection accuracy
-    (benign kept + free-riders flagged), and false-positive rate
+    paper_faithful=True: cumulative mu+3sigma over ALL rounds, no window, no cap.
+    calib_on_all=True: calibrate eta over EVERY client's BER (server cannot tell
+    honest from free-rider), exposing the paper's circularity — free-rider BER
+    ~0.5 poisons mu+3sigma. Default False matches the paper's 'observe legitimate
+    clients' (a trusted pool it never explains how to obtain in deployment).
     """
     fr_set = set(free_rider_indices)
-    benign_history = []          # per-round benign BER means, for calibrating eta
-    CAL_WINDOW = 15              # rounds of recent benign BER used for mu+3sigma
+    benign_history = []          # per-round BER means used to calibrate eta
+    CAL_WINDOW = 15              # rounds of recent BER used for mu+3sigma
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):
@@ -82,7 +91,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             x = trigger_bank[tc].to(device)
             probs = F.softmax(verify_model(x), dim=1)
             bits = wm.extract_bits(probs, entry["key"].to(device),
-                                   entry["kind"], entry["alpha"], exclude=tc)
+                                   entry["kind"], entry["alpha"],
+                                   exclude=entry.get("exclude", tc))
             ber = wm.bit_error_rate(bits, entry["target_bits"])
             measured.append((cid, ber, cid in fr_set))
 
@@ -95,10 +105,16 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         #   (2) cap eta at 0.25 — a balanced watermark has benign BER->0 and a
         #       random model ->0.5, so a threshold above 0.25 would flag nothing.
         benign_now = [b for _, b, isfr in measured if not isfr]
-        if benign_now:
-            benign_history.append(sum(benign_now) / len(benign_now))
-        recent = benign_history[-CAL_WINDOW:]
-        eta_round = min(wm.calibrate_eta(recent, floor=eta) if recent else eta, 0.25)
+        calib_now = [b for _, b, _ in measured] if calib_on_all else benign_now
+        if calib_now:
+            benign_history.append(sum(calib_now) / len(calib_now))
+        if paper_faithful:
+            # paper-exact: cumulative mu+3sigma over ALL rounds, no window, no cap
+            eta_round = (wm.calibrate_eta(benign_history, floor=eta)
+                         if benign_history else eta)
+        else:
+            recent = benign_history[-CAL_WINDOW:]
+            eta_round = min(wm.calibrate_eta(recent, floor=eta) if recent else eta, 0.25)
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0

@@ -31,7 +31,8 @@ class WatermarkClient(Client):
     def __init__(self, *args, trigger_class: int, key: torch.Tensor,
                  target_bits: torch.Tensor, wm_lambda: float = 5.0,
                  wm_kind: str = "power", wm_alpha: float = 0.4,
-                 wm_beta: float = 0.6, label_smoothing: float = 0.1, **kw):
+                 wm_beta: float = 0.6, label_smoothing: float = 0.1,
+                 exclude: object = "trigger", **kw):
         super().__init__(*args, **kw)
         self.trigger_class = trigger_class
         self.key = key
@@ -41,6 +42,9 @@ class WatermarkClient(Client):
         self.wm_alpha = wm_alpha
         self.wm_beta = wm_beta
         self.label_smoothing = label_smoothing
+        # which projection column to drop: trigger class (our mode) or None (paper).
+        # sentinel "trigger" -> use trigger_class; explicit None -> paper-faithful.
+        self.exclude = trigger_class if exclude == "trigger" else exclude
         self.memory: dict | None = None      # client's persistent local model
 
     # ---- the seam ----------------------------------------------------------
@@ -70,7 +74,7 @@ class WatermarkClient(Client):
                     probs = F.softmax(logits[tmask], dim=1)
                     loss = loss + self.wm_lambda * wm.watermark_loss(
                         probs, key, bits, self.wm_kind, self.wm_alpha,
-                        exclude=self.trigger_class)
+                        exclude=self.exclude)
                 loss.backward()
                 opt.step()
 
@@ -116,8 +120,16 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     """
     from .attacks import (choose_free_riders, ATTACKS, GaussianNoiseFreeRider)
 
-    m = cfg.wm_bits or (num_classes - 1) // 2          # default l = 2
-    l = wm.grouping(num_classes - 1, m)                # NOTE: trigger class excluded
+    pf = getattr(cfg, "paper_faithful", False)
+    if pf:
+        # paper-exact: full softmax (no trigger-class exclusion), random keys
+        m = cfg.wm_bits or (num_classes - 1) // 2
+        l = wm.grouping(num_classes, m)                # uses all n classes
+        exclude_col = None
+    else:
+        m = cfg.wm_bits or (num_classes - 1) // 2      # default l = 2
+        l = wm.grouping(num_classes - 1, m)            # trigger class excluded
+        exclude_col = "trigger"                        # sentinel -> trigger_class
     fr_idx = set(choose_free_riders(len(client_loaders),
                                     getattr(cfg, "num_free_riders", 0), seed))
     attack = getattr(cfg, "attack", "none")
@@ -125,10 +137,11 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     clients = []
     for cid, loader in enumerate(client_loaders):
         trigger_class = cid % num_classes
-        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1)
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=not pf)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1)
+        reg_exclude = None if pf else trigger_class
         registry.register(cid, trigger_class, key, bits,
-                          kind=cfg.wm_f, alpha=cfg.wm_alpha)
+                          kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude)
 
         common = dict(cid=cid, model=model, train_loader=loader, device=device,
                       lr=cfg.lr, local_epochs=cfg.local_epochs,
@@ -175,5 +188,5 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
-                **common))
+                exclude=exclude_col, **common))
     return clients, sorted(fr_idx)

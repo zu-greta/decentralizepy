@@ -195,7 +195,114 @@ not a reproduction question.
 3. **Threshold fragility.** `μ+3σ` degenerates exactly under heavy free-riding,
    when honest BER spikes — the regime it is meant for.
 4. **Non-IID false positives.** Skewed data → some honest clients can't embed →
-   their BER rises → they get misflagged.
+   their BER rises → they get misflagged. (The paper never tests non-IID — see §5b.)
+
+---
+
+## 5a. Claim-by-claim: assumption → attack → why the obvious fix fails
+
+This is the paper's argument decomposed. Each row is a section of our eventual
+writeup: state the claim, expose the hidden assumption, give the attack, and
+pre-empt the defense by showing it does not fully close the gap.
+
+| # | Paper's claim | Hidden assumption it rests on | Attack that breaks it | Obvious defense — and why it doesn't fully close it |
+|---|---|---|---|---|
+| 1 | Multiple clients embed without conflict | Enough distinct trigger classes (`m·k < n`) | Oversubscription: more clients than classes forces sharing → less separation | Share classes, distinguish by key — but capacity bound still bites, and the paper's own fix (same-sample verification, §5b) destroys the security argument in row 4 |
+| 2 | Watermarks survive FedAvg aggregation | Memory term β re-asserts the mark each round | Dilution: raise free-rider fraction so honest updates are outvoted; β also re-asserts a *forged* mark | Raise β — but higher β slows convergence and, under non-IID, prevents honest embedding (row 4); β is one global value, not per-client |
+| 3 | A free-rider **cannot** embed a watermark | Free-rider does *zero* training and uses a *random* target | Train-a-little / mixed forge with a **self-chosen easy** target; extrapolate global and nudge toward bits the model nearly satisfies already | Require training — but the claim then degrades to "embedding is *costly*," which is a definition, not impossibility; our `mixed` run hits fr-BER 0.125 cheaply |
+| 4 | Even a faking free-rider fails verification (overfits few samples) | Many bits make a few-sample fit fail to generalize to held-out triggers | Low-bit datasets (CIFAR-10, m=4): too few bits for the generalization gap to bite; `n_trigger_samples`↑ closes the gap | Verify on a large held-out trigger set — but raises FPR under non-IID (honest can't generalize either), and `ns=32` already partly defeats it |
+| 5 | Threshold η cleanly separates honest from free-rider | η = μ+3σ computed on a **trusted** honest pool; honest BER stays ≈0 | Contaminate/collapse: heavy free-riding or skew lifts honest BER into the free-rider band → distributions overlap | Robust threshold — but **once the two BER distributions overlap, no threshold exists**. This is the impossibility core; it is the one defense that *cannot* work |
+
+The throughline: "free-riders can't embed" really means "embedding is costly AND
+the target is hard to hit by chance AND honest/free-rider BER stay separated."
+Rows 3, 4, 5 break each conjunct in an identifiable regime.
+
+---
+
+## 5b. Mechanism deep-dive (the four things the paper is vague about)
+
+### Threshold η — how it's computed, and the circularity
+The rule (text after Eq. 16): observe the per-client error rate
+`(1/m)Σ|b̂−b|` (our BER) **across many training rounds for legitimate clients**,
+then set **η = μ + 3σ** of that error. So it is calibrated over the training
+history, not a single round, and is meant to be the "normal honest noise band."
+
+Two unresolved problems, both attackable:
+- **Circularity / trusted set.** μ and σ are taken over *legitimate* clients —
+  but identifying who is legitimate is the exact job detection is supposed to do.
+  The paper silently assumes a **clean calibration pool of known-honest clients**
+  (plausible only in a controlled pretraining phase). It never says how you get
+  that pool in deployment with *unknown* free-riders.
+- **Calibration poisoning.** If free-riders sit in the calibration pool, their
+  BER ≈ 0.5 inflates μ and σ → η rises → detection becomes *more* permissive →
+  free-riders slip through. So contamination weakens the very threshold meant to
+  catch contamination. Combined with the collapse regime (honest BER → 0.5 under
+  heavy free-riding), the honest and free-rider error bands merge and μ+3σ is
+  meaningless. (Our verifier sidesteps this in simulation by calibrating on the
+  *known* benign pool with a sliding window + 0.25 cap — guards the paper does
+  not have. That is a deviation to disclose, and itself evidence the paper's
+  plain μ+3σ is fragile.)
+- **Is it fixed once?** The paper reads as "calibrate over training, then use" —
+  ambiguous on re-calibration. Worth probing: a static η can't track honest
+  drift; a re-calibrated η is poisonable round to round.
+
+### β (memory-enhanced update, Eq. 14) — per-client, heuristic
+`W^j_{i+1} = β(W^j_i + lr·∂L/∂W^g_i) + (1−β)·W^g_i`.
+- **Per client, individual.** Each client keeps its *own* memory `W^j_i` (its own
+  running watermarked model) and only partially adopts the aggregated global each
+  round. (Our code: `self.memory` per `WatermarkClient`.)
+- **What β does.** β = 0 → pure FedAvg (reset to global each round → watermark
+  washed out by averaging). Higher β → the client clings to its own watermarked
+  trajectory, so the mark is re-asserted and survives aggregation — at the cost
+  of slower convergence (the paper states this explicitly; Table VIII is the
+  on/off ablation). We use β = 0.6.
+- **How to tune.** The paper says only "determined heuristically by experiments"
+  — no principled rule. It is a single global value, the same for every client.
+- **Attack/limitation angles.** (a) β is what makes *any* embedded signal persist
+  — including a free-rider's lightly-embedded or forged mark, since our
+  watermark-aware attackers inherit the same memory update. (b) One global β
+  ignores data heterogeneity: under non-IID, a client whose data lacks the
+  trigger class can't embed regardless of β, yet a high β makes it cling to a
+  *non*-watermarked trajectory, raising its BER and FPR. (c) High β slows
+  convergence, interacting badly with the collapse regime.
+
+### Non-IID — the paper does NOT test it
+Experimental settings (§V-A): "the training dataset was divided **evenly** among
+the clients" = **IID throughout**. There is no Dirichlet / label-skew / quantity-
+skew experiment anywhere; the abstract's "resilience across various training
+settings" refers to free-rider count (Fig. 7), trigger count (Table VII),
+oversubscription (Table IX), and the memory ablation (Table VIII) — **not** data
+heterogeneity. So the "robust across settings" claim is **unsupported for
+non-IID**, which is the realistic FL regime. This is a clean, defensible gap:
+under label skew a benign client may rarely or never see its trigger class, so it
+cannot embed, its BER rises, and it is misflagged (FPR↑) — *without any
+free-rider present*. Our Dirichlet sweep (§7.3) is designed to exhibit exactly
+this; the α at which honest FPR departs from 0 is the failure point.
+
+### Oversubscription (more clients than classes) — Table IX, and why it's weak
+§V-F3: ResNet-18/CIFAR-10 with up to 50 clients (10 classes), reporting >95%
+watermark accuracy and >88% task accuracy. To handle clients sharing a trigger
+class, they "**enforce trigger sample consistency: the trigger samples used
+during testing are identical to those employed in training**," 50 per client, and
+say shared-class clients stay distinct via "client-specific trigger variations."
+
+Why the claim is soft:
+- **It contradicts their own security argument.** Row 4 / Table V security relies
+  on verifying with **held-out** triggers so a few-sample fit can't generalize.
+  Here they verify on the **same** samples used in training — precisely the
+  overfitting regime they declared insecure. Under oversubscription a free-rider
+  could memorize those exact samples and pass. They trade security for capacity
+  without saying so.
+- **"Client-specific trigger variations" is undefined.** If shared-class clients
+  are separated only by their secret key, capacity is really about key collisions,
+  not classes; if by disjoint sample subsets, it is sample memorization (the
+  insecure case above). The paper doesn't pin this down.
+- **Scale untested.** 50 clients / 10 classes = 5 per class; realistic
+  cross-device FL (hundreds–thousands) is never evaluated, and `m·k < n` keeps
+  shrinking per-client separation as sharing grows.
+
+So the oversubscription "solid" claim holds only by adopting same-sample
+verification, which undoes the security model — a contradiction worth featuring.
 
 ---
 

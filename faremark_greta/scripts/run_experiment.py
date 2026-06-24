@@ -68,6 +68,14 @@ def parse_args():
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
     p.add_argument("--wm_lambda", type=float, default=None)
     p.add_argument("--wm_beta", type=float, default=None)
+    p.add_argument("--paper_faithful", dest="paper_faithful",
+                   action="store_true", default=None,
+                   help="strip our deviations: random keys, no trigger-class "
+                        "exclusion, cumulative uncapped mu+3sigma threshold")
+    p.add_argument("--calib_on_all", dest="calib_on_all",
+                   action="store_true", default=None,
+                   help="calibrate eta over ALL clients (free-riders poison it) "
+                        "instead of the assumed trusted benign pool")
     p.add_argument("--list_configs", action="store_true")
     return p.parse_args()
 
@@ -128,6 +136,10 @@ def main():
         cfg.wm_lambda = args.wm_lambda
     if args.wm_beta is not None:
         cfg.wm_beta = args.wm_beta
+    if args.paper_faithful is not None:
+        cfg.paper_faithful = args.paper_faithful
+    if args.calib_on_all is not None:
+        cfg.calib_on_all = args.calib_on_all
 
     os.makedirs(args.output_dir, exist_ok=True)
     logger = get_logger(logfile=os.path.join(args.output_dir, "run.log"))
@@ -168,7 +180,9 @@ def main():
                                           cfg.wm_num_triggers, seed=seed)
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
                                     free_rider_indices, eta=cfg.wm_eta,
-                                    verify_every=cfg.wm_verify_every)
+                                    verify_every=cfg.wm_verify_every,
+                                    paper_faithful=getattr(cfg, "paper_faithful", False),
+                                    calib_on_all=getattr(cfg, "calib_on_all", False))
         server = Server(model, clients, data.test_loader, device, logger,
                         verify_hook=verify_hook)
     else:

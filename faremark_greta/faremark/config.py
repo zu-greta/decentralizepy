@@ -62,6 +62,14 @@ class ExpConfig:
     wm_num_triggers: int = 50   # N_T trigger samples used for extraction (Eq.15)
     wm_eta: float = 0.25        # detection threshold on BER (Eq. 16)
     wm_verify_every: int = 1    # run verification every k rounds (cost control)
+    # paper_faithful=True strips our three deviations so the run matches the bare
+    # FareMark algorithm: (1) random (not sign-balanced) keys, (2) NO trigger-class
+    # exclusion (full softmax, Eq.1/10 anti-dominance only), (3) threshold = the
+    # paper's cumulative mu+3sigma over ALL rounds, no sliding window, no 0.25 cap.
+    # Use with a high-class dataset (e.g. CIFAR-100) so the full-softmax projection
+    # is embeddable. Default False keeps our robust mode.
+    paper_faithful: bool = False
+    calib_on_all: bool = False  # calibrate eta over all clients (free-riders poison it)
 
     def to_dict(self):
         return asdict(self)
@@ -131,6 +139,15 @@ CONFIGS = [
               watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="previous_models", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
+
+    # idx 13: PAPER-FAITHFUL detection target. CIFAR-100 (many classes -> many
+    # bits, so the full-softmax projection is embeddable without our trigger-class
+    # exclusion). Random keys + cumulative uncapped mu+3sigma threshold. This is
+    # the config for "bare FareMark algorithm" threshold-anatomy experiments.
+    ExpConfig("paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+              num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="previous_models", num_free_riders=2,
+              paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 
 

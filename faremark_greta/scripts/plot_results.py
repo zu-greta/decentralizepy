@@ -95,7 +95,11 @@ def plot_trajectory(run, outdir):
     ax1.set_ylim(-0.02, 1.02)
     ax2 = ax1.twinx()
     ax2.plot(rounds, det, color="#6aa84f", lw=1.2, alpha=0.7, label="detection acc")
-    ax2.set_ylabel("detection accuracy", color="#6aa84f")
+    # global model test accuracy (normalised to [0,1]) so it shares the right axis
+    tacc = [(x.get("test_acc") or 0) / 100.0 for x in h]
+    ax2.plot(rounds, tacc, color="#e69138", lw=1.2, ls=":", alpha=0.9,
+             label="global test acc /100")
+    ax2.set_ylabel("detection acc  /  test acc(\u00f7100)", color="#6aa84f")
     ax2.set_ylim(-0.02, 1.05); ax2.grid(False)
     c = run["config"]
     ax1.set_title(f"{c['model']} / {c['dataset']} \u00b7 {run.get('attack')} "
@@ -110,8 +114,7 @@ def plot_trajectory(run, outdir):
 
 
 # ---- 2. swept-variable summary --------------------------------------------
-SWEEP_KEYS = ["num_free_riders", "n_trigger_samples", "attack_round",
-              "blend", "honest_prob", "dirichlet_alpha"]
+SWEEP_KEYS = ["num_free_riders", "n_trigger_samples", "attack_round"]
 
 
 def detect_sweep_key(runs):
