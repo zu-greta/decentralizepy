@@ -60,7 +60,7 @@ def main():
     seed = seed_for(cfg, args.repeat); set_seed(seed)
     log = get_logger()
     data = build_data(cfg.dataset, args.data_root, cfg.num_clients, cfg.batch_size, seed)
-    model = build_model(cfg.model, data.num_classes, data.in_channels)
+    model = build_model(cfg.model, data.num_classes, data.in_channels).to(args.device)
 
     registry = WatermarkRegistry()
     clients, _ = build_watermarked_clients(cfg, data.client_loaders, model,
