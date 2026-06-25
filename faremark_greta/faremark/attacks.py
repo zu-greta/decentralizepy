@@ -149,12 +149,9 @@ def build_clients(cfg, client_loaders, model, device, seed):
     return clients, sorted(fr_idx)
 
 
-# TODO
 # ============================================================================
-# Stage 4 adaptive free-riders (paper §V-D3 / §V-D4, Tables IV-V).
-# These are *watermark-aware* free-riders used only in detection experiments;
-# they subclass WatermarkClient so they can train for a while (and thus embed)
-# before defecting. Imported lazily to avoid a circular import with wm_client.
+# adaptive free-riders (paper section V-D3 / section V-D4, Tables IV-V).
+# adapted free-riders subclass WatermarkClient 
 # ============================================================================
 def make_train_then_attack(base_cls):
     class TrainThenAttackFreeRider(base_cls):
@@ -239,35 +236,71 @@ def make_random_round_attack(base_cls):
 
 def make_mixed_attack(base_cls):
     class MixedDisguiseFreeRider(base_cls):
-        """Strongest cheap disguise: do a minimal trigger-only embed (a few
-        trigger samples, so the client's OWN watermark BER drops) AND hide that
-        inside a mostly-replayed global update (so the submission also looks like
-        a normal contribution rather than noise). Submits
-        blend * (lightly-trained weights) + (1-blend) * extrapolated-global.
-        Tests detection against a free-rider that spends minimal effort to fake
-        the mark while masking the fabrication."""
+        """Forgery disguise free-rider. Embeds a watermark cheaply, then hides it
+        inside a mostly-replayed global update:
+            submit  blend * (trained weights) + (1-blend) * extrapolated-global.
+
+        Two training regimes for the embed:
+          * default (full_trigger_class=False): train on only `n_trigger_samples`
+            trigger images -> the mark OVERFITS and fails the held-out trigger
+            bank (weak; same flaw as trigger_only).
+          * full_trigger_class=True: train on ALL trigger-class images in the
+            shard, plus `n_common_samples` random non-trigger images. The mark is
+            embedded across the trigger-class distribution so it GENERALIZES to
+            held-out triggers (stronger evasion), and the common-class samples
+            keep the local update looking like balanced honest training and stop
+            the model collapsing toward the trigger class. The cost is real
+            training effort -> sweep (n_common_samples, local_epochs) vs evasion
+            (fr_BER < eta, recall) to trace the forgery COST curve: cheap evasion
+            => defense broken; near-honest cost to evade => defense holds.
+        """
         is_free_rider = True
         attack_name = "mixed"
 
-        def __init__(self, *a, n_trigger_samples: int = 8, blend: float = 0.5, **kw):
+        def __init__(self, *a, n_trigger_samples: int = 8, blend: float = 0.5,
+                     full_trigger_class: bool = False, n_common_samples: int = 0,
+                     **kw):
             super().__init__(*a, **kw)
             self.n_trigger_samples = n_trigger_samples
             self.blend = blend
+            self.full_trigger_class = full_trigger_class
+            self.n_common_samples = n_common_samples
 
         def _local_train_wm(self):
             import torch
             from torch.utils.data import DataLoader, TensorDataset
-            xs, ys = [], []
+            trig_x, trig_y = [], []        # trigger-class samples (the embed target)
+            comm_x, comm_y = [], []        # common-class samples (disguise + stability)
             for x, y in self.loader:
-                m = (y == self.trigger_class)
-                if m.any():
-                    xs.append(x[m]); ys.append(y[m])
-                if sum(len(t) for t in ys) >= self.n_trigger_samples:
-                    break
-            if xs:
-                x = torch.cat(xs)[: self.n_trigger_samples]
-                y = torch.cat(ys)[: self.n_trigger_samples]
-                self.loader = DataLoader(TensorDataset(x, y), batch_size=len(x))
+                tmask = (y == self.trigger_class)
+                if tmask.any():
+                    trig_x.append(x[tmask]); trig_y.append(y[tmask])
+                if self.full_trigger_class and self.n_common_samples > 0:
+                    omask = ~tmask
+                    if omask.any():
+                        comm_x.append(x[omask]); comm_y.append(y[omask])
+                if not self.full_trigger_class:
+                    # cheap mode: stop once we have the capped handful of triggers
+                    if sum(len(t) for t in trig_y) >= self.n_trigger_samples:
+                        break
+            if not trig_x:
+                return super()._local_train_wm()        # no triggers in shard; nothing to embed
+
+            tx, ty = torch.cat(trig_x), torch.cat(trig_y)
+            if not self.full_trigger_class:
+                tx, ty = tx[: self.n_trigger_samples], ty[: self.n_trigger_samples]
+                xs, ys = tx, ty
+            else:
+                # all trigger-class samples + a random slice of common-class samples
+                if comm_x and self.n_common_samples > 0:
+                    cx, cy = torch.cat(comm_x), torch.cat(comm_y)
+                    k = min(self.n_common_samples, len(cx))
+                    idx = torch.randperm(len(cx))[:k]
+                    xs = torch.cat([tx, cx[idx]]); ys = torch.cat([ty, cy[idx]])
+                else:
+                    xs, ys = tx, ty
+            bs = min(32, len(xs))                        # mini-batch (full-batch overfits)
+            self.loader = DataLoader(TensorDataset(xs, ys), batch_size=bs, shuffle=True)
             super()._local_train_wm()
 
         def produce_update(self, global_state, prev_global_state, round_idx):

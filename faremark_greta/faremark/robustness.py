@@ -1,11 +1,10 @@
 """
-TODO:
-Stage 4 (part 1): robustness of the watermark to removal attacks.
+Robustness of the watermark to removal attacks
 
-Paper §V-E + Tables VI and Figs. 9-10. After a watermark is embedded, an
-adversary (or ordinary model maintenance) may try to remove it. We test whether
+Paper section V-E + Tables VI and Figs. 9-10. After a watermark is embedded, an
+adversary (or ordinary model maintenance) may try to remove it. Test whether
 the watermark still extracts (BER stays low) after each operation, and report it
-alongside the task accuracy so the fidelity/robustness trade-off is visible.
+alongside the task accuracy so the fidelity/robustness trade-off is visible
 
   finetune()  -> Fig. 9  : retrain with lambda=0 (classification loss only).
                  Paper: "Fine-tuning is performed by setting lambda = 0 ...
@@ -71,7 +70,7 @@ def prune_model(model: nn.Module, amount: float) -> nn.Module:
 
 @torch.no_grad()
 def quantize(model: nn.Module, bits: int = 8) -> nn.Module:
-    """§V-E watermark-removal by quantization: round each weight tensor to `bits`
+    """section V-E watermark-removal by quantization: round each weight tensor to `bits`
     of precision (simulated, hardware-independent). Lower bits = coarser weights."""
     m = _clone(model)
     levels = 2 ** bits - 1
@@ -85,7 +84,7 @@ def quantize(model: nn.Module, bits: int = 8) -> nn.Module:
 
 @torch.no_grad()
 def dp_noise(state: dict, sigma: float, clip: float = 1.0) -> dict:
-    """Table VI: a differential-privacy-style perturbation (clip + Gaussian noise)
+    """section V-F Table VI: a differential-privacy-style perturbation (clip + Gaussian noise)
     applied to a model state_dict. The paper uses Opacus during training; this is
     a lightweight stand-in for reproducing the *trend* (watermark recovery drops
     as sigma rises) without the Opacus dependency. For a faithful Table VI, train

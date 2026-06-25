@@ -49,6 +49,10 @@ def parse_args():
     p.add_argument("--n_trigger_samples", type=int, default=None)
     p.add_argument("--honest_prob", type=float, default=None)
     p.add_argument("--blend", type=float, default=None)
+    p.add_argument("--full_trigger_class", action="store_true", default=None,
+                   help="mixed attack: train on ALL trigger-class samples (generalizing embed)")
+    p.add_argument("--n_common_samples", type=int, default=None,
+                   help="mixed attack: # random common-class samples added for disguise/stability")
     p.add_argument("--partition", type=str, default=None,
                    choices=["iid", "dirichlet", "noniid"])
     p.add_argument("--dirichlet_alpha", type=float, default=None)
@@ -110,6 +114,10 @@ def main():
         cfg.honest_prob = args.honest_prob
     if args.blend is not None:
         cfg.blend = args.blend
+    if args.full_trigger_class is not None:
+        cfg.full_trigger_class = args.full_trigger_class
+    if args.n_common_samples is not None:
+        cfg.n_common_samples = args.n_common_samples
     if args.partition is not None:
         cfg.partition = args.partition
     if args.dirichlet_alpha is not None:

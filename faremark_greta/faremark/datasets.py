@@ -73,7 +73,7 @@ def dirichlet_partition(labels, num_clients: int, alpha: float, seed: int) -> li
     For each class, draw a Dirichlet(alpha) vector over clients and hand out that
     class's samples in those proportions. Small alpha -> each client sees only a
     few classes (severe skew); large alpha -> approaches IID. alpha~=0.5 is the
-    common FL non-IID benchmark; alpha>=100 is effectively IID.
+    common FL non-IID benchmark; alpha>=100 is effectively IID
     """
     labels = np.asarray(labels)
     rng = np.random.default_rng(seed)

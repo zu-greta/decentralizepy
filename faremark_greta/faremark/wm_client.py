@@ -184,6 +184,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 cls = make_mixed_attack(WatermarkClient)
                 clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
                                    blend=getattr(cfg, "blend", 0.5),
+                                   full_trigger_class=getattr(cfg, "full_trigger_class", False),
+                                   n_common_samples=getattr(cfg, "n_common_samples", 0),
                                    **wm_args, **common))
             else:
                 cls = ATTACKS[attack]

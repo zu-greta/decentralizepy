@@ -48,6 +48,8 @@ class ExpConfig:
     n_trigger_samples: int = 8  # trigger_only / mixed: # trigger samples the FR uses (Table V)
     honest_prob: float = 0.5    # random_round: per-round prob the FR trains honestly
     blend: float = 0.5          # mixed: weight on the FR's own (lightly-trained) weights
+    full_trigger_class: bool = False  # mixed: train on ALL trigger-class samples (generalizing embed) vs capped n_trigger_samples
+    n_common_samples: int = 0   # mixed + full_trigger_class: # random common-class samples added (disguise + stability)
     partition: str = "iid"      # data split: 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5  # dirichlet skew; small=severe non-IID, large~=IID
 
