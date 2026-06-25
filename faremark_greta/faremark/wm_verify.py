@@ -26,6 +26,10 @@ class WatermarkRegistry:
 
     def __init__(self):
         self.entries: dict[int, dict] = {}
+        # filled in by build_watermarked_clients for self-documenting results:
+        self.m = None                 # number of watermark bits per client
+        self.l = None                 # group size (n//m or (n-1)//m)
+        self.unembeddable_frac = 0.0  # mean fraction of same-sign (stuck) key rows
 
     def register(self, cid, trigger_class, key, target_bits, kind="power",
                  alpha=0.4, exclude="trigger"):

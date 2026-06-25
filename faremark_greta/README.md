@@ -11,12 +11,17 @@ so the foundation is always verified before the next layer is added.
 | 1 | Honest FedAvg (no free-riders, no watermark) | **done** | Table I FedAvg accuracies |
 | 2 | Free-rider attacks (Eq. 17 prev-models, Eq. 18 Gaussian) | **done** | Fig. 7 accuracy-drop trend |
 | 3 | Watermarking scheme (Eq. 1–16) + memory update (Eq. 14) | **done** | benign BER≈0; Tables II, VII |
-| 4 | Free-rider detection + robustness | **in progress** | Tables III–VII, Figs. 8–10 |
+| 4 | Free-rider detection + robustness | **done** | Tables III–VII, Figs. 8–10 |
+| 5 | Limitations / attack study (non-IID, forgeability, bit-count, threshold) | **in progress** | separability figures |
 
-> **Stages 1–3 are complete and verified.** Stage 1 is plain federated learning,
-> Stage 2 adds the free-rider *attacks*, and Stage 3 adds the *watermark*: honest
-> clients embed it (benign bit-error-rate ≈ 0) and free-riders cannot reproduce
-> it (BER ≈ 0.5). Stage 4 turns that separation into a full detection sweep.
+> **Stages 1–4 are complete and verified.** Stage 1 is plain federated learning,
+> Stage 2 adds the free-rider *attacks*, Stage 3 adds the *watermark* (honest
+> clients embed it, benign BER ≈ 0; free-riders cannot, BER ≈ 0.5), and Stage 4
+> turns that separation into the full detection + robustness sweeps. **Stage 5**
+> is the current direction: the reproduction is now the validated baseline for an
+> attack/limitations paper that probes the regimes FareMark never tested —
+> non-IID data, a forging free-rider, low bit budgets, and threshold fragility.
+> See `PROJECT_PLAN.md` for that plan and `HYPERPARAMS.md` for every tunable knob.
 
 *Note*: FareMark is centralized FedAvg simulated on one GPU, plus a custom per-client
 loss, a memory-enhanced update, and server-side verification. 
@@ -43,17 +48,20 @@ decentralizepy/
     │   └── utils.py              # seeding, accuracy, logging
     ├── scripts/
     │   ├── run_experiment.py     # entry point: one (config, repeat) -> result.json
-    |   ├── run_robustness.py     # Stage 4 robustness sweeps (fine-tune, prune, DP)
+    |   ├── run_robustness.py     # Stage 4 robustness sweeps (fine-tune, prune, quantize)
+    │   ├── plot_results.py       # result.json -> BER trajectory, sweep, separability figures
     │   └── aggregate_results.py  # mean ± std over repeats (paper table format)
     ├── infra/
     │   ├── Dockerfile 
     │   ├── build.sh
     │   ├── requirements.txt
-    │   ├── submit_experiment.sh  # one RunAI job
+    │   ├── submit_experiment.sh  # one RunAI job (env-overridable: PARTITION, ATTACK, PAPER_FAITHFUL, …)
     │   ├── submit_sweep.sh       # config × repeats grid
     │   └── submit_fig7.sh        # free-rider-count sweep (Fig. 7)
     ├── FareMark.md               # paper deep-dive
     ├── DOCUMENTATION.md          # code walkthrough
+    ├── PROJECT_PLAN.md           # limitations/attack-paper plan (Stage 5)
+    ├── HYPERPARAMS.md            # every tunable knob: flag, env var, effect
     ├── GRETA.md                  # project plan + notes
     └── README.md
 ```
@@ -87,16 +95,30 @@ few epochs of local SGD on *its own shard only*, and returns the weights plus it
 sample count. The data isolation (a client can only see its own loader) is what
 makes this federated learning rather than centralized training.
 
-### [`faremark/attacks.py`](faremark/attacks.py) — Stage 2 free-riders
-Free-riders subclass `Client` and override only `produce_update` — no training
-happens, but they still report a normal sample count so they blend into the
-average. Maps to paper §V-A2:
+### [`faremark/attacks.py`](faremark/attacks.py) — free-riders
+Free-riders subclass `Client` and override only `produce_update` — no real
+training happens, but they still report a normal sample count so they blend into
+the average. The two paper attacks (paper §V-A2):
 - `PreviousModelsFreeRider` (**Eq. 17**): `W_free = 2·W_t − W_{t-1}` —
   extrapolate from the last two globals to mimic continued progress.
 - `GaussianNoiseFreeRider` (**Eq. 18**): `W_free = W_t + N(0, σ²)`, optional
   per-round decay `σ_t = σ₀ · t^(-γ)`.
-- `build_clients(cfg, ...)` — factory that returns a mix of honest + free-rider
-  clients and the chosen free-rider indices (deterministic given the seed).
+
+Plus the **adaptive / watermark-aware** free-riders (factories that wrap a
+`WatermarkClient` so the attacker can train a little before defecting). These
+drive the limitations study:
+- `train_then_attack` (**Table IV**): trains honestly until `attack_round`, then
+  free-rides. Detectable unless it trained long enough for the mark to persist.
+- `trigger_only` (**Table V**): trains on only `n_trigger_samples` trigger images
+  → the mark overfits and fails on the held-out trigger bank.
+- `random_round`: trains honestly each round with prob `honest_prob`, free-rides
+  otherwise (sporadic-honesty evasion).
+- `mixed`: the **forgery adversary** — a minimal trigger-only embed blended into a
+  mostly-replayed global (`blend·own + (1−blend)·extrapolated`). The cheapest way
+  to push free-rider BER toward the honest cluster.
+
+`build_clients` / `build_watermarked_clients` return a mix of honest + free-rider
+clients and the chosen indices (deterministic given the seed).
 
 ### [`faremark/watermark.py`](faremark/watermark.py) — Stage 3 core math
 The box-free, output-space watermark (paper §IV-A). A client's m-bit message is
@@ -131,6 +153,17 @@ every client's watermark from the submitted model, computes BER, and flags a
 free-rider when `BER ≥ η`. It reports benign BER, free-rider BER, detection
 accuracy and false-positive rate (**Eq. 15–16**; the mechanism behind Tables II–V).
 
+Two **mode toggles** let you run either our robust detector or the bare paper
+algorithm (both default off, so existing runs are unchanged):
+- `paper_faithful` — strips our three deviations at once: random (not
+  sign-balanced) keys, **no** trigger-class exclusion (full softmax), and a
+  **cumulative uncapped** `μ+3σ` threshold (no sliding window, no 0.25 cap). Use
+  with a high-class dataset (CIFAR-100) so the full-softmax projection is
+  embeddable. This answers "is a weakness real or an artifact of my changes?"
+- `calib_on_all` — calibrate `η` over **every** client instead of the assumed
+  honest pool, exposing the paper's circularity: free-rider BER ≈ 0.5 poisons
+  `μ+3σ`. Off = the paper's trusted-pool assumption.
+
 ### [`faremark/models.py`](faremark/models.py) — model zoo
 `ResNet18`, `AlexNetSmall`, `SmallCNN` (the last for fast smoke tests). Both real
 models are adapted for small (28×28 / 32×32) inputs. The ResNet stem is the
@@ -138,11 +171,13 @@ standard "CIFAR ResNet" fix (3×3 stride-1 conv, drop the max-pool); without it
 the feature maps collapse and accuracy stalls. Add ShuffleNet/GoogLeNet here via
 `build_model`. Maps to paper §V-A.
 
-### [`faremark/datasets.py`](faremark/datasets.py) — data & IID partition
-Loads MNIST / CIFAR-10 / CIFAR-100 and splits the training set **evenly across
-clients** (IID), matching the paper. `iid_partition` shuffles indices and gives
-each client a near-equal shard; a `partition` argument is left in place so a
-non-IID (Dirichlet) split can be added later without changing call sites.
+### [`faremark/datasets.py`](faremark/datasets.py) — data & partitioning
+Loads MNIST / CIFAR-10 / CIFAR-100 and splits the training set across clients.
+Two partition modes (`partition=` argument): **IID** (`iid_partition`, the
+paper's even split) and **non-IID** (`dirichlet_partition`, a label-skewed split
+we added for the limitations study). See **Dataset & data partitioning** below
+for the full breakdown of what is split, what is held out, and how IID and
+non-IID differ.
 
 ### [`faremark/config.py`](faremark/config.py) — experiment registry
 Maps `config_idx → ExpConfig` (model, dataset, #clients, rounds, lr, …, and
@@ -171,8 +206,106 @@ launch grids.
 
 ---
 
-## Running experiments
+## Dataset & data partitioning
 
+This section explains exactly what data exists, how it is divided among clients,
+and what is used for training versus verification versus testing. All of it lives
+in [`faremark/datasets.py`](faremark/datasets.py).
+
+### The three datasets
+
+| Dataset | Classes (`n`) | Train images | Test images | Image | Default clients |
+|---|---|---|---|---|---|
+| MNIST | 10 | 60,000 | 10,000 | 1×28×28 grayscale | 10 |
+| CIFAR-10 | 10 | 50,000 | 10,000 | 3×32×32 colour | 10 |
+| CIFAR-100 | 100 | 50,000 | 10,000 | 3×32×32 colour | 10 (or 100) |
+
+The class count `n` matters beyond accuracy: it sets the **watermark bit budget**
+(`m ≈ (n−1)/2` under our embeddability assumptions), so CIFAR-10 carries ~4 bits
+and CIFAR-100 ~49. That is why detectability differs by dataset even for the same
+attacker (see the bit-count experiments).
+
+### What gets split, and what does not
+
+Only the **training set** is partitioned across clients — each client trains on
+its own shard and nothing else (this data isolation is what makes the simulation
+*federated* rather than centralized). Two things are **never** partitioned and
+are shared/global:
+
+- **Test set** — the full held-out test split is kept whole and used only by the
+  server to evaluate the *global* model's accuracy each round (`Server._evaluate`).
+  No client trains on it.
+- **Trigger bank** — for watermark verification the server samples up to `N_T`
+  images **per trigger class from the test set** (`build_trigger_bank`, default
+  `wm_num_triggers=50`). These are the held-out trigger samples the server queries
+  to extract each client's watermark. Using *test* images here is deliberate: it
+  means verification checks whether the watermark **generalizes** to images the
+  client never trained on — which is what makes the trigger-only forgery fail.
+
+So the data has three non-overlapping roles: client shards (training), the trigger
+bank (verification, drawn from test), and the test set (global accuracy).
+
+### Transforms
+
+Standard per-dataset normalization; CIFAR train shards additionally get random
+crop (32, padding 4) + horizontal flip for augmentation. Test/trigger images get
+normalization only — no augmentation — so verification and accuracy are measured
+on clean images.
+
+### IID partition (the paper's setting)
+
+`iid_partition(num_samples, num_clients, seed)`: shuffle **all** training indices
+and cut them into `num_clients` near-equal shards. Every client therefore sees an
+i.i.d. sample of the full distribution — roughly equal counts of every class.
+Consequences that the watermark relies on:
+
+- Every client's **trigger class is well represented in its own shard**, so it has
+  plenty of trigger-class images to embed its watermark on → honest BER → ~0.
+- Class balance is uniform across clients, so the FedAvg average is the simple
+  mean the paper assumes, and the benign BER distribution is tight → the
+  `η = μ+3σ` threshold sits low and separates cleanly.
+
+This is the **only** regime the paper tests ("the training dataset was divided
+evenly among the clients").
+
+### Non-IID partition (our addition for the limitations study)
+
+`dirichlet_partition(labels, num_clients, alpha, seed)` implements the standard
+label-skew benchmark (Hsu et al. 2019). For **each class**, it draws a
+`Dirichlet(α)` vector over clients and hands out that class's images in those
+proportions. The single knob `α` controls severity:
+
+| `α` | Effect on each client's data | Effect on the watermark |
+|---|---|---|
+| ≥ 100 | ≈ IID (near-uniform class mix) | honest BER ≈ 0, behaves like the paper |
+| 1.0 | mild skew | some clients short on their trigger class → honest BER rises |
+| 0.5 | strong skew | benign BER and false positives climb |
+| 0.1 | severe — each client sees only a few classes | a client may hold **almost none of its own trigger class** → it cannot embed → its honest BER → ~0.5 |
+
+The failure mechanism is direct: a client can only embed its watermark on
+*trigger-class* images, but under heavy skew its shard may contain very few (or
+zero) of them. It then looks identical to a free-rider to the verifier — honest
+BER rises into the free-rider band, false positives climb, and `η` can no longer
+separate the two populations. This happens **with no free-riders present at all**,
+which is why non-IID is the cleanest limitation: the scheme misclassifies genuine
+contributors purely because of how their data is distributed.
+
+### How to select each mode
+
+```bash
+# IID (default) — paper setting
+./submit_experiment.sh 12 0
+
+# non-IID, severe skew
+PARTITION=dirichlet DIRICHLET_ALPHA=0.1 ./submit_experiment.sh 12 0
+```
+
+or on the CLI: `--partition dirichlet --dirichlet_alpha 0.1`. Both modes share
+the same call site, so every experiment can be run either way without code
+changes. The split is deterministic given the seed, so a `(config, repeat,
+partition, α)` combination is reproducible.
+
+---
 ### Configs
 
 ```bash
@@ -194,6 +327,7 @@ python scripts/run_experiment.py --list_configs
 | 10 | wm_smoke_mnist | SmallCNN / MNIST | 10 | Stage-3 fast embed+extract |
 | 11 | wm_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | **fidelity vs baseline (Table I "Ours")** |
 | 12 | wm_fr_resnet18_cifar10 | ResNet-18 / CIFAR-10 | 10 | watermark + free-riders → detection |
+| 13 | paper_faithful_resnet18_cifar100 | ResNet-18 / CIFAR-100 | 10 | **bare paper algorithm** (random keys, full softmax, uncapped μ+3σ); many bits, no bit-count artifact |
 
 ### Locally
 
@@ -365,6 +499,43 @@ Robustness (Figs. 9–10, Table VI). Run `scripts/run_robustness.py --config_idx
 ./reproduce_paper.sh robustness   # prints the run_robustness.py commands
 ./reproduce_paper.sh all          # everything
 ```
+
+---
+
+### Stage 5 — limitations / attack study
+
+The reproduction above is the validated baseline. Stage 5 probes the regimes the
+paper never tested. Each experiment emits a graph via `plot_results.py` (per-run
+BER trajectory + global accuracy, a swept-variable summary, and the thesis
+**separability** figure). Full plan in `PROJECT_PLAN.md`; every knob in
+`HYPERPARAMS.md`.
+
+```bash
+# non-IID false positives (all honest, watermarked) — the cleanest limitation
+for A in 100 1 0.5 0.1; do
+  PARTITION=dirichlet DIRICHLET_ALPHA=$A NUM_FREE_RIDERS=0 TAG=noniida${A/./} \
+    ./submit_experiment.sh 12 0
+done
+
+# forgeability — the mixed (forging) free-rider on CIFAR-10
+for B in 0.3 0.5 0.7; do ATTACK=mixed BLEND=$B TAG=mixb${B/./} ./submit_experiment.sh 12 0; done
+
+# bare paper algorithm + threshold poisoning (CIFAR-100, many bits)
+PAPER_FAITHFUL=1 TAG=pfiid ./submit_experiment.sh 13 0
+PAPER_FAITHFUL=1 CALIB_ON_ALL=1 TAG=pfpoison ./submit_experiment.sh 13 0
+
+# figures (on the jumphost, where the PVC is mounted)
+python scripts/plot_results.py --in $RESULTS/cfg12_rep0-fr0-noniida* --out figs/noniid
+python scripts/plot_results.py --in $RESULTS/cfg12_rep0-mixb*        --out figs/forgeability
+```
+
+The four limitation pillars and what to expect: **non-IID** (FPR climbs 0→1.0 as
+α shrinks, with zero free-riders), **forgeability** (mixed-attack free-rider BER
+falls toward the honest cluster as blend/`n_trigger_samples` rise), **bit-count**
+(CIFAR-10's ~4 bits overlap where CIFAR-100's ~49 separate), and **threshold
+fragility** (heavy free-riding or `calib_on_all` poisons `μ+3σ`). Read each
+figure's printed `margin = ±…`: negative means the honest and free-rider
+distributions overlap and no `η` separates them — the impossibility result.
 
 ---
 

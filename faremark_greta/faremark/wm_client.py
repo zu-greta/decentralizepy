@@ -121,9 +121,17 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     from .attacks import (choose_free_riders, ATTACKS, GaussianNoiseFreeRider)
 
     pf = getattr(cfg, "paper_faithful", False)
+    # Paper-faithful target group size. The paper draws M at random AND relies on
+    # a group size l large enough that a random +/-1 row is almost surely
+    # mixed-sign (embeddable). Defaulting to the MAX bit count (m=(n-1)//2 -> l=2)
+    # would make ~half the rows same-sign and structurally unembeddable, flooring
+    # honest BER near 0.25 -- an artifact of the bit-count choice, not the scheme.
+    # So in paper-faithful mode the bit count DEFAULTS to a faithful l~PF_GROUP;
+    # the max-payload stress case is an explicit opt-in via wm_bits (e.g. 49).
+    PF_GROUP = 10
     if pf:
         # paper-exact: full softmax (no trigger-class exclusion), random keys
-        m = cfg.wm_bits or (num_classes - 1) // 2
+        m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
         l = wm.grouping(num_classes, m)                # uses all n classes
         exclude_col = None
     else:
@@ -135,9 +143,11 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     attack = getattr(cfg, "attack", "none")
 
     clients = []
+    unembed = []
     for cid, loader in enumerate(client_loaders):
         trigger_class = cid % num_classes
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=not pf)
+        unembed.append(wm.unembeddable_fraction(key))
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1)
         reg_exclude = None if pf else trigger_class
         registry.register(cid, trigger_class, key, bits,
@@ -189,4 +199,15 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
                 exclude=exclude_col, **common))
+    # record embeddability diagnostics so a honest-BER floor is self-explaining
+    frac = sum(unembed) / len(unembed) if unembed else 0.0
+    registry.m, registry.l = m, l
+    registry.unembeddable_frac = round(frac, 4)
+    if frac > 0.10:
+        import warnings
+        warnings.warn(
+            f"[watermark] {frac:.0%} of key rows are same-sign and structurally "
+            f"unembeddable (m={m}, l={l}); honest BER will floor near "
+            f"{0.5 * frac:.2f}. Use a larger group size (smaller wm_bits) or "
+            f"balanced keys (non-paper-faithful) if this is unintended.")
     return clients, sorted(fr_idx)

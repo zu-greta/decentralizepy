@@ -102,6 +102,21 @@ def make_key(num_bits: int, group_size: int, seed: int,
     return torch.stack(rows)
 
 
+def unembeddable_fraction(key: torch.Tensor) -> float:
+    """Fraction of key rows that are same-sign (all +1 or all -1).
+
+    A same-sign row forces z_k = sum_j f(p_j) M_{k,j} to a fixed sign for EVERY
+    input (because f(p) >= 0), so that bit cannot be embedded -- it sits at ~50%
+    error against a balanced target, independent of training. This is structural.
+    With balanced=True it is 0 by construction. With random keys it grows as the
+    group size l shrinks: P(a row is same-sign) = 2^(1-l), so l=2 -> 0.5, l=3 ->
+    0.25, l>=6 -> negligible. Use this to attribute an honest-BER floor: a floor
+    near 0.5 * unembeddable_fraction is the same-sign artifact, not data effects.
+    """
+    same = ((key > 0).all(dim=1) | (key < 0).all(dim=1)).float().mean().item()
+    return same
+
+
 def make_bits(num_bits: int, seed: int) -> torch.Tensor:
     """Target watermark B^i in {0,1}^m, sign-balanced (equal 0s and 1s, shuffled).
 

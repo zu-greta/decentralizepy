@@ -169,7 +169,8 @@ def main():
             cfg, data.client_loaders, model, device, seed,
             data.num_classes, registry)
         logger.info(f"watermark ON: {len(registry)} clients registered, "
-                    f"m={cfg.wm_bits or (data.num_classes - 1)//2} bits, "
+                    f"m={registry.m} bits, l={registry.l}, "
+                    f"unembeddable={registry.unembeddable_frac:.2f}, "
                     f"lambda={cfg.wm_lambda}, beta={cfg.wm_beta}")
         if free_rider_indices:
             logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
@@ -227,6 +228,10 @@ def main():
                 # Eq. 16). NOT the cumulative mu+3sigma, which a transient model
                 # collapse can poison
                 "wm_eta_used": _avg("wm_eta_round"),
+                # embeddability diagnostics (explain any honest-BER floor):
+                "wm_bits_m": registry.m,
+                "wm_group_size_l": registry.l,
+                "wm_unembeddable_frac": registry.unembeddable_frac,
             }
 
     result = {
