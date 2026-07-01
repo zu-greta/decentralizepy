@@ -75,6 +75,28 @@ To contribute effectively to this project, we highly value:
 - TODO: test on non-iid
 - NOTE: more graphs and plots for the results and experiments
 - reputation system for claculting threshold ? dynamic for rounds
+- IDEA: plotting attack effort vs detection accuracy - worth the effort or not. how to measure this?
+    - num samples, compute it takes
+
+- QUESTION: what is the clear goal - proving paper has weakness/limitation ? or that paper's definition of effort vs. free-riding is too low for worth ? the paper seems to assume a lot of things - brushing the rest aside as too high effort to be worth free riding - can we challenge that ?
+    - ANSWER: yes, we start with challenging paper's assumptions by building an attack that is low effort and but can break through the watermarking detection. explore different attacks and measure the effort vs. detection accuracy. the global goal is to prove thoretically that it is impossible to have watermarking robust in the output layer. 
+- QUESTION: non-iid tested in paper ? + data partition the paper does for when too many clients vs clasess - they claim it still works fine
+    - non-iid would be weak - maybe even with their current weaker free-rider attacks
+- QUESTION: what metric to measure success is prefered? 
+    - BER works
+- QUESTION: exploring multiple attacks? exploring reputation system? exploring collusion?
+    - explore a few, find the lowest effort ones that work
+- QUESTION: are we following the paper's assumption for data partitioning? or real FL for data privacy?
+    - server has everything but not clients. keep this assumption for now
+
+current attacks:
+- collusion
+- threshold weakness - circulatrity on "trusted"
+- memory-enhanced beta - global ??? no explanations on tuning
+- non-iid missing 
+- data paritioning weakness
+- attack timing - train-then-attack and trigger-sample-only
+    - detection functino, watermark hgih - vs num samples used (num queries)
 
 ---
 ---
@@ -84,7 +106,6 @@ To contribute effectively to this project, we highly value:
     - FareMark reproduction code and my own implementation of the paper can be found under the `faremark_greta` folder. The code is structured in stages and each stage has a correctness gate to ensure that the foundation is sound before building on it. The code is modular and can be ported into decentralizepy later if we need genuinely distributed runs.
 - [original-code](https://github.com/sacs-epfl/decentralizepy) - original code from the SaCS lab for decentralized federated learning
 
-- TODO add instructions for usage and documentation for the code in the readme of the forked repo
 
 Structure: TODO
 ```

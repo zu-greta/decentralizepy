@@ -114,7 +114,8 @@ def plot_trajectory(run, outdir):
 
 
 # ---- 2. swept-variable summary --------------------------------------------
-SWEEP_KEYS = ["num_free_riders", "n_trigger_samples", "attack_round"]
+SWEEP_KEYS = ["num_free_riders", "n_trigger_samples", "attack_round", "honest_prob", "blend", "n_common_samples"
+              "dirichlet_alpha", "local_epochs", "noise_sigma"]
 
 
 def detect_sweep_key(runs):

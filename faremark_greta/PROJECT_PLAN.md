@@ -70,12 +70,11 @@ fraction of recovered bits that disagree with the registered bits:
 (1/m) · Σ_k | b̂_k − b_k |  < η          (paper Eq. 16, left-hand side)
 ```
 
-We call this left-hand side the **bit-error-rate (BER)**. The paper never uses
-that term; the only place it names the quantity at all is the sentence after
+Refer to the left-hand side as the **bit-error-rate (BER)**. In the paper:
 Eq. 16 ("typical error rate for legitimate clients ... η = μ + 3σ"). Everywhere
 else it reports the **complement**:
 
-| our term | paper's term | where |
+| used term | paper's term | where |
 |---|---|---|
 | BER = (1/m)Σ\|b̂−b\| | (unnamed) Eq. 16 error rate | Eq. 16 |
 | 1 − BER ("watermark accuracy") | "watermark detection rate" / `Acc_wm` | Fig. 8, Tables II, VII |
@@ -87,11 +86,11 @@ else it reports the **complement**:
 - Free-rider (fabricated its update) → each bit is a coin-flip vs the secret
   target → on average half wrong → **BER ≈ 0.5** (paper: rate < ~40%, Fig. 8).
 
-So BER is the single scalar that says "is the watermark present in this model?"
-0 = present (contributor), 0.5 = absent (free-rider). In a writeup, introduce it
-once as "we refer to the Eq. 16 error rate as the BER," then use it freely.
+BER is the single scalar that says "is the watermark present in this model?"
+0 = present (contributor), 0.5 = absent (free-rider). 
+"we refer to the Eq. 16 error rate as the BER" 
 
-**Watermark accuracy.** `1 − BER`, as a percentage — this *is* the paper's
+**Watermark accuracy.** `1 − BER`, as a percentage — this is the paper's
 "watermark detection rate" / `Acc_wm` (a recovered watermark ≈ 100%).
 
 **Which metric, and why FareMark uses BER (not trigger accuracy).** Two metric
@@ -117,8 +116,8 @@ but two things must be stated correctly for FareMark:
   trigger-prediction error rate in FareMark's verification — measuring one would
   just be measuring main-task accuracy.
 
-**Terminology collision to avoid.** FareMark *does* report a "task accuracy,"
-but that is the **fidelity** metric (main-task classification over the whole
+**Terminology collision to avoid:** FareMark reports a "task accuracy,"
+but that is the fidelity metric (main-task classification over the whole
 test set, Table I) — a separate axis from watermark BER. Never let "trigger
 accuracy" (a backdoor metric absent here) blur into either FareMark's BER or its
 fidelity accuracy.
@@ -139,13 +138,13 @@ separable; ≤ 0 = overlap = impossible.
 
 ---
 
-## 3. How the paper evaluates (all via the Eq. 16 error rate = our BER)
+## 3. How the paper evaluates (all via the Eq. 16 error rate = BER)
 
-The Eq. 16 error rate — which we call BER, and which the paper reports as its
+The Eq. 16 error rate — refered to as BER, and which the paper reports as its
 complement `1 − BER` ("watermark detection rate" / `Acc_wm`) — is the
 measurement behind almost every table:
 
-| Paper section | What is measured (in the paper's words) | = in our BER terms | Pass condition |
+| Paper section | What is measured (in the paper's words) | = BER terms | Pass condition |
 |---|---|---|---|
 | **Fidelity** (Tables II, VII) | watermark detection rate `Acc_wm` after embedding | `1 − BER` | `Acc_wm ≈ 100%` while task accuracy stays near baseline |
 | **Free-rider detection** (Tables III–V, Fig. 8) | `Acc_fr`, FPR via the Eq. 16 threshold | benign BER ≈ 0, free-rider BER ≈ 0.5, high `Acc_fr` | clean separation by η |
@@ -195,7 +194,7 @@ not a reproduction question.
 3. **Threshold fragility.** `μ+3σ` degenerates exactly under heavy free-riding,
    when honest BER spikes — the regime it is meant for.
 4. **Non-IID false positives.** Skewed data → some honest clients can't embed →
-   their BER rises → they get misflagged. (The paper never tests non-IID — see §5b.)
+   their BER rises → they get misflagged. (The paper never tests non-IID — see section 5b.)
 
 ---
 
