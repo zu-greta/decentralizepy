@@ -13,6 +13,7 @@ import torch.nn.functional as F
 
 from .client import Client, _to_cpu_state
 from . import watermark as wm
+from .compute_meter import ComputeMeter
 
 
 class WatermarkClient(Client):
@@ -46,11 +47,14 @@ class WatermarkClient(Client):
         # sentinel "trigger" -> use trigger_class; explicit None -> paper-faithful.
         self.exclude = trigger_class if exclude == "trigger" else exclude
         self.memory: dict | None = None      # client's persistent local model
+        self.meter = ComputeMeter()          # per-client compute accounting
 
     # ---- the seam ----------------------------------------------------------
     def produce_update(self, global_state: dict, prev_global_state, round_idx):
         self.model.load_state_dict(global_state)
+        self.meter.start_round(round_idx)
         self._local_train_wm()
+        self.meter.end_round(trained=True)
         w_sgd = _to_cpu_state(self.model)
         w_new = self._memory_update(global_state, w_sgd)
         return w_new, self.num_samples
@@ -68,7 +72,7 @@ class WatermarkClient(Client):
                 opt.zero_grad()
                 logits = self.model(x)
                 # keep the softmax tail movable so bits can be shaped
-                loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing) 
+                loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing)
                 tmask = (y == self.trigger_class)            # trigger samples only
                 if tmask.any():
                     probs = F.softmax(logits[tmask], dim=1)
@@ -77,6 +81,10 @@ class WatermarkClient(Client):
                         exclude=self.exclude)
                 loss.backward()
                 opt.step()
+                # meter this batch (guard so the method also works if called
+                # outside a metered round, e.g. unit tests)
+                if self.meter is not None and self.meter._cur is not None:
+                    self.meter.record_batch(len(x))
 
     # ---- memory-enhanced update (Eq. 14) -----------------------------------
     def _memory_update(self, global_state: dict, w_sgd: dict) -> dict:
@@ -90,7 +98,7 @@ class WatermarkClient(Client):
         recovers plain FedAvg local training; higher beta preserves the
         watermark more strongly (at some cost to convergence speed)
 
-        NOTE: (claude interpretation) Eq. 14's notation in the paper is ambiguous 
+        NOTE: (claude interpretation) Eq. 14's notation in the paper is ambiguous
         Non-float buffers (e.g. BatchNorm counts)
         are taken from the freshly trained model rather than blended
         """
@@ -101,7 +109,7 @@ class WatermarkClient(Client):
         for k, vg in global_state.items():
             if torch.is_floating_point(vg):
                 delta = w_sgd[k] - vg # this round's local SGD step (Eq. 14's "delta")
-                # blend memory with global 
+                # blend memory with global
                 w_new[k] = beta * (self.memory[k] + delta) + (1.0 - beta) * vg
             else:
                 w_new[k] = w_sgd[k].clone()
@@ -161,7 +169,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing)
-            # TODO support watermarking aware free-riders
+            # NOTE: adaptive attackers subclass WatermarkClient so they hold their
+            # own key (same info as an honest client) and are compute-metered.
             if attack == "train_then_attack":
                 # Table IV: trains (and embeds) until attack_round, then defects.
                 from .attacks import make_train_then_attack
@@ -187,6 +196,27 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                                    full_trigger_class=getattr(cfg, "full_trigger_class", False),
                                    n_common_samples=getattr(cfg, "n_common_samples", 0),
                                    **wm_args, **common))
+            elif attack == "submarine":
+                # adaptive threshold-tracking free-rider (cheap, robust evasion)
+                from .attacks_adaptive import make_submarine_attack
+                cls = make_submarine_attack(WatermarkClient)
+                clients.append(cls(
+                    sub_margin=getattr(cfg, "sub_margin", 0.03),
+                    sub_floor=getattr(cfg, "sub_floor", 0.05),
+                    sub_eta_mode=getattr(cfg, "sub_eta_mode", "adaptive"),
+                    sub_eta_fixed=getattr(cfg, "sub_eta_fixed", cfg.wm_eta),
+                    sub_max_burst_batches=getattr(cfg, "sub_max_burst_batches", 40),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 5),
+                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.3),
+                    **wm_args, **common))
+            elif attack == "memory_exploit":
+                # train once (or `warmup_rounds`), then replay frozen mark forever
+                from .attacks_adaptive import make_memory_exploit_attack
+                cls = make_memory_exploit_attack(WatermarkClient)
+                clients.append(cls(
+                    warmup_rounds=getattr(cfg, "warmup_rounds", 1),
+                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.0),
+                    **wm_args, **common))
             else:
                 cls = ATTACKS[attack]
                 if cls is GaussianNoiseFreeRider:

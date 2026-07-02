@@ -8,6 +8,13 @@ Usage:
 
 It runs one (config, repeat), writes result.json to --output_dir, and prints a
 PASS/FAIL correctness verdict against the expected accuracy band in config.py
+
+result.json also carries:
+  * "manifest": self-describing run metadata (family/hypothesis/sweep var+level
+    + a per-metric interpretation key) so runs are readable months later.
+  * "compute": per-client + summarized training effort (GPU-ms, samples, FLOPs,
+    duty cycle) so attacker effort vs honest effort is quantifiable. Adaptive
+    attackers also carry a per-round "trace" (tap/coast decisions).
 """
 import argparse
 import json
@@ -29,6 +36,8 @@ from faremark.attacks import build_clients
 from faremark.server import Server
 from faremark.wm_client import build_watermarked_clients
 from faremark.wm_verify import WatermarkRegistry, build_trigger_bank, make_verifier
+from faremark.compute_meter import estimate_flops_per_sample_fwd
+from faremark.manifest import build_manifest
 
 
 def parse_args():
@@ -39,7 +48,7 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--data_root", type=str, default=None)
     p.add_argument("--num_workers", type=int, default=2)
-    # Optional overrides 
+    # Optional overrides
     p.add_argument("--rounds", type=int, default=None)
     p.add_argument("--model", type=str, default=None)
     p.add_argument("--dataset", type=str, default=None)
@@ -63,10 +72,21 @@ def parse_args():
     p.add_argument("--attack", type=str, default=None,
                    choices=["none", "previous_models", "gaussian",
                             "train_then_attack", "trigger_only",
-                            "random_round", "mixed"])
+                            "random_round", "mixed",
+                            "submarine", "memory_exploit"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
+    # Adaptive-attack overrides (submarine / memory_exploit)
+    p.add_argument("--sub_margin", type=float, default=None)
+    p.add_argument("--sub_floor", type=float, default=None)
+    p.add_argument("--sub_eta_mode", type=str, default=None,
+                   choices=["adaptive", "fixed"])
+    p.add_argument("--sub_eta_fixed", type=float, default=None)
+    p.add_argument("--sub_max_burst_batches", type=int, default=None)
+    p.add_argument("--sub_probe_every", type=int, default=None)
+    p.add_argument("--warmup_rounds", type=int, default=None)
+    p.add_argument("--mem_blend_global", type=float, default=None)
     # Watermarking overrides
     p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
@@ -80,8 +100,65 @@ def parse_args():
                    action="store_true", default=None,
                    help="calibrate eta over ALL clients (free-riders poison it) "
                         "instead of the assumed trusted benign pool")
+    # Manifest (self-describing run metadata; descriptive only)
+    p.add_argument("--manifest_family", type=str, default=None,
+                   help="experiment family, e.g. 'A7_submarine' (see EXPERIMENTS.md)")
+    p.add_argument("--manifest_note", type=str, default=None,
+                   help="one-line hypothesis for this run")
+    p.add_argument("--sweep_var", type=str, default=None,
+                   help="config field being swept, e.g. 'mem_blend_global'")
+    p.add_argument("--sweep_level", type=str, default=None,
+                   help="this run's level of sweep_var (inferred from cfg if omitted)")
     p.add_argument("--list_configs", action="store_true")
     return p.parse_args()
+
+
+_OVERRIDABLE = [
+    "model", "dataset", "wm_num_triggers", "wm_bits", "attack_round",
+    "n_trigger_samples", "honest_prob", "blend", "full_trigger_class",
+    "n_common_samples", "partition", "dirichlet_alpha", "rounds", "local_epochs",
+    "batch_size", "lr", "attack", "num_free_riders", "noise_sigma", "noise_decay",
+    "sub_margin", "sub_floor", "sub_eta_mode", "sub_eta_fixed",
+    "sub_max_burst_batches", "sub_probe_every", "warmup_rounds", "mem_blend_global",
+    "watermark", "wm_lambda", "wm_beta", "paper_faithful", "calib_on_all",
+]
+
+
+def collect_compute(clients, free_rider_indices):
+    """Per-client + summarized training effort. Base free-riders that never train
+    (previous_models/gaussian) have no meter -> reported as zero compute."""
+    fr_set = set(free_rider_indices)
+    zero_total = {"samples": 0, "fwd_passes": 0, "bwd_passes": 0, "opt_steps": 0,
+                  "gpu_ms": 0.0, "wall_ms": 0.0, "flops": 0.0,
+                  "rounds_trained": 0, "rounds_total": 0, "duty_cycle": 0.0}
+    per_client, honest_gpu, fr_gpu, honest_s, fr_s = {}, [], [], [], []
+    for cid, c in enumerate(clients):
+        meter = getattr(c, "meter", None)
+        atk = getattr(c, "attack_name", "honest")
+        isfr = cid in fr_set
+        if meter is not None:
+            s = meter.summary(attack_name=atk, is_free_rider=isfr)
+        else:
+            s = {"attack_name": atk, "is_free_rider": isfr,
+                 "total": dict(zero_total), "per_round": {}}
+        if getattr(c, "trace", None):
+            s["trace"] = c.trace
+        per_client[cid] = s
+        tot = s["total"]
+        (fr_gpu if isfr else honest_gpu).append(tot["gpu_ms"])
+        (fr_s if isfr else honest_s).append(tot["samples"])
+
+    def _mean(v):
+        return round(sum(v) / len(v), 3) if v else 0.0
+
+    hm_gpu, fm_gpu, hm_s, fm_s = _mean(honest_gpu), _mean(fr_gpu), _mean(honest_s), _mean(fr_s)
+    summary = {
+        "honest_mean_gpu_ms": hm_gpu, "fr_mean_gpu_ms": fm_gpu,
+        "honest_mean_samples": hm_s, "fr_mean_samples": fm_s,
+        "effort_ratio_gpu": round(fm_gpu / hm_gpu, 4) if hm_gpu else None,
+        "effort_ratio_samples": round(fm_s / hm_s, 4) if hm_s else None,
+    }
+    return {"summary": summary, "per_client": per_client}
 
 
 def main():
@@ -97,57 +174,10 @@ def main():
         sys.exit(f"error: missing required args: {', '.join('--' + m for m in missing)}")
 
     cfg = get_config(args.config_idx)
-    # apply overrides from command line args (if not None)
-    if args.model is not None:
-        cfg.model = args.model
-    if args.dataset is not None:
-        cfg.dataset = args.dataset
-    if args.wm_num_triggers is not None:
-        cfg.wm_num_triggers = args.wm_num_triggers
-    if args.wm_bits is not None:
-        cfg.wm_bits = args.wm_bits
-    if args.attack_round is not None:
-        cfg.attack_round = args.attack_round
-    if args.n_trigger_samples is not None:
-        cfg.n_trigger_samples = args.n_trigger_samples
-    if args.honest_prob is not None:
-        cfg.honest_prob = args.honest_prob
-    if args.blend is not None:
-        cfg.blend = args.blend
-    if args.full_trigger_class is not None:
-        cfg.full_trigger_class = args.full_trigger_class
-    if args.n_common_samples is not None:
-        cfg.n_common_samples = args.n_common_samples
-    if args.partition is not None:
-        cfg.partition = args.partition
-    if args.dirichlet_alpha is not None:
-        cfg.dirichlet_alpha = args.dirichlet_alpha
-    if args.rounds is not None:
-        cfg.rounds = args.rounds
-    if args.local_epochs is not None:
-        cfg.local_epochs = args.local_epochs
-    if args.batch_size is not None:
-        cfg.batch_size = args.batch_size
-    if args.lr is not None:
-        cfg.lr = args.lr
-    if args.attack is not None:
-        cfg.attack = args.attack
-    if args.num_free_riders is not None:
-        cfg.num_free_riders = args.num_free_riders
-    if args.noise_sigma is not None:
-        cfg.noise_sigma = args.noise_sigma
-    if args.noise_decay is not None:
-        cfg.noise_decay = args.noise_decay
-    if args.watermark is not None:
-        cfg.watermark = args.watermark
-    if args.wm_lambda is not None:
-        cfg.wm_lambda = args.wm_lambda
-    if args.wm_beta is not None:
-        cfg.wm_beta = args.wm_beta
-    if args.paper_faithful is not None:
-        cfg.paper_faithful = args.paper_faithful
-    if args.calib_on_all is not None:
-        cfg.calib_on_all = args.calib_on_all
+    for name in _OVERRIDABLE:
+        v = getattr(args, name, None)
+        if v is not None:
+            setattr(cfg, name, v)
 
     os.makedirs(args.output_dir, exist_ok=True)
     logger = get_logger(logfile=os.path.join(args.output_dir, "run.log"))
@@ -170,6 +200,16 @@ def main():
     # single shared model instance reused by every client (sequential sim)
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)
 
+    # one-off FLOPs-per-sample estimate for device-independent effort accounting
+    try:
+        sample_shape = tuple(data.test_dataset[0][0].shape)
+        fps = estimate_flops_per_sample_fwd(model, sample_shape, device=device)
+    except Exception as e:
+        logger.info(f"FLOPs estimate skipped: {e}")
+        fps = None
+    if fps:
+        logger.info(f"flops/sample (fwd) ~= {fps:.3e}")
+
     registry = None
     if getattr(cfg, "watermark", False):
         registry = WatermarkRegistry()
@@ -182,7 +222,6 @@ def main():
                     f"lambda={cfg.wm_lambda}, beta={cfg.wm_beta}")
         if free_rider_indices:
             logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
-        # dedicated model instance for extraction (don't disturb the trainer)
         verify_model = build_model(cfg.model, data.num_classes, data.in_channels)
         classes = sorted({e["trigger_class"] for e in registry.entries.values()})
         trigger_bank = build_trigger_bank(data.test_dataset, classes,
@@ -202,6 +241,14 @@ def main():
                         f"of {cfg.num_clients}")
         server = Server(model, clients, data.test_loader, device, logger)
 
+    # attach the FLOPs estimate to every client meter BEFORE running so per-round
+    # FLOPs are populated as the run proceeds
+    if fps:
+        for c in clients:
+            m = getattr(c, "meter", None)
+            if m is not None:
+                m.flops_per_sample_fwd = fps
+
     t0 = time.time()
     history = server.run(cfg.rounds)
     elapsed = time.time() - t0
@@ -217,7 +264,6 @@ def main():
     if getattr(cfg, "watermark", False):
         wm_rounds = [h for h in history if "wm_benign_ber" in h]
         if wm_rounds:
-            from faremark.watermark import calibrate_eta
             K = min(10, len(wm_rounds))
             tail = wm_rounds[-K:]                         # converged window
 
@@ -226,25 +272,25 @@ def main():
                 return round(sum(vals) / len(vals), 4) if vals else None
 
             wm_summary = {
-                "wm_benign_ber": _avg("wm_benign_ber"),   # mean over last K rounds
+                "wm_benign_ber": _avg("wm_benign_ber"),
                 "wm_fr_ber": _avg("wm_fr_ber"),
                 "wm_detect_acc": _avg("wm_detect_acc"),
                 "wm_fpr": _avg("wm_fpr"),
                 "wm_fr_recall": _avg("wm_fr_recall"),
-                "wm_detect_window": K,                    # how many rounds averaged
-                # Threshold actually used in the converged window (windowed+capped,
-                # Eq. 16). NOT the cumulative mu+3sigma, which a transient model
-                # collapse can poison
+                "wm_detect_window": K,
                 "wm_eta_used": _avg("wm_eta_round"),
-                # embeddability diagnostics (explain any honest-BER floor):
                 "wm_bits_m": registry.m,
                 "wm_group_size_l": registry.l,
                 "wm_unembeddable_frac": registry.unembeddable_frac,
             }
 
+    compute = collect_compute(clients, free_rider_indices)
+    manifest = build_manifest(cfg, args)
+
     result = {
         "config_idx": args.config_idx,
         "config": cfg.to_dict(),
+        "manifest": manifest,
         "repeat": args.repeat,
         "seed": seed,
         "device": device,
@@ -257,7 +303,9 @@ def main():
         "correctness_pass": passed,
         "elapsed_sec": round(elapsed, 1),
         "watermark": getattr(cfg, "watermark", False),
+        "flops_per_sample_fwd": fps,
         **wm_summary,
+        "compute": compute,
         "history": history,
     }
     out_path = os.path.join(args.output_dir, "result.json")
@@ -266,12 +314,15 @@ def main():
 
     logger.info(f"--- final_acc={final_acc:.2f}%  best={best_acc:.2f}%  "
                 f"expected={cfg.expected_acc}  elapsed={elapsed/60:.1f}min ---")
+    cs = compute["summary"]
+    logger.info(f"compute: honest {cs['honest_mean_gpu_ms']:.0f} ms/client, "
+                f"FR {cs['fr_mean_gpu_ms']:.0f} ms/client, "
+                f"effort_ratio_gpu={cs['effort_ratio_gpu']}")
     verdict = "PASS" if passed else "FAIL"
     logger.info(f"CORRECTNESS CHECK: {verdict} "
                 f"(final {final_acc:.2f}% vs expected {lo}-{hi}%)")
     logger.info(f"wrote {out_path}")
 
-    # non-zero exit on failure so a sweep / CI can detect it
     sys.exit(0 if passed else 2)
 
 

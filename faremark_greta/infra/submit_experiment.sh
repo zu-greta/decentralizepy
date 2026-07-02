@@ -10,6 +10,10 @@ set -euo pipefail
 #  Optional env overrides (see the script for the full list):
 #     NUM_FREE_RIDERS=4 ATTACK=previous_models ./submit_experiment.sh 8 0
 #     ROUNDS=10 BATCH_SIZE=64 ./submit_experiment.sh 7 0
+#     # submarine sweep with self-describing manifest:
+#     ATTACK=submarine CALIB_ON_ALL=1 MEM_BLEND_GLOBAL=0.3 \
+#       FAMILY=A7_submarine SWEEP_VAR=mem_blend_global \
+#       TAG=a7-mbg03 WAIT=0 ./submit_experiment.sh 14 0
 #  Set DEBUG_HOLD=1 to keep the pod alive 1h after the run for inspection.
 # ===================================================
 CONFIG_IDX="${1:-0}"
@@ -61,6 +65,7 @@ PY_EXTRA=""
 [ -n "${WM_NUM_TRIGGERS:-}" ]  && PY_EXTRA="$PY_EXTRA --wm_num_triggers ${WM_NUM_TRIGGERS}"
 [ -n "${WM_BITS:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_bits ${WM_BITS}"
 [ -n "${WM_LAMBDA:-}" ]        && PY_EXTRA="$PY_EXTRA --wm_lambda ${WM_LAMBDA}"
+[ -n "${WM_BETA:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_beta ${WM_BETA}"
 [ -n "${ATTACK_ROUND:-}" ]     && PY_EXTRA="$PY_EXTRA --attack_round ${ATTACK_ROUND}"
 [ -n "${N_TRIGGER_SAMPLES:-}" ] && PY_EXTRA="$PY_EXTRA --n_trigger_samples ${N_TRIGGER_SAMPLES}"
 [ -n "${HONEST_PROB:-}" ]      && PY_EXTRA="$PY_EXTRA --honest_prob ${HONEST_PROB}"
@@ -70,16 +75,34 @@ PY_EXTRA=""
 [ -n "${PARTITION:-}" ]        && PY_EXTRA="$PY_EXTRA --partition ${PARTITION}"
 [ -n "${DIRICHLET_ALPHA:-}" ]  && PY_EXTRA="$PY_EXTRA --dirichlet_alpha ${DIRICHLET_ALPHA}"
 [ -n "${LOCAL_EPOCHS:-}" ]     && PY_EXTRA="$PY_EXTRA --local_epochs ${LOCAL_EPOCHS}"
+[ -n "${LR:-}" ]              && PY_EXTRA="$PY_EXTRA --lr ${LR}"
 [ -n "${WATERMARK:-}" ]        && PY_EXTRA="$PY_EXTRA --watermark"
 [ -n "${PAPER_FAITHFUL:-}" ]   && PY_EXTRA="$PY_EXTRA --paper_faithful"
 [ -n "${CALIB_ON_ALL:-}" ]     && PY_EXTRA="$PY_EXTRA --calib_on_all"
 [ -n "${NUM_FREE_RIDERS:-}" ] && PY_EXTRA="$PY_EXTRA --num_free_riders ${NUM_FREE_RIDERS}"
 [ -n "${ATTACK:-}" ]          && PY_EXTRA="$PY_EXTRA --attack ${ATTACK}"
 [ -n "${NOISE_SIGMA:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_sigma ${NOISE_SIGMA}"
+[ -n "${NOISE_DECAY:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_decay ${NOISE_DECAY}"
 [ -n "${ROUNDS:-}" ]          && PY_EXTRA="$PY_EXTRA --rounds ${ROUNDS}"
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 
-# Tag results/job uniquely 
+# ---- adaptive-attack overrides (submarine / memory_exploit) ----
+[ -n "${SUB_MARGIN:-}" ]           && PY_EXTRA="$PY_EXTRA --sub_margin ${SUB_MARGIN}"
+[ -n "${SUB_FLOOR:-}" ]            && PY_EXTRA="$PY_EXTRA --sub_floor ${SUB_FLOOR}"
+[ -n "${SUB_ETA_MODE:-}" ]        && PY_EXTRA="$PY_EXTRA --sub_eta_mode ${SUB_ETA_MODE}"
+[ -n "${SUB_ETA_FIXED:-}" ]       && PY_EXTRA="$PY_EXTRA --sub_eta_fixed ${SUB_ETA_FIXED}"
+[ -n "${SUB_MAX_BURST_BATCHES:-}" ] && PY_EXTRA="$PY_EXTRA --sub_max_burst_batches ${SUB_MAX_BURST_BATCHES}"
+[ -n "${SUB_PROBE_EVERY:-}" ]     && PY_EXTRA="$PY_EXTRA --sub_probe_every ${SUB_PROBE_EVERY}"
+[ -n "${WARMUP_ROUNDS:-}" ]       && PY_EXTRA="$PY_EXTRA --warmup_rounds ${WARMUP_ROUNDS}"
+[ -n "${MEM_BLEND_GLOBAL:-}" ]    && PY_EXTRA="$PY_EXTRA --mem_blend_global ${MEM_BLEND_GLOBAL}"
+
+# ---- self-describing manifest (descriptive only) ----
+[ -n "${FAMILY:-}" ]      && PY_EXTRA="$PY_EXTRA --manifest_family ${FAMILY}"
+[ -n "${NOTE:-}" ]        && PY_EXTRA="$PY_EXTRA --manifest_note ${NOTE}"
+[ -n "${SWEEP_VAR:-}" ]   && PY_EXTRA="$PY_EXTRA --sweep_var ${SWEEP_VAR}"
+[ -n "${SWEEP_LEVEL:-}" ] && PY_EXTRA="$PY_EXTRA --sweep_level ${SWEEP_LEVEL}"
+
+# Tag results/job uniquely
 FR_TAG=""
 [ -n "${NUM_FREE_RIDERS:-}" ] && FR_TAG="-fr${NUM_FREE_RIDERS}"
 USER_TAG="${TAG:+-${TAG}}"     # optional: TAG=mixblend03 -> dir/job suffixed with it
@@ -148,8 +171,6 @@ runai submit "$JOB_NAME" \
 
 
 # ---- fire-and-forget mode (WAIT=0): sweep scripts ----
-# submit jobs in a queue. Default WAIT=1 keeps the old blocking
-# behaviour (wait for completion + auto-cleanup) for single interactive runs
 if [ "${WAIT:-1}" = "0" ]; then
   echo "Submitted (fire-and-forget): $JOB_NAME"
   echo "Results -> $OUTPUT_DIR"
@@ -172,7 +193,7 @@ if [ -z "$POD_NAME" ]; then
   echo "   runai describe job $JOB_NAME -p $PROJECT"
   echo "   kubectl get pods -n $NAMESPACE | grep $JOB_NAME"
   echo "Then tail it:  kubectl logs -n $NAMESPACE <pod-name> -f"
-  exit 0   # not a failure — the job lives on the cluster independently
+  exit 0
 fi
 
 echo "Pod: $POD_NAME"
@@ -180,8 +201,6 @@ echo "Live logs:  kubectl logs -n $NAMESPACE $POD_NAME -f"
 echo "Results ->  $OUTPUT_DIR"
 echo "Waiting for completion (poll loop)..."
 
-# Poll the pod phase instead of `kubectl wait --for=condition=complete`
-# (that condition is for Jobs, not bare pods, and silently times out).
 FINAL_PHASE=""
 while true; do
   PHASE=$(kubectl get pod -n "$NAMESPACE" "$POD_NAME" \
@@ -198,7 +217,6 @@ if [ "$FINAL_PHASE" = "Succeeded" ]; then
   runai delete job "$JOB_NAME" --project "$PROJECT" || true
   echo "Done. Inspect $OUTPUT_DIR/result.json and stdout.log on the PVC."
 else
-  # Do NOT delete on failure — keep the pod so its logs stay readable.
   echo ""
   echo "Job FAILED. The pod is kept for inspection. Look at:"
   echo "   kubectl logs -n $NAMESPACE $POD_NAME"

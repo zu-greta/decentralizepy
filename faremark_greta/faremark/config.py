@@ -4,8 +4,8 @@
 over 10 repeats). Matches the existing submit script's
 `--config_idx N --repeat M` interface.
 
-`expected_acc` is a loose [low, high] band on final FedAvg test accuracy 
-(optional for pass/fail reference). For example, the reference points are 
+`expected_acc` is a loose [low, high] band on final FedAvg test accuracy
+(optional for pass/fail reference). For example, the reference points are
 the FedAvg(%) column of Table I in the paper:
 
     ResNet-18  CIFAR-10  (10 clients)  91.85
@@ -40,7 +40,7 @@ class ExpConfig:
     expected_acc: tuple = (0.0, 100.0)  # correctness band
 
     # ---- free-rider attacks ----
-    attack: str = "none"        # "none" | "previous_models" | "gaussian"
+    attack: str = "none"        # "none" | "previous_models" | "gaussian" | ...
     num_free_riders: int = 0    # how many of num_clients are free-riders
     noise_sigma: float = 0.1    # GaussianNoiseFreeRider std
     noise_decay: float = 0.0    # >0 -> sigma_t = sigma0 * t^(-decay)
@@ -52,6 +52,20 @@ class ExpConfig:
     n_common_samples: int = 0   # mixed + full_trigger_class: # random common-class samples added (disguise + stability)
     partition: str = "iid"      # data split: 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5  # dirichlet skew; small=severe non-IID, large~=IID
+
+    # ---- adaptive free-riders (submarine / memory-exploit) ----
+    # submarine: closed-loop controller that keeps its own BER just under its
+    # estimate of eta, training a minimal burst only when needed.
+    sub_margin: float = 0.03            # target BER = eta_estimate - margin
+    sub_floor: float = 0.05             # burst-train until held-out probe BER <= floor
+    sub_eta_mode: str = "adaptive"      # "adaptive" (mirror server mu+3sigma) | "fixed"
+    sub_eta_fixed: float = 0.25         # eta guess when mode=fixed / no history yet
+    sub_max_burst_batches: int = 40     # hard cap on a tap's mini-batches
+    sub_probe_every: int = 5            # re-check probe BER every k burst batches
+    # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
+    warmup_rounds: int = 1              # rounds of honest embedding up-front
+    # shared: how much of the global to mix into a coast/replay (freshness vs mark)
+    mem_blend_global: float = 0.3       # submarine default 0.3; memory_exploit override 0.0
 
     # ---- watermarking ----
     watermark: bool = False     # honest clients embed an output-space watermark
@@ -71,7 +85,13 @@ class ExpConfig:
     # Use with a high-class dataset (e.g. CIFAR-100) so the full-softmax projection
     # is embeddable. Default False keeps our robust mode.
     paper_faithful: bool = False
-    calib_on_all: bool = False  # calibrate eta over all clients (free-riders poison it)
+    # calib_on_all controls the attacker-vs-threshold relationship:
+    #   False -> server calibrates eta on a trusted benign pool that EXCLUDES the
+    #            attacker (idealized; attacker must GUESS eta). "option 1".
+    #   True  -> eta is mu+3sigma over ALL clients incl. the attacker, computed
+    #            each round during training (realistic; attacker poisons/inflates
+    #            eta). "option 2".
+    calib_on_all: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -102,7 +122,7 @@ CONFIGS = [
     # of free-riders with the --num_free_riders override (or NUM_FREE_RIDERS in
     # submit_experiment.sh) and watch accuracy drop.
 
-    # idx 7: fast smoke test for Fig.7 trend 
+    # idx 7: fast smoke test for Fig.7 trend
     ExpConfig("fr_smoke_mnist", "smallcnn", "mnist", num_clients=10,
               rounds=10, local_epochs=1, batch_size=64,
               attack="previous_models", num_free_riders=0,
@@ -119,11 +139,6 @@ CONFIGS = [
               expected_acc=(0.0, 100.0)),
 
     # ---- watermarking ----
-    # Watermarking tests: (a) FIDELITY: final acc within ~2 pts of
-    # the FedAvg baseline, and (b) EMBEDDING: mean benign BER ~ 0 so the
-    # watermark is recovered (Tables II / VII). Free-rider detection (idx 12)
-    # checks that fabricated updates fail extraction (high BER) (TODO)
-
     # idx 10: fast watermark smoke test
     ExpConfig("wm_smoke_mnist", "smallcnn", "mnist", num_clients=10,
               rounds=10, local_epochs=1, batch_size=64,
@@ -131,12 +146,11 @@ CONFIGS = [
               expected_acc=(0.0, 100.0)),
 
     # idx 11: fidelity run, ResNet-18 / CIFAR-10, all honest + watermarked
-    # (compare final acc to the 93.22% baseline; Table I "Ours").
     ExpConfig("wm_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
               watermark=True, wm_lambda=5.0, wm_beta=0.6,
               expected_acc=(86.0, 94.0)),
 
-    # idx 12: detection run, watermark + free-riders (Tables III-V / TODO)
+    # idx 12: detection run, watermark + free-riders (Tables III-V)
     ExpConfig("wm_fr_resnet18_cifar10", "resnet18", "cifar10", num_clients=10,
               watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="previous_models", num_free_riders=2,
@@ -144,12 +158,27 @@ CONFIGS = [
 
     # idx 13: PAPER-FAITHFUL detection target. CIFAR-100 (many classes -> many
     # bits, so the full-softmax projection is embeddable without our trigger-class
-    # exclusion). Random keys + cumulative uncapped mu+3sigma threshold. This is
-    # the config for "bare FareMark algorithm" threshold-anatomy experiments.
+    # exclusion). Random keys + cumulative uncapped mu+3sigma threshold.
     ExpConfig("paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="previous_models", num_free_riders=2,
               paper_faithful=True, expected_acc=(0.0, 100.0)),
+
+    # idx 14: SUBMARINE adaptive free-rider, paper-faithful CIFAR-100, 2 FR.
+    # The headline "cheap evasion" config. Sweep the server-side calib_on_all
+    # (option 1 vs 2) and sub_* knobs via CLI overrides.
+    ExpConfig("submarine_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+              num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="submarine", num_free_riders=2,
+              paper_faithful=True, expected_acc=(0.0, 100.0)),
+
+    # idx 15: MEMORY-EXPLOIT free-rider (train once, replay frozen mark forever),
+    # paper-faithful CIFAR-100, 2 FR. The cheapest break; contrast its compute
+    # (~1 round) with the submarine's.
+    ExpConfig("memexploit_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+              num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="memory_exploit", num_free_riders=2, warmup_rounds=1,
+              mem_blend_global=0.0, paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 
 

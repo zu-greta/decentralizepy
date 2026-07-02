@@ -32,6 +32,7 @@ To contribute effectively to this project, we highly value:
 | June 11 | [1] check which papers cite FareMark <br> [x] [paper deep dive](FareMark.md) and watermarking procedure <br> [x] potential issues for DFL vs. FL <br> [2] trigger classes (do they need to be unique for each client) <br> [3] trigger class weaknesses | [1] only 2 papers cite it. they talk about [AIIP-Chain: Fair Copyright Sharing With Credible Ownership Verification in AI Model Trading](https://ieeexplore.ieee.org/abstract/document/11239438) (brief mention of watermarking as a method to detect free-riders) and [Intellectual property protection for deep learning model and dataset intelligence](https://www.sciencedirect.com/science/article/pii/S0952197625030556#b64) (table 7 quick mention) <br> [2] best case scenario yes (server just stores the class label at verification and picls any images in the class to verify). in case there are more, the empirical data shows that it's fine and the server just pre-specify and stores the exact imaes used by each client (storage increase). **potential better solution**: different paritition based on features instead <br> [3] **potential issue 1**: partial free-rider attack by only training the trigger classes + trigger class needs to remain the same throughout training and testing - **potential issue 2**: mainly for DFL, dynamic client participation |
 | June 16 | [X] emailed Xinpeng Zhang and Li Li for code <br> [X] basic re-implementation using Claude | - |
 | June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
+| July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples |
 
 ---
 
@@ -40,10 +41,10 @@ To contribute effectively to this project, we highly value:
 |------|-------|
 | June 2 | [x] brainstorm ideas |
 | June 9 | [x] explore codebase and understand the framework (see Milos for setup and help) <br> [x] read and review FareMark paper |
-| June 16 | [X] setup GPU clusters (Milos instructions) <br> [] get Claude pro |
+| June 16 | [X] setup GPU clusters (Milos instructions) <br> [x] get Claude pro |
 | June 23 | [x] implement the FareMark paper and reproduce the results <br> [x] run all basic experiments from the paper and obtain proof that code is good <br> [x] deep dive into code - documentation and compare with algorithm in paper to make sure everything is correct <br> [x] short presentation for JSM  to prove everything is working <br> [x] deep dive into the paper and code |
-| July 2 | [] send a follow up email to authors <br> [] finish up code <br> [] play around with settings and figure out new attacks <br> [] create plots and graphs for next JSM presentation |
-| July 7 | [] |
+| July 2 | [x] finish up code <br> [x] play around with settings and figure out new attacks <br> [x] create plots and graphs for next JSM presentation |
+| July 7 | [] send a follow up email to authors <br> [] cleanup codebase (including documentations) and results - get clean results and only keep necessary ones in a summary <br> [] explore better attacks <br> [] explore theoretical approach |
 | July 14 | [] |
 | July 21 | [] start writing report ? |
 | July 28 | [] |
@@ -89,7 +90,7 @@ To contribute effectively to this project, we highly value:
 - QUESTION: are we following the paper's assumption for data partitioning? or real FL for data privacy?
     - server has everything but not clients. keep this assumption for now
 
-current attacks:
+attack ideas:
 - collusion
 - threshold weakness - circulatrity on "trusted"
 - memory-enhanced beta - global ??? no explanations on tuning
@@ -97,6 +98,25 @@ current attacks:
 - data paritioning weakness
 - attack timing - train-then-attack and trigger-sample-only
     - detection functino, watermark hgih - vs num samples used (num queries)
+
+
+TODO:
+- for every plot from now on add standard deviation based on the seeds
+- only do one axis plots from now on, no dual y-axis plots
+- note for non-iid: interesting. its not an attack but it shows weakness from the paper that we can build and improve on. free rider power doesn't depend on non-iid but it also shows that free-rider doesn't break down during non iid
+- add a plot to show the difference between honest and free-rider BER - to show the squeezing effect
+- note for cheap evasion attack: check how the extra common samples were sampled, and how the free-riders are detected. plot the effort vs detection accuracy and just re-run good experiemnts for this attack
+- check other papers like FedIPR and see if they also only use previous model and gaussian noise attacks. why does faremark only use these 2 attacks - it feels weak
+- metrics for "cheap": 
+    - compute cycles
+    - training time
+    - CPU time
+    - number of samples used
+    - number of forward passes
+- new attack ideas:
+    - momentum: initially do more work and then benefit afterwards
+    - flappy-bird/submarine attack: for any type of free-riding attack (free-ride with previous model, gaussian etc.), train in the beginning, just enough to pass the threshold, then stop training for a number of rounds - use the approximation of the threshold (by using the formula) and your own BER to predict where the threshold is, and then continue training when needed. any way to stay right under the threshold, only training when needed to stay under and then free-ride. make sure to use the standard deviation for this! important to check the recovery time (slower recovery the less you need to train) and how fast the degradation (faster - better ?). compare the compute for honest client, free-rider, and this attack. try this with both iid and non-iid for reference.
+    - check the memory enhanced, if its done by the client and if that can be exploited. free-riders can take advantage and just never take the global?
 
 ---
 ---
