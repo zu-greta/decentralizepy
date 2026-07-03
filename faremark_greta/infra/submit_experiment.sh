@@ -87,6 +87,9 @@ PY_EXTRA=""
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 
 # ---- adaptive-attack overrides (submarine / memory_exploit) ----
+[ -n "${SUB_WARMUP:-}" ]           && PY_EXTRA="$PY_EXTRA --sub_warmup ${SUB_WARMUP}"
+[ -n "${SUB_WARMUP_BATCHES:-}" ]   && PY_EXTRA="$PY_EXTRA --sub_warmup_batches ${SUB_WARMUP_BATCHES}"
+[ -n "${SUB_COMMON_SAMPLES:-}" ]   && PY_EXTRA="$PY_EXTRA --sub_common_samples ${SUB_COMMON_SAMPLES}"
 [ -n "${SUB_MARGIN:-}" ]           && PY_EXTRA="$PY_EXTRA --sub_margin ${SUB_MARGIN}"
 [ -n "${SUB_FLOOR:-}" ]            && PY_EXTRA="$PY_EXTRA --sub_floor ${SUB_FLOOR}"
 [ -n "${SUB_ETA_MODE:-}" ]        && PY_EXTRA="$PY_EXTRA --sub_eta_mode ${SUB_ETA_MODE}"
@@ -98,7 +101,8 @@ PY_EXTRA=""
 
 # ---- self-describing manifest (descriptive only) ----
 [ -n "${FAMILY:-}" ]      && PY_EXTRA="$PY_EXTRA --manifest_family ${FAMILY}"
-[ -n "${NOTE:-}" ]        && PY_EXTRA="$PY_EXTRA --manifest_note ${NOTE}"
+# NOTE is free-text (may contain spaces) -> passed as its own env var and
+# appended as a single quoted arg inside the container (see the array below).
 [ -n "${SWEEP_VAR:-}" ]   && PY_EXTRA="$PY_EXTRA --sweep_var ${SWEEP_VAR}"
 [ -n "${SWEEP_LEVEL:-}" ] && PY_EXTRA="$PY_EXTRA --sweep_level ${SWEEP_LEVEL}"
 
