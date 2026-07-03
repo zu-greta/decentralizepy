@@ -204,16 +204,25 @@ def make_submarine_attack(base_cls):
             self._prepared = False
             self._probe_x = None
             self._enr_loader = None
-            self._clean_ber_hist = []      # BER right after a real embed (honest-like proxy)
+            self._clean_ber_hist = []      # only genuinely-low post-embed BERs (honest proxy)
+            self._embeds_done = 0          # counts warmup rounds actually run (index-base safe)
             self.trace = []
 
         def _eta_estimate(self):
-            # eta the attacker THINKS it is judged against. Anchor to the CLEAN
-            # BER it reaches after embedding (its proxy for the honest pool), NOT
-            # to its coast BER, or a failing attacker fools itself.
+            # eta the attacker THINKS it is judged against. Anchor to the recent
+            # CLEAN (genuinely-low) BERs it reaches after a real embed - its proxy
+            # for the honest pool. If it has no clean embed yet, fall back to the
+            # fixed guess rather than inflating off failed attempts.
             if self.sub_eta_mode == "adaptive" and self._clean_ber_hist:
-                return wm.calibrate_eta(self._clean_ber_hist, floor=self.sub_floor)
+                recent = self._clean_ber_hist[-5:]
+                return wm.calibrate_eta(recent, floor=self.sub_floor)
             return self.sub_eta_fixed
+
+        def _record_clean(self, ber):
+            # Only genuinely-embedded BERs count as "clean" (<= 2x floor); failed
+            # embeds must NOT pollute the eta anchor (the self-delusion bug).
+            if ber is not None and ber <= 2.0 * self.sub_floor:
+                self._clean_ber_hist.append(ber)
 
         def _coast_state(self, global_state, prev_global_state):
             if self.memory is not None:
@@ -226,24 +235,24 @@ def make_submarine_attack(base_cls):
 
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
-            self.meter.start_round(round_idx)
 
-            # Phase 1 - warmup: embed a real, generalizing mark (pay once).
-            if round_idx < self.sub_warmup:
-                self._embed_loop(global_state, max_batches=self.sub_warmup_batches,
-                                 floor=self.sub_floor, enriched=True)
-                w_sgd = _to_cpu_state(self.model)
-                submit = self._memory_update(global_state, w_sgd)
-                self.meter.end_round(trained=True)
+            # Phase 1 - warmup: embed a GENERALIZING mark the honest way (full
+            # shard). A trigger-enriched shortcut overfits the attacker's own
+            # samples and does NOT transfer to the server's test triggers (that is
+            # the paper's Table V mechanism). super() = WatermarkClient does full
+            # local embedding + memory and meters itself.
+            if self._embeds_done < self.sub_warmup:
+                submit, n = super().produce_update(global_state,
+                                                   prev_global_state, round_idx)
+                self._embeds_done += 1
                 ber = self._probe_ber_state(submit)
-                if ber is not None:
-                    self._clean_ber_hist.append(ber)
+                self._record_clean(ber)
                 self.trace.append({"round": round_idx, "action": "warmup",
-                                   "ber_after": None if ber is None else round(ber, 4),
-                                   "batches": self.meter.per_round[round_idx]["fwd_passes"]})
-                return submit, self.num_samples
+                                   "ber_after": None if ber is None else round(ber, 4)})
+                return submit, n
 
-            # Phase 2 - maintain: coast if safe, else a minimal enriched tap.
+            # Phase 2 - maintain: coast if safe, else a bounded full-shard tap.
+            self.meter.start_round(round_idx)
             coast_state = self._coast_state(global_state, prev_global_state)
             ber_coast = self._probe_ber_state(coast_state)
             eta_est = self._eta_estimate()
@@ -254,14 +263,15 @@ def make_submarine_attack(base_cls):
                 trained = False
                 ber_after = ber_coast
             else:
+                # tap: refresh on the FULL shard (keeps the mark general), capped
+                # and early-stopped at floor so it is cheap.
                 self._embed_loop(global_state, self.sub_max_burst_batches,
-                                 floor=self.sub_floor, enriched=True)
+                                 floor=self.sub_floor, enriched=False)
                 w_sgd = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w_sgd)
                 trained = True
                 ber_after = self._probe_ber_state(submit)
-                if ber_after is not None:
-                    self._clean_ber_hist.append(ber_after)
+                self._record_clean(ber_after)
 
             self.meter.end_round(trained=trained)
             self.trace.append({
@@ -291,15 +301,17 @@ def make_memory_exploit_attack(base_cls):
             self._prepared = False
             self._probe_x = None
             self._enr_loader = None
+            self._embeds_done = 0
             self.trace = []
 
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
-            if round_idx < self.warmup_rounds:
+            if self._embeds_done < self.warmup_rounds:
                 # full honest embed via WatermarkClient (sets/updates memory);
                 # super() opens+closes its own meter round.
                 submit, n = super().produce_update(global_state,
                                                    prev_global_state, round_idx)
+                self._embeds_done += 1
                 action = "embed"
                 ber = self._probe_ber_state(submit)
             else:

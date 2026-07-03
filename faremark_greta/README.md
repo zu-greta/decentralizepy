@@ -3,8 +3,7 @@
 Re-implementation of **FareMark: Model-Watermark-Driven Free-Rider Detection in
 Federated Learning** (Li et al., IEEE IoT-J 2025).
 
-The repo reproduces the paper **in stages, with a correctness gate after each**,
-so the foundation is always verified before the next layer is added.
+The repo reproduces the paper and it's results - then extends it with new free-rider attacks to test limitations
 
 | Stage | Content | Status | Gate |
 |------:|---------|--------|------|
@@ -268,7 +267,7 @@ Consequences that the watermark relies on:
 This is the **only** regime the paper tests ("the training dataset was divided
 evenly among the clients").
 
-### Non-IID partition (our addition for the limitations study)
+### Non-IID partition - limitations study
 
 `dirichlet_partition(labels, num_clients, alpha, seed)` implements the standard
 label-skew benchmark (Hsu et al. 2019). For **each class**, it draws a

@@ -7,64 +7,62 @@ reviewers probe; §5 is the experiment catalog with a fixed analysis template.
 
 ---
 
-## 1. Where we are (updated after the first cluster smoke test)
+## 1. Where we are (updated after the 50-round validation)
 
-**Milestone reached:** the full pipeline runs end-to-end on the A100 — the two
-new attacks slot into the FedAvg loop, the compute meter records GPU-ms / samples
-/ duty cycle per client, the manifest makes each `result.json` self-describing,
-and per-free-rider decision traces are logged. Two bugs found and fixed on the
-way (see below).
+**Milestone reached:** the full pipeline runs end-to-end on the A100 — attacks
+slot into the loop, compute is metered, runs are self-describing, traces are
+logged. The 50-round validation fixed the horizon problem (honest BER converges
+to ~0.03, η settles to ~0.3, accuracy ~66%) and surfaced the *real* mechanism.
 
-**What the smoke test (config 14, submarine, paper-faithful CIFAR-100, 10 rounds,
-`calib_on_all=0`) actually showed — read this carefully, a reviewer will:**
+**The key finding (validated, and central to the thesis):** there is **no cheap
+shortcut to a mark that generalizes to the server's test triggers.** A
+trigger-enriched burst embeds fast on the attacker's own samples but overfits
+them and does *not* transfer (the validation showed warmup BER stalling at
+0.2–0.4 and the server catching it) — this is exactly the paper's Table V
+mechanism. The only thing that generalizes is **full-shard honest embedding over
+several rounds**, the same cost an honest client pays. Therefore:
 
-| metric | value | meaning |
-|---|---|---|
-| `effort_ratio_gpu` | 0.032 | submarine used **3.2%** of an honest client's GPU time |
-| `effort_ratio_samples` | 0.019 | 1.9% of the samples |
-| `wm_fr_recall` | 0.65 | **but 65% of free-rider rounds were still caught** |
-| `wm_fr_ber` (server) | 0.60 | the server extracted ~no mark from the attacker |
-| duty cycle (cid1 / cid6) | 0.8 / 0.3 | the two FRs behaved very differently |
+> The attack's saving is **amortization, not free embedding**: pay the real
+> embedding cost once (a warmup of ~8 full rounds on CIFAR-100, ≈ what an honest
+> client spends reaching BER≈0), then **coast** on the memory-borne mark for the
+> remaining rounds, tapping only to counter decay. Effort ≈ (warmup + taps) /
+> total ≈ **10–20%** of an honest client, not 1%.
 
-So the machinery works, but **that smoke run did not yet demonstrate evasion** —
-the submarine was cheap *and caught*. The traces explain exactly why, and it is a
-substantive finding, not a glitch:
+The 1% figure from the first runs was an attacker that *never embedded* — cheap
+and caught. The corrected submarine (below) embeds honestly during warmup, so its
+effort is higher but its mark is real and it can stay under η. **This is the
+honest, defensible headline:** *a free-rider obtains every global model while
+paying ~1/6 of the compute and still evading detection* — and the effort-vs-
+evasion knee (experiment E2) is the money plot.
 
-1. **Trigger sparsity (the real bug, now fixed).** On CIFAR-100 IID each client's
-   trigger class is ~1% of its shard. The old submarine "tapped" by training a
-   few dozen batches over the *general* shard, which touched almost no
-   trigger-class samples, so `ber_after` stayed ~0.5 even while training — the
-   mark never embedded. The verifier then saw BER 0.6 and flagged it. **Fix:**
-   taps and the warmup now train a **trigger-enriched** batch (the shard's
-   trigger-class samples + some common samples — the same recipe as the `mixed`
-   attack), so a short burst actually embeds and *generalizes* to the server's
-   held-out test triggers.
-2. **Self-deluding η estimate (also fixed).** The adaptive η-estimate mirrored
-   the attacker's *own submitted* BER series. Because the attacker was failing
-   (~0.5), its η-estimate ballooned to 0.5–0.9, which told it "you're safe,
-   coast" — on a mark that wasn't there. **Fix:** η is now anchored to the
-   *clean* BER the attacker reaches right after a real embed (its honest-pool
-   proxy), not to its coast BER.
-3. **Bootstrap.** A pure "tiny burst every round from scratch" cannot build a
-   generalizing mark on a hard dataset. The submarine now has a short **warmup**
-   (a few rounds of real embedding) to establish the mark, then maintains it
-   cheaply. The cheapness is *amortized*: pay to embed once over `sub_warmup`
-   rounds, coast for the remaining rounds.
-4. **Horizon.** 10 rounds is a transient — honest CIFAR-100 embedding isn't
-   converged (honest BER was still 0.19), and the paper-faithful cumulative η was
-   0.53, inflated by the early untrained rounds. Real runs need ≥50 rounds.
+**What was fixed after the validation (all compiled + control-flow-checked):**
+1. **Warmup now uses full-shard honest embedding** (delegates to the real
+   `WatermarkClient` training), not the enriched shortcut — so the mark
+   generalizes. Enriched training is abandoned for embedding; it only ever
+   overfits.
+2. **η-estimate no longer inflates off failed embeds.** Only genuinely-low BERs
+   (≤ 2×floor) are recorded as "clean"; with no clean embed yet it falls back to
+   the fixed guess instead of ballooning to 0.6 and coasting on a 0.5 BER.
+3. **Warmup count is index-base-safe** (an explicit counter, not `round_idx <
+   warmup`, which was off-by-one and gave one warmup round too few).
+4. **CIFAR-100 warmup defaults raised** to 8 rounds (submarine `sub_warmup`,
+   memory-exploit `warmup_rounds`) — the mark needs ~8 honest rounds to reach a
+   generalizing BER on 100 classes.
 
-**Earlier bug (fixed last session):** in paper-faithful mode the free-rider
-inherited the wrong projection columns (`exclude=trigger` vs the honest `None`),
-causing a reshape crash. Free-riders now inherit the honest `exclude`.
+**Earlier fixes (previous sessions):** paper-faithful `exclude`-column crash for
+watermark-capable free-riders; the `submit_experiment.sh` space-in-`NOTE` bug
+(free-text notes are now passed as a single quoted arg).
 
-**Bottom line for the meeting:** "We have the attack framework, compute metering,
-and self-describing runs working on the cluster. The first smoke test surfaced —
-and we fixed — the core mechanism: a low-effort attacker must train on
-trigger-*dense* data to embed a mark that generalizes, otherwise it's cheap but
-caught. This is the same generalization gap the paper's Table V relies on, now
-turned into a measured effort-vs-evasion tradeoff. Next we run the real
-horizon (50 rounds) and sweep effort."
+**For the meeting:** "We validated at 50 rounds and confirmed the paper's own
+generalization barrier: you cannot embed a transferable mark cheaply. So the
+attack is *amortized* — embed honestly for a few rounds, then coast on the memory
+mechanism the paper itself introduced (Eq. 14). The result is evasion at ~10–20%
+of honest compute, and the effort-vs-evasion curve shows exactly where the
+defender's detector stops working."
+
+**Earlier 10-round smoke (superseded, kept for context):** effort 3.2% but recall
+0.65 — the naive enriched submarine, caught for the same reason (no generalizing
+mark). Diagnosis led to the full-shard-warmup fix above.
 
 ---
 
@@ -118,10 +116,11 @@ them in the writeup.
 
 ### 3.1 Submarine control loop (`make_submarine_attack`)
 Per round, for a free-rider client:
-1. **Warmup** (`round < sub_warmup`): train a trigger-enriched burst up to
-   `sub_warmup_batches`, early-stopping when the held-out probe BER ≤ `sub_floor`.
-   This embeds a *generalizing* mark and updates the client's memory. Record the
-   post-embed BER into the "clean" history (the η anchor).
+1. **Warmup** (first `sub_warmup` rounds, counted explicitly): embed the mark the
+   **honest way** - full-shard local training (delegates to `WatermarkClient`),
+   which is the only regime that generalizes to the server's test triggers. On
+   CIFAR-100 this needs ~8 rounds to reach a low BER (same as an honest client).
+   Record only genuinely-low post-embed BERs into the "clean" η-anchor history.
 2. **Maintain** (`round ≥ sub_warmup`):
    - Form the **coast candidate** = the client's memory (the frozen mark),
      optionally blended with the current global by `mem_blend_global` for
@@ -161,7 +160,10 @@ samples + common samples**, which embeds across the trigger distribution and
 generalizes (the `mixed full_trigger_class` finding). **Reviewer question:** "How
 do you know the attacker's self-BER predicts the server's BER?" — Answer: we log
 both (`ber_after` in the trace vs `wm_fr_ber` in history); the gap between them is
-itself a reported quantity, and closing it is what the enriched training buys.
+itself a reported quantity. **Validated lesson:** an enriched/isolated embed can
+drive self-BER low while the server BER stays ~0.5 (it overfits the attacker's
+samples). Only full-shard embedding closes the gap, which is why warmup and taps
+train the full shard.
 
 ### 3.4 Compute metering (`compute_meter.py`)
 Per client, per round and total: forward/backward passes, samples, optimizer

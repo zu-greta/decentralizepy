@@ -139,6 +139,7 @@ runai submit "$JOB_NAME" \
   -e "PKG_SUBDIR=$PKG_SUBDIR" \
   -e "SCRIPT=$SCRIPT" \
   -e "PY_EXTRA=$PY_EXTRA" \
+  -e "NOTE=${NOTE:-}" \
   -e "DEBUG_HOLD=$DEBUG_HOLD" \
   --command -- bash -c '
     set -euo pipefail
@@ -164,8 +165,15 @@ runai submit "$JOB_NAME" \
     cd "/tmp/decentralizepy/$PKG_SUBDIR"
     echo "package dir:"; ls -la
     set +e
-    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" $PY_EXTRA
+    # PY_EXTRA holds only space-free flags -> word-split into an array; append the
+    # free-text NOTE as a single quoted arg so spaces survive. set +u guards the
+    # empty-array expansion on older bash.
+    EXTRA_ARR=($PY_EXTRA)
+    [ -n "${NOTE:-}" ] && EXTRA_ARR+=(--manifest_note "$NOTE")
+    set +u
+    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" "${EXTRA_ARR[@]}"
     EXIT=$?
+    set -u
     set -e
     echo "experiment exit code: $EXIT"
     if [ "$DEBUG_HOLD" = "1" ]; then echo "DEBUG_HOLD: sleeping 1h"; sleep 3600; fi

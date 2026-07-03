@@ -1,21 +1,121 @@
-# RUNSHEET — adaptive attacks (A7 submarine, A8 memory-exploit)
+# RUNSHEET 
 
-Extends `RUNSHEET_CLUSTER.md` with the effort-minimizing free-riders. Same rules
-(flags → UPPERCASE env vars, `config_idx`/`repeat` positional, `WAIT=0` to queue,
-`TAG=` to make the dir findable). Two additions specific to this work:
-
-- **Self-describing runs.** Add `FAMILY=…`, `SWEEP_VAR=…`, optional `NOTE="…"`.
+Rules:
+- Flags map to UPPERCASE env vars: `--attack x` -> `ATTACK=x`,
+  `--num_free_riders N` -> `NUM_FREE_RIDERS=N`, `--attack_round R` -> `ATTACK_ROUND=R`,
+  `--n_trigger_samples NS` -> `N_TRIGGER_SAMPLES=NS`, `--honest_prob HP` -> `HONEST_PROB=HP`,
+  `--blend B` -> `BLEND=B`, `--full_trigger_class` -> `FULL_TRIGGER_CLASS=1`,
+  `--n_common_samples NC` -> `N_COMMON_SAMPLES=NC`, `--partition p` -> `PARTITION=p`,
+  `--dirichlet_alpha A` -> `DIRICHLET_ALPHA=A`, `--dataset d` -> `DATASET=d`,
+  `--wm_bits m` -> `WM_BITS=m`, `--calib_on_all` -> `CALIB_ON_ALL=1`.
+- `--config_idx` and `--repeat` are the two positional args
+- `--output_dir` is auto on the cluster
+- `TAG=<slot>` to suffix the run dir so it is findable later (dir becomes `cfg12_rep0-<TAG>_<timestamp>`)
+- `WAIT=0` = fire-and-forget (queue many jobs). Omit for a single blocking run.
+- If any run comes back with EMPTY BER columns, the watermark path was off — add
+  `WATERMARK=1` (the make_* attacks need it).
+- self-describing runs: Add `FAMILY=…`, `SWEEP_VAR=…`, optional `NOTE="…"`.
   These are stamped into `result.json.manifest` and are what `plot_adaptive.py`
   groups on. `SWEEP_LEVEL` is inferred from the config if you name a `SWEEP_VAR`.
-- **New env vars:** `SUB_MARGIN`, `SUB_FLOOR`, `SUB_ETA_MODE` (`adaptive|fixed`),
-  `SUB_ETA_FIXED`, `SUB_MAX_BURST_BATCHES`, `SUB_PROBE_EVERY`, `WARMUP_ROUNDS`,
-  `MEM_BLEND_GLOBAL`. All optional; defaults live in `config.py`.
 
-Configs: **14** = submarine (paper-faithful CIFAR-100, 2 FR); **15** =
-memory-exploit (same). Both already set `PAPER_FAITHFUL=1` and `WATERMARK` via the
-config, so you do not need to pass those.
+`$RES` below = your results dir on the PVC (…/home/zu/results). 
+Plotting is done locally — run `plot_results.py` locally after syncing `$RES`
 
-`$RES` = your results dir on the PVC. Plotting is local/interactive, not a job.
+------------------------------------------------------------------------
+## 7.0  Robustness (finish baseline)
+```bash
+SCRIPT=scripts/run_robustness.py TAG=robust WAIT=0 ./submit_experiment.sh 11 0
+```
+
+## A1 — Threshold fragility (previous-model fraction)
+```bash
+for N in 2 4 6 8; do
+  NUM_FREE_RIDERS=$N ATTACK=previous_models TAG=a1-frac$N WAIT=0 ./submit_experiment.sh 12 0
+done
+# plot (local): 
+python scripts/plot_results.py --in $RES/*a1-frac2* $RES/*a1-frac4* $RES/*a1-frac6* $RES/*a1-frac8* --out figs/a1_prevmodel_frac
+cp figs/a1_prevmodel_frac/sweep.png UPLOAD__a1_prevmodel_frac__effort.png
+```
+
+## A2 — Train-then-attack (attack_round)
+```bash
+for R in 0 10 20 30 40; do
+  ATTACK=train_then_attack ATTACK_ROUND=$R TAG=a2-ar$R WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*a2-ar0* $RES/*a2-ar10* $RES/*a2-ar20* $RES/*a2-ar30* $RES/*a2-ar40* --out figs/a2_ttattack_round
+cp figs/a2_ttattack_round/sweep.png UPLOAD__a2_ttattack_round__effort.png
+```
+
+## A3 — Trigger-only (n_trigger_samples)
+```bash
+for NS in 2 8 32 128; do
+  ATTACK=trigger_only N_TRIGGER_SAMPLES=$NS TAG=a3-ns$NS WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*a3-ns2* $RES/*a3-ns8* $RES/*a3-ns32* $RES/*a3-ns128* --out figs/a3_triggeronly_ns
+cp figs/a3_triggeronly_ns/sweep.png UPLOAD__a3_triggeronly_ns__effort.png
+```
+
+## A4 — Random-round (honest_prob)   [needs SWEEP_KEYS patch]
+```bash
+for HP in 0.2 0.4 0.6 0.8; do
+  ATTACK=random_round HONEST_PROB=$HP NUM_FREE_RIDERS=2 TAG=a4-hp$HP WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*a4-hp0.2* $RES/*a4-hp0.4* $RES/*a4-hp0.6* $RES/*a4-hp0.8* --out figs/a4_randomround_hp
+cp figs/a4_randomround_hp/sweep.png UPLOAD__a4_randomround_hp__effort.png
+# single run (just to run random-round once):
+ATTACK=random_round HONEST_PROB=0.5 NUM_FREE_RIDERS=2 TAG=a4-hp0.5 WAIT=0 ./submit_experiment.sh 12 0
+```
+
+## A5 — Mixed forgery (disguise effort)   [needs SWEEP_KEYS patch for the curve]
+```bash
+for NC in 0 20 50 100; do
+  ATTACK=mixed FULL_TRIGGER_CLASS=1 N_COMMON_SAMPLES=$NC BLEND=0.5 TAG=a5-nc$NC WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*a5-nc0* $RES/*a5-nc20* $RES/*a5-nc50* $RES/*a5-nc100* --out figs/a5_mixed_effort
+cp figs/a5_mixed_effort/sweep.png UPLOAD__a5_mixed_effort__effort.png
+```
+
+## A6 — Collusion (colluder count)   [implement collusion_attack_scaffold.py first]
+```bash
+for K in 2 3 4 6; do
+  ATTACK=collusion NUM_FREE_RIDERS=$K TAG=a6-k$K WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*a6-k2* $RES/*a6-k3* $RES/*a6-k4* $RES/*a6-k6* --out figs/a6_collusion_frac
+cp figs/a6_collusion_frac/sweep.png UPLOAD__a6_collusion_frac__effort.png
+```
+
+## C1 — Bit-count ceiling (CIFAR-10 vs CIFAR-100)
+```bash
+ATTACK=mixed FULL_TRIGGER_CLASS=1 N_COMMON_SAMPLES=50 DATASET=cifar10  TAG=c1-c10  WAIT=0 ./submit_experiment.sh 12 0
+ATTACK=mixed FULL_TRIGGER_CLASS=1 N_COMMON_SAMPLES=50 DATASET=cifar100 TAG=c1-c100 WAIT=0 ./submit_experiment.sh 12 0
+python scripts/plot_results.py --in $RES/*c1-c10* $RES/*c1-c100* --out figs/c1_bitcount_ds
+cp figs/c1_bitcount_ds/sweep.png UPLOAD__c1_bitcount_ds__effort.png
+```
+
+## L1 — Non-IID false positives (Dirichlet, all honest)   [needs SWEEP_KEYS patch]
+```bash
+for A in 0.1 0.5 1 100; do
+  NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=$A TAG=l1-a$A WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*l1-a0.1* $RES/*l1-a0.5* $RES/*l1-a1* $RES/*l1-a100* --out figs/l1_noniid_alpha
+cp figs/l1_noniid_alpha/sweep.png UPLOAD__l1_noniid_alpha__effort.png
+```
+
+## Bit-budget knob sweep (optional, for the S22 argument directly)
+```bash
+for M in 2 4 8 16 49; do
+  WM_BITS=$M ATTACK=mixed FULL_TRIGGER_CLASS=1 N_COMMON_SAMPLES=50 TAG=bits-m$M WAIT=0 ./submit_experiment.sh 12 0
+done
+python scripts/plot_results.py --in $RES/*bits-m2* $RES/*bits-m4* $RES/*bits-m8* $RES/*bits-m16* $RES/*bits-m49* --out figs/bits_sweep
+```
+
+## Repeats (10 seeds) — credibility
+```bash
+for R in $(seq 0 9); do
+  ATTACK=previous_models NUM_FREE_RIDERS=2 TAG=rep WAIT=0 ./submit_experiment.sh 12 $R
+done
+# then locally: python scripts/aggregate_results.py $RES
+```
 
 ------------------------------------------------------------------------
 ## A7 — Submarine (adaptive threshold-tracking)

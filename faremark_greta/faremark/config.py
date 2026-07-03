@@ -56,7 +56,7 @@ class ExpConfig:
     # ---- adaptive free-riders (submarine / memory-exploit) ----
     # submarine: closed-loop controller that keeps its own BER just under its
     # estimate of eta, training a minimal burst only when needed.
-    sub_warmup: int = 3                 # rounds of real (enriched) embedding up-front
+    sub_warmup: int = 8                 # rounds of full-shard honest embedding up-front (CIFAR-100 needs ~8 to generalize)
     sub_warmup_batches: int = 150       # per-warmup-round batch budget (cycles the enriched set)
     sub_margin: float = 0.05            # target BER = eta_estimate - margin
     sub_floor: float = 0.05             # embed until held-out probe BER <= floor
@@ -183,7 +183,7 @@ CONFIGS = [
     # to ~8-10 for full 50-round runs; the amortized cost is warmup/total.
     ExpConfig("memexploit_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
-              attack="memory_exploit", num_free_riders=2, warmup_rounds=5,
+              attack="memory_exploit", num_free_riders=2, warmup_rounds=8,
               mem_blend_global=0.0, paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 

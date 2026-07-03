@@ -58,10 +58,10 @@ cheap burst generalize to the server's held-out triggers.
 
 | Flag / env | Default | What it is | Effect |
 |---|---|---|---|
-| `--sub_warmup` / `SUB_WARMUP` | 3 | submarine: rounds of real embedding before it starts coasting | Bootstraps a *generalizing* mark. Too low → nothing to coast on (caught). The amortized cost is ≈ `sub_warmup / rounds`. |
-| `--sub_warmup_batches` / `SUB_WARMUP_BATCHES` | 150 | Batch budget per warmup round (cycles the small enriched set) | Higher = stronger initial mark, more up-front cost. Raise if `ber_after` after warmup isn't near `sub_floor`. |
+| `--sub_warmup` / `SUB_WARMUP` | 8 | submarine: rounds of **full-shard honest** embedding before it starts coasting | Bootstraps a *generalizing* mark (only full-shard training transfers to the server's test triggers). Too low → half-embedded mark, caught. Amortized cost ≈ `sub_warmup / rounds`; ~8 needed on CIFAR-100. |
+| `--sub_warmup_batches` / `SUB_WARMUP_BATCHES` | 150 | (legacy) batch budget for enriched embedding | No longer used for warmup (warmup is now full-shard honest training). Retained for experiments that force enriched taps. |
 | `--sub_max_burst_batches` / `SUB_MAX_BURST_BATCHES` | 60 | Cap on a maintenance **tap** | The per-round cost of topping the mark back up when coasting drifts over η. |
-| `--sub_common_samples` / `SUB_COMMON_SAMPLES` | 50 | Common-class samples mixed into an enriched burst | Stabilizes/disguises the update and aids generalization (same role as in `mixed`). |
+| `--sub_common_samples` / `SUB_COMMON_SAMPLES` | 50 | Common-class samples for the (legacy) enriched loader | Only relevant if enriched taps are forced; default taps are full-shard. |
 | `--sub_margin` / `SUB_MARGIN` | 0.05 | Target BER = η_estimate − margin | Bigger = sails further under η (safer, more taps); smaller = cheaper, riskier. |
 | `--sub_floor` / `SUB_FLOOR` | 0.05 | Embed until held-out probe BER ≤ this | The BER the attacker tries to look like (a well-embedded honest client). |
 | `--sub_eta_mode` / `SUB_ETA_MODE` | adaptive | `adaptive` = μ+3σ of its **clean** post-embed BER; `fixed` = constant | The attacker's *own* η-guess. Anchored on clean (not coast) BER so a failing attacker can't fool itself. |

@@ -2,10 +2,10 @@
 
 Status: 
 [x] Reproduction of FareMark paper codebase 
-[~] Repoduction of FareMark paper results
-[] Define limits of FareMark paper design and detection scheme
-[] Implement new attacks to demonstrate limits
-[] Run experiments to demonstrate limits
+[x] Repoduction of FareMark paper results
+[x] Define limits of FareMark paper design and detection scheme
+[~] Implement new attacks to demonstrate limits
+[~] Run experiments to demonstrate limits
 [] Define and implement new detection scheme to overcome limits
 [] Run experiments to demonstrate new detection scheme
 [] Write up results
@@ -158,30 +158,19 @@ distributions and every one of these claims fails at once.
 
 ---
 
-## 4. Baseline status — finalize before drifting
+## 4. Baseline status 
 
-Four required capabilities and their evidence:
 
 | Capability | Evidence | Remaining |
 |---|---|---|
 | Federated learning (FedAvg) | ResNet-18/CIFAR-10 93.2%, MNIST 99.5% | done |
 | Free-rider attacks | previous-model + Gaussian degrade accuracy on the Fig-7 trend | done |
 | Watermark embedding | ~2-pt fidelity cost, benign BER ≈ 0 | done |
-| Detection | 0.94–1.00 across attacks/datasets, FPR ≈ 0 | **run robustness** |
-
-To declare the baseline finished:
-1. **Run robustness** (`run_robustness.py`) — the only un-run piece (Figs 9–10 / Table VI).
-2. **10 repeats** on the core fidelity + detection configs (paper averages 10; we mostly have 1).
-3. Keep the provenance note for the two documented deviations (trigger-class
-   exclusion at l=2, sign-balanced keys) and the two assumed hyperparameters
-   (momentum 0.9, weight-decay 5e-4).
-
-After that the code is a validated baseline and any change is "our contribution,"
-not a reproduction question.
+| Detection | 0.94–1.00 across attacks/datasets, FPR ≈ 0 | done |
 
 ---
 
-## 5. Weaknesses to demonstrate (thesis pillars)
+## 5. Weaknesses to demonstrate 
 
 1. **Bit-count ceiling (our analysis, not a paper finding).** The paper leaves
    m open; under our embeddability assumptions m = (n−1)/2, so few classes → few
@@ -195,6 +184,7 @@ not a reproduction question.
    when honest BER spikes — the regime it is meant for.
 4. **Non-IID false positives.** Skewed data → some honest clients can't embed →
    their BER rises → they get misflagged. (The paper never tests non-IID — see section 5b.)
+5. TODO
 
 ---
 
@@ -327,7 +317,7 @@ All commands assume you are in the repo root (or pod working copy), with
 folder afterward. On the cluster, submit each as a separate fire-and-forget job
 (`submit_experiment.sh`, `WAIT=0`) using the same overrides as env vars.
 
-### 7.0 Finalize baseline — robustness (do first)
+### 7.0 Finalize baseline — robustness 
 
 ```
 python scripts/run_robustness.py --config_idx 11 --repeat 0 \
@@ -424,26 +414,7 @@ detection at N=8) shrinks toward the paper's values.
 
 ---
 
-## 8. Next steps / two-month timeline
-
-- **Weeks 1–2:** robustness + 10-repeats → lock the baseline.
-- **Weeks 3–5:** run 7.1–7.4 → one separability figure each.
-- **Weeks 6–7:** push the mixed/forgery attack until honest & free-rider BER
-  overlap on CIFAR-10 (raise blend, give the attacker the key + more samples).
-- **Week 8:** write up the conditions for impossibility; draft the limitations paper.
-
-**Decide early:** the **threat model** (does the attacker hold the key? the
-trigger data?) — every forgeability claim depends on it. And whether the
-argument is empirical (detection fails in these regimes) or also **formal** (a
-short lemma: with m bits, a random model's `P(BER < η)` is a Binomial tail; on
-m=4, `P(BER ≤ 0.25) ≈ 0.31`, so overlap is unavoidable). The formal lemma is
-tractable and strengthens the paper.
-
-**Out of scope** for a limitations paper: ShuffleNet/GoogLeNet, Food-101, and
-the DAGMM/FedIPR baselines — skip once the baseline is locked.
----
-
-## 9. Effort/cost pillar + adaptive attacks (extension)
+## 8. Effort/cost pillar + adaptive attacks (extension)
 
 **Pillar 6 — effort/cost minimization.** Claim 3 ("a free-rider *cannot* embed")
 really means "embedding is *costly*." We falsify the strong reading by measuring
