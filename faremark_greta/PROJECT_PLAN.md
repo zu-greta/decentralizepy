@@ -441,3 +441,27 @@ tractable and strengthens the paper.
 
 **Out of scope** for a limitations paper: ShuffleNet/GoogLeNet, Food-101, and
 the DAGMM/FedIPR baselines — skip once the baseline is locked.
+---
+
+## 9. Effort/cost pillar + adaptive attacks (extension)
+
+**Pillar 6 — effort/cost minimization.** Claim 3 ("a free-rider *cannot* embed")
+really means "embedding is *costly*." We falsify the strong reading by measuring
+compute (`compute_meter.py`: GPU-ms, samples, duty cycle) and driving the
+free-rider's effort to a few percent of an honest client's while keeping BER
+under η:
+
+- **submarine** — warm up a generalizing mark (trigger-enriched training), then
+  coast on memory-replay and tap minimal bursts only when a held-out probe says
+  BER is drifting over its η-estimate; blends the global for freshness.
+- **memory_exploit** — the lower bound: train for `warmup_rounds`, then replay the
+  frozen mark-bearing memory forever.
+
+The claim is the **pair** `effort_ratio ≪ 1` **and** `recall → 0` **and** low
+server-side `fr_ber` (the mark is really present). Run under both threshold
+options (`CALIB_ON_ALL` 0/1). Experiment catalog + analysis template:
+`ADAPTIVE_ATTACKS.md §5`; knobs: `HYPERPARAMS.md`.
+
+**Reviewer framing:** this is not a new *impossibility* (pillar 5 owns that); it
+converts "can't" into a measured price curve, and shows the price is low — and
+lower exactly where the defense is weakest (few bits, non-IID, high β).

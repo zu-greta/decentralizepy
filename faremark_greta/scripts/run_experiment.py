@@ -9,7 +9,7 @@ Usage:
 It runs one (config, repeat), writes result.json to --output_dir, and prints a
 PASS/FAIL correctness verdict against the expected accuracy band in config.py
 
-result.json also carries:
+result.json now also carries:
   * "manifest": self-describing run metadata (family/hypothesis/sweep var+level
     + a per-metric interpretation key) so runs are readable months later.
   * "compute": per-client + summarized training effort (GPU-ms, samples, FLOPs,
@@ -78,6 +78,9 @@ def parse_args():
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
     # Adaptive-attack overrides (submarine / memory_exploit)
+    p.add_argument("--sub_warmup", type=int, default=None)
+    p.add_argument("--sub_warmup_batches", type=int, default=None)
+    p.add_argument("--sub_common_samples", type=int, default=None)
     p.add_argument("--sub_margin", type=float, default=None)
     p.add_argument("--sub_floor", type=float, default=None)
     p.add_argument("--sub_eta_mode", type=str, default=None,
@@ -118,8 +121,9 @@ _OVERRIDABLE = [
     "n_trigger_samples", "honest_prob", "blend", "full_trigger_class",
     "n_common_samples", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "noise_sigma", "noise_decay",
-    "sub_margin", "sub_floor", "sub_eta_mode", "sub_eta_fixed",
-    "sub_max_burst_batches", "sub_probe_every", "warmup_rounds", "mem_blend_global",
+    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_margin", "sub_floor", "sub_eta_mode",
+    "sub_eta_fixed", "sub_max_burst_batches", "sub_probe_every", "warmup_rounds",
+    "mem_blend_global",
     "watermark", "wm_lambda", "wm_beta", "paper_faithful", "calib_on_all",
 ]
 

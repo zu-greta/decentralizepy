@@ -208,21 +208,26 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 from .attacks_adaptive import make_submarine_attack
                 cls = make_submarine_attack(WatermarkClient)
                 clients.append(cls(
-                    sub_margin=getattr(cfg, "sub_margin", 0.03),
+                    sub_warmup=getattr(cfg, "sub_warmup", 3),
+                    sub_warmup_batches=getattr(cfg, "sub_warmup_batches", 150),
+                    sub_margin=getattr(cfg, "sub_margin", 0.05),
                     sub_floor=getattr(cfg, "sub_floor", 0.05),
                     sub_eta_mode=getattr(cfg, "sub_eta_mode", "adaptive"),
                     sub_eta_fixed=getattr(cfg, "sub_eta_fixed", cfg.wm_eta),
-                    sub_max_burst_batches=getattr(cfg, "sub_max_burst_batches", 40),
-                    sub_probe_every=getattr(cfg, "sub_probe_every", 5),
-                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.3),
+                    sub_max_burst_batches=getattr(cfg, "sub_max_burst_batches", 60),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
+                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.2),
                     **wm_args, **common))
             elif attack == "memory_exploit":
                 # train once (or `warmup_rounds`), then replay frozen mark forever
                 from .attacks_adaptive import make_memory_exploit_attack
                 cls = make_memory_exploit_attack(WatermarkClient)
                 clients.append(cls(
-                    warmup_rounds=getattr(cfg, "warmup_rounds", 1),
+                    warmup_rounds=getattr(cfg, "warmup_rounds", 5),
                     mem_blend_global=getattr(cfg, "mem_blend_global", 0.0),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 0),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 5),
                     **wm_args, **common))
             else:
                 cls = ATTACKS[attack]

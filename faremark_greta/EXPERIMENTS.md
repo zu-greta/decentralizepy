@@ -101,9 +101,13 @@ options, plus the static `previous_models` baseline as the "expensive-to-catch-
 never" anchor:
 
 ```bash
-# A7 submarine — option 1 (attacker guesses eta) and option 2 (eta poisoned)
+# A7 submarine — option 1 (attacker guesses eta) and option 2 (eta poisoned).
+# Note: bursts are trigger-enriched and the submarine warms up a generalizing
+# mark first (SUB_WARMUP rounds) — a naive tap over the general shard does NOT
+# embed on CIFAR-100 (trigger class ~1% of shard). Run >=50 rounds; 10 is a
+# transient where paper-faithful eta is still inflated by untrained early rounds.
 for CAL in 0 1; do for R in 0 1 2; do
-  ATTACK=submarine PAPER_FAITHFUL=1 CALIB_ON_ALL=$CAL \
+  ROUNDS=50 ATTACK=submarine PAPER_FAITHFUL=1 CALIB_ON_ALL=$CAL SUB_WARMUP=3 \
     FAMILY=A7_submarine SWEEP_VAR=calib_on_all \
     TAG=a7-cal$CAL WAIT=0 ./submit_experiment.sh 14 $R
 done; done

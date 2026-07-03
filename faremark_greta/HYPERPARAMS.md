@@ -40,13 +40,43 @@ in any writeup; they are why our detector behaves better than the bare paper.
 
 | Flag / env | Default | What it is | Effect |
 |---|---|---|---|
-| `--attack` / `ATTACK` | per config | none / previous_models / gaussian / train_then_attack / trigger_only / random_round / mixed | Which fabrication the free-rider uses. `mixed` = the forgery adversary. |
+| `--attack` / `ATTACK` | per config | none / previous_models / gaussian / train_then_attack / trigger_only / random_round / mixed / **submarine** / **memory_exploit** | Which fabrication the free-rider uses. `mixed` = the forgery adversary; `submarine`/`memory_exploit` = the effort-minimizing key-holding adversaries (see the adaptive-attack table below and ADAPTIVE_ATTACKS.md). |
 | `--num_free_riders` / `NUM_FREE_RIDERS` | per config | How many of N clients cheat | Dilution / threshold-stress lever; high fractions can collapse the model. |
 | `--noise_sigma` / `NOISE_SIGMA` | 0.1 | Gaussian-attack noise std | Bigger = more degradation, easier to detect. |
 | `--blend` / `BLEND` | 0.5 | mixed: weight on attacker's own lightly-trained weights | Higher = more genuine signal → free-rider BER drops toward honest (forgeability). |
 | `--n_trigger_samples` / `N_TRIGGER_SAMPLES` | 8 | trigger_only/mixed: # trigger samples the attacker fits | More → better forged mark → lower free-rider BER. |
 | `--honest_prob` / `HONEST_PROB` | 0.5 | random_round: per-round prob of training honestly | Sporadic-honesty evasion. |
 | `--attack_round` / `ATTACK_ROUND` | 50 | train_then_attack: round it defects | Earlier defect = easier to detect (mark didn't persist). |
+
+## Adaptive-attack knobs (submarine / memory_exploit)
+
+The effort-minimizing key-holding attackers. Defaults are tuned so the mark
+actually embeds on CIFAR-100 (short bursts over the general shard do not — see
+ADAPTIVE_ATTACKS.md §1). Bursts are **trigger-enriched** (all of the shard's
+trigger-class samples + `sub_common_samples` commons), which is what makes a
+cheap burst generalize to the server's held-out triggers.
+
+| Flag / env | Default | What it is | Effect |
+|---|---|---|---|
+| `--sub_warmup` / `SUB_WARMUP` | 3 | submarine: rounds of real embedding before it starts coasting | Bootstraps a *generalizing* mark. Too low → nothing to coast on (caught). The amortized cost is ≈ `sub_warmup / rounds`. |
+| `--sub_warmup_batches` / `SUB_WARMUP_BATCHES` | 150 | Batch budget per warmup round (cycles the small enriched set) | Higher = stronger initial mark, more up-front cost. Raise if `ber_after` after warmup isn't near `sub_floor`. |
+| `--sub_max_burst_batches` / `SUB_MAX_BURST_BATCHES` | 60 | Cap on a maintenance **tap** | The per-round cost of topping the mark back up when coasting drifts over η. |
+| `--sub_common_samples` / `SUB_COMMON_SAMPLES` | 50 | Common-class samples mixed into an enriched burst | Stabilizes/disguises the update and aids generalization (same role as in `mixed`). |
+| `--sub_margin` / `SUB_MARGIN` | 0.05 | Target BER = η_estimate − margin | Bigger = sails further under η (safer, more taps); smaller = cheaper, riskier. |
+| `--sub_floor` / `SUB_FLOOR` | 0.05 | Embed until held-out probe BER ≤ this | The BER the attacker tries to look like (a well-embedded honest client). |
+| `--sub_eta_mode` / `SUB_ETA_MODE` | adaptive | `adaptive` = μ+3σ of its **clean** post-embed BER; `fixed` = constant | The attacker's *own* η-guess. Anchored on clean (not coast) BER so a failing attacker can't fool itself. |
+| `--sub_eta_fixed` / `SUB_ETA_FIXED` | 0.25 | η guess when `mode=fixed` / no clean history yet | A conservative constant target. |
+| `--sub_probe_every` / `SUB_PROBE_EVERY` | 3 | Re-check probe BER every k burst batches | Controls early-stop granularity (cheaper embedding). |
+| `--mem_blend_global` / `MEM_BLEND_GLOBAL` | 0.2 (sub) / 0.0 (mem) | Fraction of the current global blended into a coast/replay | Freshness vs mark-decay dial. 0 = pure frozen replay (staleness-detectable); higher = tracks the global (robust) but decays the mark → more taps. |
+| `--warmup_rounds` / `WARMUP_ROUNDS` | 5 | memory_exploit: rounds of honest training before it freezes-and-replays | `1` = pure exploit; higher = "momentum". On CIFAR-100 keep ≥5 (≈8–10 for 50-round runs) or you freeze a half-embedded mark and get caught. |
+
+## Threshold option (server-side): `--calib_on_all` / `CALIB_ON_ALL`
+
+Already listed under mode toggles; restated here because it is the axis every
+adaptive family is run under. `0` = attacker excluded from the η pool (paper's
+idealized trusted-pool assumption; attacker must **guess** η). `1` = η = μ+3σ
+over **all** clients incl. the undetected attacker (realistic; attacker
+**poisons** η). Run **both** for A7/A8.
 
 ## Watermark knobs
 
@@ -168,3 +198,33 @@ gap — paper-faithful cumulative η; recall collapses while detect_acc still lo
 fine). The **separability figure** visualizes both: it sweeps η and prints the
 margin (gap between the two clusters). Positive margin = a good η exists;
 negative margin = genuine impossibility.
+---
+
+## Compute / effort metrics (adaptive attacks)
+
+Written into `result.json["compute"]` by `compute_meter.py`. These quantify the
+"embedding is costly" claim — the whole point of the submarine/memory-exploit.
+
+- **`compute.per_client[cid].total`** — per client: `fwd_passes`, `bwd_passes`,
+  `opt_steps`, `samples`, `gpu_ms` (CUDA-event timed, accurate on the cluster),
+  `wall_ms`, `flops` (null unless `fvcore`/`thop`/`ptflops` is installed),
+  `duty_cycle` (fraction of rounds it actually trained), `rounds_trained`.
+- **`compute.per_client[cid].per_round`** / **`.trace`** — the per-round series
+  and the attacker's decision log (`tap`/`coast`/`warmup`/`replay`, coast BER,
+  η-estimate, resulting BER, #batches). The trace is how you *prove* the attack
+  did what you claim.
+- **`compute.summary.effort_ratio_gpu`** — free-rider mean GPU-ms ÷ honest mean.
+  **The headline number.** `≪ 1` with `wm_fr_recall → 0` = scheme defeated
+  cheaply.
+- **`compute.summary.effort_ratio_samples`** — same ratio in samples;
+  device-independent, use it for cross-machine plots.
+- **duty cycle** reading: `1.0` = trains every round (honest-like effort);
+  `0.1` = trains one round in ten (mostly coasting). Two submarines can show
+  very different duty cycles because their trigger classes differ in
+  embeddability — expected, not a bug.
+
+**How to read effort + detection together (the only reading that matters):**
+a low `effort_ratio` alone is meaningless (a free-rider that does nothing is also
+cheap — and caught). The claim is the **pair**: low `effort_ratio_*` **and**
+low `wm_fr_recall` **and** low `wm_fr_ber` (server-side, so the mark really is
+present). All three together = a cheap, *undetected*, genuinely-marked free-rider.

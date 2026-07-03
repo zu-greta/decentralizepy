@@ -104,6 +104,29 @@ accuracy (`Acc_fr`), watermark accuracy (`Acc_wm`), and FPR.
 Norm-buffer guard `_is_norm_buffer`: never extrapolate/perturb BatchNorm running
 stats (would push variance negative → NaN). Only matters for ResNet/GoogLeNet.
 
+### `faremark/attacks_adaptive.py` — effort-minimizing free-riders (our extension)
+Factories `make_submarine_attack` / `make_memory_exploit_attack` subclass
+`WatermarkClient` via `_AdaptiveMixin`. These are **key-holding** attackers that
+embed their real assigned mark *cheaply* and keep detection BER under an estimated
+η. The submarine warms up a generalizing mark (trigger-enriched training), then
+each round coasts on memory-replay (~0 compute) unless a probe says the coast BER
+is drifting over η, in which case it taps a minimal enriched burst. `_eta_estimate`
+is anchored to its clean post-embed BER. memory_exploit trains for
+`warmup_rounds` then replays the frozen memory. Both log `self.trace`. Not in the
+paper — this is the "embedding is only *costly*, not impossible" contribution.
+See ADAPTIVE_ATTACKS.md.
+
+### `faremark/compute_meter.py` — per-client effort accounting (our extension)
+`ComputeMeter`: per-round and total fwd/bwd/opt passes, samples, GPU-ms (CUDA
+events), wall-ms, FLOPs (if a profiler is installed), and duty cycle. Emits
+`effort_ratio_gpu` / `effort_ratio_samples` (free-rider ÷ honest). This is what
+turns "the free-rider does less work" into a measured number.
+
+### `faremark/manifest.py` — self-describing runs (our extension)
+`build_manifest(cfg, args)` stamps `family` / `sweep_var` / `sweep_level` / `note`
+/ per-metric `interpretation` into each `result.json` so a run is never opaque and
+`plot_adaptive.py` can group runs automatically. See EXPERIMENTS.md.
+
 ### `faremark/robustness.py` — watermark removal (§V-E)
 `finetune` (λ=0 retrain → Fig. 9), `prune_model` (global L1 → Fig. 10),
 `quantize` (precision reduction → §V-E), `dp_noise` (clip + Gaussian, Table VI;
@@ -193,6 +216,28 @@ the default and unchanged.
   (`b*own + (1-b)*extrapolated_global`). Lowers the FR's own BER while masking
   the fabrication. The key adversary for the impossibility argument: it
   directly pushes FR BER toward the honest cluster.
+- `submarine` (`--sub_warmup … --mem_blend_global …`) — NEW; **effort-minimizing**
+  key-holder. Warms up a generalizing mark, then coasts on memory-replay and taps
+  a minimal trigger-enriched burst only when its probe says BER is drifting over
+  its η-estimate. Tracks the global for freshness. Reports `effort_ratio ≪ 1` with
+  `recall → 0`. The "embedding is costly, not impossible" attack.
+- `memory_exploit` (`--warmup_rounds W`) — NEW; the **lower bound** on attacker
+  effort: train honestly for W rounds, then replay the frozen mark-bearing memory
+  forever (zero training thereafter). Cheapest break; naive-staleness-detectable,
+  which is why the submarine exists above it.
+
+**Effort/cost pillar (our 6th).** The compute meter measures GPU-ms/samples per
+client; the submarine/memory_exploit drive the free-rider's effort to a few
+percent of an honest client's while keeping BER under η. This attacks the paper's
+claim 3 ("a free-rider cannot embed") by showing the real content is only
+"embedding is *costly*", and quantifying how small that cost can be made.
+
+**First cluster smoke finding (config 14, 10 rounds).** A naive submarine that
+taps over the *general* CIFAR-100 shard fails to embed — the trigger class is ~1%
+of the shard, so a short burst sees almost no trigger samples (`ber_after` ~0.5,
+recall 0.65, caught) even at 3% effort. Fixed by trigger-enriched bursts + a
+warmup + anchoring the η-estimate to clean BER. This is the same generalization
+gap that underlies the paper's Table V, re-expressed as an effort tradeoff.
 
 **Plotting (`scripts/plot_results.py`).** Turns any result.json (or directory)
 into figures: per-run BER trajectories, an auto-detected sweep summary, and

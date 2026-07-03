@@ -56,12 +56,15 @@ class ExpConfig:
     # ---- adaptive free-riders (submarine / memory-exploit) ----
     # submarine: closed-loop controller that keeps its own BER just under its
     # estimate of eta, training a minimal burst only when needed.
-    sub_margin: float = 0.03            # target BER = eta_estimate - margin
-    sub_floor: float = 0.05             # burst-train until held-out probe BER <= floor
-    sub_eta_mode: str = "adaptive"      # "adaptive" (mirror server mu+3sigma) | "fixed"
-    sub_eta_fixed: float = 0.25         # eta guess when mode=fixed / no history yet
-    sub_max_burst_batches: int = 40     # hard cap on a tap's mini-batches
-    sub_probe_every: int = 5            # re-check probe BER every k burst batches
+    sub_warmup: int = 3                 # rounds of real (enriched) embedding up-front
+    sub_warmup_batches: int = 150       # per-warmup-round batch budget (cycles the enriched set)
+    sub_margin: float = 0.05            # target BER = eta_estimate - margin
+    sub_floor: float = 0.05             # embed until held-out probe BER <= floor
+    sub_eta_mode: str = "adaptive"      # "adaptive" (anchor to clean BER) | "fixed"
+    sub_eta_fixed: float = 0.25         # eta guess when mode=fixed / no clean history yet
+    sub_max_burst_batches: int = 60     # cap on a maintenance tap's mini-batches
+    sub_probe_every: int = 3            # re-check probe BER every k burst batches
+    sub_common_samples: int = 50        # common-class samples in an enriched burst (stability/disguise)
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front
     # shared: how much of the global to mix into a coast/replay (freshness vs mark)
@@ -175,9 +178,12 @@ CONFIGS = [
     # idx 15: MEMORY-EXPLOIT free-rider (train once, replay frozen mark forever),
     # paper-faithful CIFAR-100, 2 FR. The cheapest break; contrast its compute
     # (~1 round) with the submarine's.
+    # warmup_rounds=5: on CIFAR-100 an honest client needs several rounds to
+    # reach BER~0, so freeze the mark only after it has actually embedded. Raise
+    # to ~8-10 for full 50-round runs; the amortized cost is warmup/total.
     ExpConfig("memexploit_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
-              attack="memory_exploit", num_free_riders=2, warmup_rounds=1,
+              attack="memory_exploit", num_free_riders=2, warmup_rounds=5,
               mem_blend_global=0.0, paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 

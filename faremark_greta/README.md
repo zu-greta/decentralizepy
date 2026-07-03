@@ -611,3 +611,34 @@ ResNet-18/CIFAR-10 and AlexNet/MNIST first — those cover Fig. 7 and Fig. 8/9/1
 
 See `DOCUMENTATION.md` for the full code↔paper map and the "where to add things"
 guide for extending the framework.
+---
+
+## Stage 6 — adaptive / effort-minimizing attacks (extension)
+
+Beyond the paper's static free-riders, the repo now includes **key-holding,
+effort-minimizing** attackers that quantify the "embedding is costly, not
+impossible" claim:
+
+- **`faremark/attacks_adaptive.py`** — `submarine` (warm up a generalizing mark,
+  then coast on memory-replay and tap minimal trigger-enriched bursts only when a
+  probe says BER is drifting over its η-estimate) and `memory_exploit` (train for
+  `warmup_rounds`, then replay the frozen mark forever).
+- **`faremark/compute_meter.py`** — per-client GPU-ms / samples / duty cycle →
+  `effort_ratio_gpu`/`effort_ratio_samples` in `result.json`.
+- **`faremark/manifest.py`** — stamps `family`/`sweep_var`/`interpretation` so
+  runs are self-describing and `scripts/plot_adaptive.py` groups them automatically.
+- **`scripts/plot_adaptive.py`** — effort-plane, squeezing, sweep, and duty-cycle
+  figures.
+
+Configs `14` (submarine) and `15` (memory_exploit) are paper-faithful CIFAR-100
+presets. The server-side `CALIB_ON_ALL` flag selects whether the attacker is in
+the η pool (option 2, realistic) or not (option 1, the paper's assumption); run
+both. Full threat model, implementation, the `mixed`-attack explainer, and the
+experiment catalog with a per-experiment analysis template live in
+**`ADAPTIVE_ATTACKS.md`**; knobs in **`HYPERPARAMS.md`**; the run registry in
+**`EXPERIMENTS.md`**.
+
+**Status:** pipeline validated end-to-end on the A100. First smoke test surfaced
+and fixed the core mechanism (a cheap burst must be trigger-*dense* to embed a
+mark that generalizes on CIFAR-100); real-horizon (≥50 round) sweeps are the next
+step.

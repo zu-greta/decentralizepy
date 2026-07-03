@@ -102,7 +102,7 @@ attack ideas:
     - detection functino, watermark hgih - vs num samples used (num queries)
 
 
-July2:
+TODO:
 - for every plot from now on add standard deviation based on the seeds
 - only do one axis plots from now on, no dual y-axis plots
 - note for non-iid: interesting. its not an attack but it shows weakness from the paper that we can build and improve on. free rider power doesn't depend on non-iid but it also shows that free-rider doesn't break down during non iid
@@ -218,3 +218,20 @@ to sync it with the original repo
     - ?
 3. presentation 
     - ?
+---
+
+### update — adaptive/effort attacks running on the cluster
+
+- Built the effort-minimizing attackers (submarine, memory_exploit) + a compute
+  meter + self-describing manifests + adaptive plots. Pipeline runs end-to-end on
+  the A100 (config 14/15).
+- First smoke test (10 rounds, CIFAR-100, paper-faithful): the attack was cheap
+  (3% GPU) but still caught (recall 0.65). Diagnosis from the traces: a burst over
+  the general shard barely touches the trigger class (~1% of the shard) so the
+  mark never embeds; the adaptive η-estimate then mirrored its own failing BER and
+  it coasted on nothing. Fixed: trigger-enriched bursts + a warmup + η anchored to
+  clean post-embed BER. Also fixed the earlier paper-faithful `exclude`-column
+  crash for watermark-capable free-riders.
+- Next: 50-round validation (V) then the effort/eta/iid/bit-budget sweeps
+  (E1–E6). See ADAPTIVE_ATTACKS.md for the plan + per-experiment analysis.
+- For meetings: threat model + implementation Q&A is in ADAPTIVE_ATTACKS.md §2–3.
