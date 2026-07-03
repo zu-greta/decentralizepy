@@ -51,17 +51,17 @@ To contribute effectively to this project, we highly value:
 | August 4 | [] |
 | August 11 | [] |
 | August 18 | [] |
-| August 25 | [] |
 
 
 ---
 ### submissions
 | Date | Tasks |
 |------|-------|
-| August 29 | - last day |
+| August 21 | - last day |
 
 
 ### NOTES/questions
+June9:
 - graph colouring - number of nodes and number of colours = number of unique classes needed for watermarking
 - federated learning but no data privacy ?
 - goal: attack method that utilizes the least amount of resources (eg. only train on the trigger class) to be a free-rider and then test the detection method on it that based on watermarking in outer layer. no matter the data boundary, the free-rider will be detected. => watermaking/fingerprinting on output layer is impossible (with certain conditions).
@@ -71,6 +71,7 @@ To contribute effectively to this project, we highly value:
 - facking fairness paper ? optimal transport ?
 - attack: threshold is averaged
 
+June16:
 - NOTE FOR DATA PARTITIONING - IID for controlled -> QUESTION: more clients than classes table IX
 - NOTE FOR calibrating n threshold + sliding window ?
 - TODO: test on non-iid
@@ -79,6 +80,7 @@ To contribute effectively to this project, we highly value:
 - IDEA: plotting attack effort vs detection accuracy - worth the effort or not. how to measure this?
     - num samples, compute it takes
 
+June23:
 - QUESTION: what is the clear goal - proving paper has weakness/limitation ? or that paper's definition of effort vs. free-riding is too low for worth ? the paper seems to assume a lot of things - brushing the rest aside as too high effort to be worth free riding - can we challenge that ?
     - ANSWER: yes, we start with challenging paper's assumptions by building an attack that is low effort and but can break through the watermarking detection. explore different attacks and measure the effort vs. detection accuracy. the global goal is to prove thoretically that it is impossible to have watermarking robust in the output layer. 
 - QUESTION: non-iid tested in paper ? + data partition the paper does for when too many clients vs clasess - they claim it still works fine
@@ -100,7 +102,7 @@ attack ideas:
     - detection functino, watermark hgih - vs num samples used (num queries)
 
 
-TODO:
+July2:
 - for every plot from now on add standard deviation based on the seeds
 - only do one axis plots from now on, no dual y-axis plots
 - note for non-iid: interesting. its not an attack but it shows weakness from the paper that we can build and improve on. free rider power doesn't depend on non-iid but it also shows that free-rider doesn't break down during non iid

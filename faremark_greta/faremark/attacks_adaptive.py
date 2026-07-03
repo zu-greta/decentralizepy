@@ -1,23 +1,17 @@
-"""Adaptive, low-effort free-riders — the "break the cost assumption" attacks.
+"""Low-effort free-riders
 
-FareMark's implicit claim is: a free-rider must do ~honest work to reproduce the
-mark, so rational free-riders won't bother. These attackers falsify that by
-keeping detection BER under the threshold while spending a small fraction of an
-honest client's compute (measured by compute_meter).
-
-Threat model (matches the project's locked model + the user's clarification):
-  * The attacker is an ordinary REGISTERED client. It holds its OWN assigned
-    trigger class + key + bits (same information as any honest client) and can
-    embed and measure its own BER. It does NOT see η, other clients' keys, or
-    other clients' BER. It therefore must ESTIMATE η.
-  * "Attacker in the pool vs not" is a SERVER-side setting (wm_verify.calib_on_all),
+Threat model:
+  * Free-rider acts like an honest client with an assigned trigger class + key + wm bits
+    it can embed and measure its own BER but does not see η, other clients' keys, or
+    other clients' BER. It must estimate η to stay undetected.
+  * "Attacker in the pool vs not" is a server-side setting (wm_verify.calib_on_all),
     not a change to the attacker. calib_on_all=False => the server excludes the
     attacker from η (idealized trusted pool) and the attacker must guess η.
     calib_on_all=True => the attacker's submissions are inside the μ+3σ calc
     (realistic) and moderate BER even helps it by inflating η.
 
-Two families here (both subclass WatermarkClient via a factory, so they can embed
-before/while defecting, and so compute_meter sees their work):
+attacks both subclass WatermarkClient via a factory, so they can embed
+before/while defecting, and compute_meter sees their work:
 
   submarine / flappy-bird  (make_submarine_attack)
       Closed-loop controller. Each round it probes the BER it WOULD submit if it
@@ -31,7 +25,7 @@ before/while defecting, and so compute_meter sees their work):
 
   memory-exploit / momentum  (make_memory_exploit_attack)
       Exploits that _memory_update is client-side and the verifier reads the
-      SUBMITTED model. Train (embed) for `warmup_rounds`, then replay the frozen,
+      submitted model. Train (embed) for `warmup_rounds`, then replay the frozen,
       mark-bearing memory forever — never retrain, never truly adopt the global.
       BER stays ~0 at ~warmup_rounds of compute. This is the cheapest break, but
       a staleness-aware detector could catch the frozen submissions; use the
