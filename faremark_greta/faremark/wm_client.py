@@ -168,7 +168,14 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             wm_args = dict(
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
-                wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing)
+                wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
+                # MUST match the honest clients' projection mode, or a
+                # watermark-capable free-rider extracts against a different column
+                # set than the verifier registered. In paper_faithful this is
+                # None (full softmax); otherwise the "trigger" sentinel. Without
+                # this, paper_faithful drops a column for the attacker only ->
+                # m*l mismatch -> reshape error in project_logits.
+                exclude=exclude_col)
             # NOTE: adaptive attackers subclass WatermarkClient so they hold their
             # own key (same info as an honest client) and are compute-metered.
             if attack == "train_then_attack":
