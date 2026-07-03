@@ -64,6 +64,22 @@ for CAL in 0 1; do for R in $SEEDS_SWEEP; do
   sub 14 $R ATTACK=submarine CALIB_ON_ALL=$CAL SUB_WARMUP=8 \
       FAMILY=A7_submarine SWEEP_VAR=calib_on_all NOTE="option $((CAL+1))"
 done; done
+# E7 — CONTROLLED PROOF: "you need the whole shard to embed a generalizing mark".
+#      Vary ONLY the attacker's training data composition, measure server BER
+#      (on the server's held-out TEST triggers). Few trigger samples overfit
+#      (BER stays ~0.5); full shard generalizes (BER -> ~0.05). This is the
+#      rigorous, non-confounded version of figs/proof_fullshard_vs_triggeronly.png
+#      and reproduces the paper's Table V on CIFAR-100.
+for NS in 2 8 32; do for R in $SEEDS_SWEEP; do
+  sub 13 $R ATTACK=trigger_only N_TRIGGER_SAMPLES=$NS \
+      FAMILY=E7_embed_composition SWEEP_VAR=n_trigger_samples NOTE="trigger-only, $NS samples"
+done; done
+for R in $SEEDS_SWEEP; do
+  sub 13 $R ATTACK=mixed FULL_TRIGGER_CLASS=1 N_COMMON_SAMPLES=50 BLEND=1.0 \
+      FAMILY=E7_embed_composition SWEEP_VAR=n_trigger_samples NOTE="all trigger + 50 common"
+  sub 13 $R ATTACK=none \
+      FAMILY=E7_embed_composition SWEEP_VAR=n_trigger_samples NOTE="full shard (honest benign BER = the reference)"
+done
 fi
 
 if [ "$TIER" -ge 3 ]; then
