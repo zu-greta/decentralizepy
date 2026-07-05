@@ -189,6 +189,7 @@ def make_submarine_attack(base_cls):
                      sub_probe_every: int = 3,       # re-check probe BER every k batches
                      sub_common_samples: int = 50,   # common-class samples in an enriched burst
                      mem_blend_global: float = 0.2,  # coast freshness: fraction of global mixed in
+                     sub_coast_mode: str = "transplant",  # transplant | blend | replay
                      **kw):
             super().__init__(*a, **kw)
             self.sub_warmup = sub_warmup
@@ -201,9 +202,11 @@ def make_submarine_attack(base_cls):
             self.sub_probe_every = sub_probe_every
             self.sub_common_samples = sub_common_samples
             self.mem_blend_global = mem_blend_global
+            self.sub_coast_mode = sub_coast_mode
             self._prepared = False
             self._probe_x = None
             self._enr_loader = None
+            self._mark_delta = None        # memory - global at embed time (mark direction)
             self._clean_ber_hist = []      # only genuinely-low post-embed BERs (honest proxy)
             self._embeds_done = 0          # counts warmup rounds actually run (index-base safe)
             self.trace = []
@@ -225,13 +228,35 @@ def make_submarine_attack(base_cls):
                 self._clean_ber_hist.append(ber)
 
         def _coast_state(self, global_state, prev_global_state):
+            # TRANSPLANT (default, experimental): submit the FRESH global plus the
+            # frozen mark-direction (memory - global_at_embed). Tracks everyone
+            # (no staleness, no poisoning) while re-injecting the mark for ~0 cost.
+            if self.sub_coast_mode == "transplant" and self._mark_delta is not None:
+                out = {}
+                for k, g in global_state.items():
+                    if k in self._mark_delta and torch.is_floating_point(g):
+                        out[k] = g + self._mark_delta[k]
+                    else:
+                        out[k] = g.clone()
+                return out
+            # BLEND: mix live global into the frozen memory (dilutes the mark).
             if self.memory is not None:
-                if self.mem_blend_global > 0.0:
+                if self.sub_coast_mode == "blend" and self.mem_blend_global > 0.0:
                     return _blend_states(self.memory, global_state,
                                          1.0 - self.mem_blend_global)
+                # REPLAY: frozen memory (preserves mark but stale -> poisons global).
                 return copy.deepcopy(self.memory)
             return (copy.deepcopy(global_state) if prev_global_state is None
                     else _extrapolate(global_state, prev_global_state))
+
+        def _update_mark_delta(self, global_state):
+            # mark direction learned this warmup round: memory - the global it
+            # started from. Refreshed each warmup/tap so the delta stays current.
+            if self.memory is None:
+                return
+            self._mark_delta = {k: (self.memory[k] - global_state[k])
+                                for k, v in self.memory.items()
+                                if torch.is_floating_point(v) and k in global_state}
 
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
@@ -245,6 +270,7 @@ def make_submarine_attack(base_cls):
                 submit, n = super().produce_update(global_state,
                                                    prev_global_state, round_idx)
                 self._embeds_done += 1
+                self._update_mark_delta(global_state)
                 ber = self._probe_ber_state(submit)
                 self._record_clean(ber)
                 self.trace.append({"round": round_idx, "action": "warmup",
@@ -269,6 +295,7 @@ def make_submarine_attack(base_cls):
                                  floor=self.sub_floor, enriched=False)
                 w_sgd = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w_sgd)
+                self._update_mark_delta(global_state)
                 trained = True
                 ber_after = self._probe_ber_state(submit)
                 self._record_clean(ber_after)

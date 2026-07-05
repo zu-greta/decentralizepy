@@ -281,11 +281,18 @@ def main():
     ap.add_argument("--effort", default="samples", choices=["samples", "gpu", "gpu_ms"])
     ap.add_argument("--metric", default="wm_fr_recall")
     ap.add_argument("--sweep_var", default=None)
+    ap.add_argument("--family", nargs="+", default=None,
+                    help="keep only runs whose manifest.family is in this list "
+                         "(use when the run TAG is not in the folder name)")
     args = ap.parse_args()
 
     results = load_results(args.inputs)
+    if args.family:
+        keep = set(args.family)
+        results = [r for r in results
+                   if (r.get("manifest", {}) or {}).get("family") in keep]
     if not results:
-        print("no result.json found for the given --in globs")
+        print("no result.json found for the given --in globs / --family filter")
         return
     groups = group_by_condition(results)
     print(f"loaded {len(results)} runs in {len(groups)} conditions")

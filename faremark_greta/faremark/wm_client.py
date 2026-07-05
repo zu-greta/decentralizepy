@@ -149,6 +149,10 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     fr_idx = set(choose_free_riders(len(client_loaders),
                                     getattr(cfg, "num_free_riders", 0), seed))
     attack = getattr(cfg, "attack", "none")
+    # attack="none" is an all-honest run (fidelity, or the E7 full-shard reference
+    # measured via benign BER). No free-rider slots -> avoids ATTACKS["none"] KeyError.
+    if attack in (None, "none", ""):
+        fr_idx = set()
 
     clients = []
     unembed = []

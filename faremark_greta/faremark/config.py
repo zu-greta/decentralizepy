@@ -68,7 +68,16 @@ class ExpConfig:
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front
     # shared: how much of the global to mix into a coast/replay (freshness vs mark)
-    mem_blend_global: float = 0.3       # submarine default 0.3; memory_exploit override 0.0
+    mem_blend_global: float = 0.3       # coast "freshness": fraction of the live global mixed into
+                                        # a coast submission. THE TRILEMMA (validated 50-round):
+                                        #   0.0 (frozen replay)  -> mark preserved BUT stale weights
+                                        #        POISON the global (acc 72->53%, honest BER->0.5, FPR up)
+                                        #   0.3 (blend)          -> no poisoning (acc 72%) BUT the mark
+                                        #        decays -> the FR is caught by BER
+                                        # Neither is a clean stealthy free-ride; see sub_coast_mode.
+    sub_coast_mode: str = "transplant"  # "transplant" (global_now + frozen mark-delta; fresh+marked,
+                                        #   EXPERIMENTAL escape from the trilemma), "blend" (use
+                                        #   mem_blend_global), or "replay" (frozen memory, poisons).
 
     # ---- watermarking ----
     watermark: bool = False     # honest clients embed an output-space watermark
