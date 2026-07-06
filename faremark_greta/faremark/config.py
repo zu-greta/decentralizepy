@@ -74,6 +74,8 @@ class ExpConfig:
     autop_max_batches: int = 200        # autopilot: largest adaptive tap
     autop_lookahead: int = 2            # autopilot: rounds ahead to predict the eta crossing
     autop_warmup_cap: int = 15          # autopilot: hard cap so self-terminating warmup can't run forever
+    autop_scope: str = "full"           # autopilot: which params to re-train (full|block|head) — the effort dial
+    autop_enriched: bool = False        # autopilot: data source (False=full shard, True=trigger-heavy)
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front
     # shared: how much of the global to mix into a coast/replay (freshness vs mark)

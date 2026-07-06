@@ -114,19 +114,34 @@ class _AdaptiveMixin:
         self.model.load_state_dict(state)
         return self._probe_ber_current_model()
 
-    def _embed_loop(self, global_state, max_batches, floor, enriched):
-        """Load global, train (enriched trigger-heavy or full shard) until the
-        held-out probe BER <= floor or the batch budget. Returns #batches.
+    def _embed_loop(self, global_state, max_batches, floor, enriched, scope=None):
+        """Load global, train until the held-out probe BER <= floor or the batch
+        budget. Returns #batches.
 
-        The enriched loader is small (~trigger + common samples), so a fixed
-        `local_epochs` would be only a handful of steps. When `max_batches` is
-        given we CYCLE the loader up to that budget (early-stopping at `floor`),
-        so a warmup/tap embeds enough but stays bounded and cheap. When
-        `max_batches` is None we fall back to `local_epochs` passes.
+        `scope` controls WHICH PARAMETERS train (the effort/generalization dial):
+          None/"full" -> whole model (generalizes, but every batch backprops the
+                          backbone = most compute per batch)
+          "head"      -> only the final linear layer (last 2 weight tensors); the
+                          backbone is frozen so its backward pass is skipped =
+                          much cheaper per batch. Tests whether the watermark is a
+                          pure output-layer phenomenon on the free backbone.
+          "block"     -> last ~block (last 8 tensors).
+        `enriched` picks the DATA SOURCE (trigger-heavy vs full shard); `scope`
+        picks the PARAMETERS. They are independent axes.
         """
         self.model.load_state_dict(global_state)
         self.model.train()
-        opt = torch.optim.SGD(self.model.parameters(), lr=self.lr,
+        named = list(self.model.named_parameters())
+        if scope in ("head", "block"):
+            keep = 2 if scope == "head" else 8
+            for i, (_, pp) in enumerate(named):
+                pp.requires_grad_(i >= len(named) - keep)
+            train_params = [pp for pp in self.model.parameters() if pp.requires_grad]
+        else:
+            for _, pp in named:
+                pp.requires_grad_(True)
+            train_params = list(self.model.parameters())
+        opt = torch.optim.SGD(train_params, lr=self.lr,
                               momentum=self.momentum,
                               weight_decay=self.weight_decay)
         key = self.key.to(self.device)
@@ -134,6 +149,11 @@ class _AdaptiveMixin:
         loader = (self._enr_loader if (enriched and self._enr_loader is not None)
                   else self.loader)
         steps, passes = 0, 0
+
+        def _restore():
+            for _, pp in named:
+                pp.requires_grad_(True)
+
         while True:
             for x, y in loader:
                 x, y = x.to(self.device), y.to(self.device)
@@ -155,12 +175,12 @@ class _AdaptiveMixin:
                     b = self._probe_ber_current_model()
                     self.model.train()
                     if b is not None and b <= floor:
-                        return steps
+                        _restore(); return steps
                 if max_batches is not None and steps >= max_batches:
-                    return steps
+                    _restore(); return steps
             passes += 1
             if max_batches is None and passes >= self.local_epochs:
-                return steps
+                _restore(); return steps
 
 
 def make_submarine_attack(base_cls):
@@ -492,6 +512,8 @@ def make_autopilot_attack(base_cls):
                      autop_max_batches: int = 200,    # largest tap
                      autop_lookahead: int = 2,        # rounds ahead to predict the crossing
                      autop_warmup_cap: int = 15,      # hard cap so warmup can't run forever
+                     autop_scope: str = "full",       # which params to train: full | block | head
+                     autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
                      sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
             super().__init__(*a, **kw)
@@ -501,6 +523,8 @@ def make_autopilot_attack(base_cls):
             self.autop_max_batches = autop_max_batches
             self.autop_lookahead = autop_lookahead
             self.autop_warmup_cap = autop_warmup_cap
+            self.autop_scope = autop_scope
+            self.autop_enriched = autop_enriched
             self.sub_eta_fixed = sub_eta_fixed
             self.sub_probe_every = sub_probe_every
             self.sub_common_samples = sub_common_samples
@@ -545,7 +569,8 @@ def make_autopilot_attack(base_cls):
             # the eta estimate has stabilised (or the safety cap is hit).
             if not self._warm_done:
                 self._embed_loop(global_state, self.autop_max_batches,
-                                 floor=self.autop_floor, enriched=False)
+                                 floor=self.autop_floor, enriched=self.autop_enriched,
+                                 scope=self.autop_scope)
                 w = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w)
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
@@ -586,7 +611,8 @@ def make_autopilot_attack(base_cls):
                 if self._clean_ber_hist and self._clean_ber_hist[-1] > self.autop_floor:
                     want = int(self._last_tap_batches * 1.6)   # last tap undershot -> grow
                 nb = int(min(self.autop_max_batches, max(self.autop_min_batches, want)))
-                self._embed_loop(global_state, nb, floor=self.autop_floor, enriched=False)
+                self._embed_loop(global_state, nb, floor=self.autop_floor,
+                                 enriched=self.autop_enriched, scope=self.autop_scope)
                 w = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w)
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None

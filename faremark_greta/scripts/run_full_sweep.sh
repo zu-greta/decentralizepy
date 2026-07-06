@@ -29,11 +29,13 @@ if [ "${1:-}" = "PLOT" ]; then
   ALL="$RES/*/result.json"; PA="python scripts/plot_adaptive.py"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
   run python scripts/plot_frontier.py --in "'$ALL'" \
-      --family R_frontier autopilot S_samples S_warmup M_warmup S_coast --out "$OUT/weakpoint_all"
+      --family R_frontier autopilot autopilot_scope S_samples S_warmup M_warmup S_coast --out "$OUT/weakpoint_all"
   run $PA sweep --in "'$ALL'" --family R_frontier --sweep_var reembed_effort --metric wm_fr_ber --out "$OUT/reembed_frber"
   run $PA sweep --in "'$ALL'" --family R_frontier --sweep_var reembed_effort --metric final_acc --out "$OUT/reembed_acc"
   run $PA sweep --in "'$ALL'" --family R_frontier --sweep_var reembed_effort --metric effort_ratio_samples --out "$OUT/reembed_effort"
   run $PA duty  --in "'$RES/*autopilot*rep0*/result.json'" --out "$OUT/autopilot_duty"
+  run $PA sweep --in "'$ALL'" --family autopilot_scope --sweep_var autop_scope --metric wm_fr_ber --out "$OUT/autopilot_scope_frber"
+  run $PA sweep --in "'$ALL'" --family autopilot_scope --sweep_var autop_scope --metric effort_ratio_samples --out "$OUT/autopilot_scope_effort"
   run $PA sweep --in "'$ALL'" --family M_warmup --sweep_var warmup_rounds --metric wm_fr_ber --out "$OUT/memory_frber"
   run $PA sweep --in "'$ALL'" --family M_warmup --sweep_var warmup_rounds --metric final_acc --out "$OUT/memory_acc"
   run $PA sweep --in "'$ALL'" --family S_samples --sweep_var sub_max_burst_batches --metric wm_fr_ber --out "$OUT/sub_taps_frber"
@@ -61,6 +63,15 @@ done
 for MB in 120 250; do for R in $SEEDS; do
   sub 17 $R ATTACK=autopilot AUTOP_MAX_BATCHES=$MB \
       FAMILY=autopilot SWEEP_VAR=autop_max_batches NOTE="autopilot maxtap=$MB"
+done; done
+
+echo "###### P2b — AUTOPILOT TRAINING SCOPE (idx17): is full-model/full-shard worth it? ######"
+# same self-tuning controller, but re-train only head / last block / whole model.
+# head/block freeze the backbone (skip its backward) -> far cheaper per batch.
+# The graph: effort vs fr_ber by scope -> does a cheap head-only re-embed still evade?
+for SC in head block full; do for R in $SEEDS; do
+  sub 17 $R ATTACK=autopilot AUTOP_SCOPE=$SC \
+      FAMILY=autopilot_scope SWEEP_VAR=autop_scope NOTE="autopilot scope=$SC"
 done; done
 
 echo "###### P3 — MEMORY warmup (idx15) ######"

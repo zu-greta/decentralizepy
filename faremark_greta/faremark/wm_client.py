@@ -4,6 +4,11 @@ memory-enhanced update so the watermark survives FedAvg aggregation.
 Maps to the paper:
   * trigger / common split + L = L_cl + lambda * L_wm        (section IV-B, Eq. 11-12)
   * memory-enhanced parameter update                          (section IV-C, Eq. 14)
+
+CHANGE (adaptive-attacks work): every WatermarkClient now owns a ComputeMeter so
+honest effort and attacker effort are measured on the same footing (see
+compute_meter.py). Honest clients are metered here; the adaptive attackers
+(attacks_adaptive.py) meter their own bursts/coasts.
 """
 from __future__ import annotations
 
@@ -254,6 +259,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_max_batches=getattr(cfg, "autop_max_batches", 200),
                     autop_lookahead=getattr(cfg, "autop_lookahead", 2),
                     autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
+                    autop_scope=getattr(cfg, "autop_scope", "full"),
+                    autop_enriched=getattr(cfg, "autop_enriched", False),
                     sub_eta_fixed=getattr(cfg, "sub_eta_fixed", 0.35),
                     sub_probe_every=getattr(cfg, "sub_probe_every", 3),
                     sub_common_samples=getattr(cfg, "sub_common_samples", 50),
