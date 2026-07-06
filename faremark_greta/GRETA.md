@@ -33,6 +33,7 @@ To contribute effectively to this project, we highly value:
 | June 16 | [X] emailed Xinpeng Zhang and Li Li for code <br> [X] basic re-implementation using Claude | - |
 | June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
 | July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples |
+| July 7 | [1] no working results yet - needs more tuning for the new attacks | [1] testing how much training is needed to start with (cannot just do trigger samples, need a full shard to warm up) <br> testing some autopilot dynamic way |
 
 ---
 
@@ -101,8 +102,7 @@ attack ideas:
 - attack timing - train-then-attack and trigger-sample-only
     - detection functino, watermark hgih - vs num samples used (num queries)
 
-
-TODO:
+July2:
 - for every plot from now on add standard deviation based on the seeds
 - only do one axis plots from now on, no dual y-axis plots
 - note for non-iid: interesting. its not an attack but it shows weakness from the paper that we can build and improve on. free rider power doesn't depend on non-iid but it also shows that free-rider doesn't break down during non iid
@@ -119,6 +119,16 @@ TODO:
     - momentum: initially do more work and then benefit afterwards
     - flappy-bird/submarine attack: for any type of free-riding attack (free-ride with previous model, gaussian etc.), train in the beginning, just enough to pass the threshold, then stop training for a number of rounds - use the approximation of the threshold (by using the formula) and your own BER to predict where the threshold is, and then continue training when needed. any way to stay right under the threshold, only training when needed to stay under and then free-ride. make sure to use the standard deviation for this! important to check the recovery time (slower recovery the less you need to train) and how fast the degradation (faster - better ?). compare the compute for honest client, free-rider, and this attack. try this with both iid and non-iid for reference.
     - check the memory enhanced, if its done by the client and if that can be exploited. free-riders can take advantage and just never take the global?
+
+
+July7:
+P:
+- S1:
+    - submarine attack: warmup by training rounds on full shard until under threshold, then coast until needed to tap again
+- N1: no results yet - still running some experiments
+    - training just the trigger sample did not work
+    - trying out different warmup rounds, dynamic warmup rounds etc.
+
 
 ---
 ---
