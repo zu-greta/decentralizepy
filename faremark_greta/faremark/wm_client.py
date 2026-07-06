@@ -240,9 +240,9 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 clients.append(cls(
                     reembed_scope=getattr(cfg, "reembed_scope", "head"),
                     reembed_steps=getattr(cfg, "reembed_steps", 10),
-                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.0),
-                    sub_common_samples=getattr(cfg, "sub_common_samples", 0),
+                    reembed_floor=getattr(cfg, "reembed_floor", 0.05),
                     sub_probe_every=getattr(cfg, "sub_probe_every", 5),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
                     **wm_args, **common))
             else:
                 cls = ATTACKS[attack]
