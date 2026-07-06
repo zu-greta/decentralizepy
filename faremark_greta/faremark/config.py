@@ -194,6 +194,12 @@ CONFIGS = [
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="memory_exploit", num_free_riders=2, warmup_rounds=8,
               mem_blend_global=0.0, paper_faithful=True, expected_acc=(0.0, 100.0)),
+
+    # idx 16: REEMBED free-rider ...
+    ExpConfig("reembed_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+              num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="reembed", num_free_riders=2,
+              paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 
 

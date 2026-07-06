@@ -30,28 +30,28 @@ for SC in head block full; do for ST in 10 40 100; do for R in $SEEDS; do
       FAMILY=R_frontier SWEEP_VAR=reembed_effort NOTE="reembed $SC $ST"
 done; done; done
 
-echo "###### PRIORITY 2 — MEMORY warmup (Q1 good point, Q2 effort) ######"
-for W in 2 5 8 12; do for R in $SEEDS; do
-  sub 15 $R ATTACK=memory_exploit WARMUP_ROUNDS=$W \
-      FAMILY=M_warmup SWEEP_VAR=warmup_rounds NOTE="memory warmup=$W"
-done; done
+# echo "###### PRIORITY 2 — MEMORY warmup (Q1 good point, Q2 effort) ######"
+# for W in 2 5 8 12; do for R in $SEEDS; do
+#   sub 15 $R ATTACK=memory_exploit WARMUP_ROUNDS=$W \
+#       FAMILY=M_warmup SWEEP_VAR=warmup_rounds NOTE="memory warmup=$W"
+# done; done
 
-echo "###### PRIORITY 3 — SUBMARINE warmup (Q1) ######"
-for W in 3 8 12; do for R in $SEEDS; do
-  sub 14 $R ATTACK=submarine SUB_WARMUP=$W SUB_COAST_MODE=blend \
-      FAMILY=S_warmup SWEEP_VAR=sub_warmup NOTE="submarine warmup=$W"
-done; done
+# echo "###### PRIORITY 3 — SUBMARINE warmup (Q1) ######"
+# for W in 3 8 12; do for R in $SEEDS; do
+#   sub 14 $R ATTACK=submarine SUB_WARMUP=$W SUB_COAST_MODE=blend \
+#       FAMILY=S_warmup SWEEP_VAR=sub_warmup NOTE="submarine warmup=$W"
+# done; done
 
-echo "###### PRIORITY 4 — SUBMARINE coast type (Q3) at fixed warmup=8 ######"
-for CM in replay blend transplant noise global; do for R in $SEEDS; do
-  sub 14 $R ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=$CM \
-      FAMILY=S_coast SWEEP_VAR=sub_coast_mode NOTE="coast=$CM"
-done; done
+# echo "###### PRIORITY 4 — SUBMARINE coast type (Q3) at fixed warmup=8 ######"
+# for CM in replay blend transplant noise global; do for R in $SEEDS; do
+#   sub 14 $R ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=$CM \
+#       FAMILY=S_coast SWEEP_VAR=sub_coast_mode NOTE="coast=$CM"
+# done; done
 
-echo "###### PRIORITY 5 — SUBMARINE train-per-tap (Q2 how many samples) ######"
-for BB in 20 150; do for R in $SEEDS; do
-  sub 14 $R ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=blend SUB_MAX_BURST_BATCHES=$BB \
-      FAMILY=S_samples SWEEP_VAR=sub_max_burst_batches NOTE="burst=$BB"
-done; done
+# echo "###### PRIORITY 5 — SUBMARINE train-per-tap (Q2 how many samples) ######"
+# for BB in 20 150; do for R in $SEEDS; do
+#   sub 14 $R ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=blend SUB_MAX_BURST_BATCHES=$BB \
+#       FAMILY=S_samples SWEEP_VAR=sub_max_burst_batches NOTE="burst=$BB"
+# done; done
 
 echo; echo "submitted. runai list jobs. When done: ./scripts/make_sweep_figs.sh"
