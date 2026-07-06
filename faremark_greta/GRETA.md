@@ -125,10 +125,13 @@ July7:
 P:
 - S1:
     - submarine attack: warmup by training rounds on full shard until under threshold, then coast until needed to tap again
+    - same default experimental setup for now
 - N1: no results yet - still running some experiments
     - training just the trigger sample did not work
     - trying out different warmup rounds, dynamic warmup rounds etc.
-
+    - starting with more effort to see if it can be reduced later
+- Q1: output layer embedding - alone does not work? prove that you need another detection with it like stale etc
+- Q2: timeline plan ?
 
 ---
 ---

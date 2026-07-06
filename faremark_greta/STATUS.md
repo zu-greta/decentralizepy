@@ -1,132 +1,100 @@
-# STATUS — read this first
+# STATUS 
 
-Last updated for: the effort/cost pillar (free-rider attacks vs FareMark's
-output-layer watermark detector). This file is the single source of truth for
-**where the project stands right now**. Results here are **preliminary** — a new
-full sweep (`scripts/run_full_sweep.sh`) is about to run and may change the
-conclusions. Nothing below is final.
+Single source of truth for where the free-rider project stands. Results are
+**preliminary**; the `run_full_sweep.sh` batch (incl. autopilot + re-embed) will
+refine them. Read `wm_fr_ber` (below η = evades) and `final_acc` (~72 = healthy,
+low = poisoned), NOT `wm_fr_recall` (η swings, so recall is noisy).
 
 ---
 
 ## 1. One-paragraph status
 
-Part 1 (reproduce FareMark) is done. Part 2 is the free-rider work: can a client
-skip most of the training, still pass the watermark detector (BER < η), and keep
-receiving the global model? The infrastructure is solid and three "coast"
-attacks have been built and run at a real 50-round horizon. **Preliminary
-finding: none of the three coast attacks is simultaneously cheap, evasive, and
-harmless** — they hit a three-way trade-off ("the trilemma"). A fourth,
-theoretically-motivated attack (`reembed`) has just been implemented to target
-the actual weak point but is **not yet run**. The immediate next action is the
-sweep that measures every attack's effort-vs-evasion frontier.
+Part 1 (reproduce FareMark) done. Part 2 (can a client free-ride past the
+watermark detector cheaply?): the pipeline is solid and five attacks are built.
+**Key finding so far:** *re-using* a stored watermark fails (a trilemma: cheap /
+keep-mark / don't-poison — pick two), but *re-making* the watermark each round on
+the fresh model **works** — the submarine with strong taps hit BER 0.17 (< η),
+accuracy 71%, at 22% of honest effort. Two attacks are now running to push the
+cost down and confirm robustness: `reembed` (re-train only the output head) and
+`autopilot` (a fully self-tuning submarine, now with a training-scope dial).
 
-## 2. What the detector does (so the metrics make sense)
+## 2. Experimental setup (the exact configuration every result uses)
 
-Server holds each client's secret key + trigger class. Each round it runs every
-submitted model on its own **held-out** trigger images, extracts bits from the
-softmax, and computes **BER** (bit-error-rate). It flags a free-rider when
-**BER ≥ η = μ+3σ** of the benign BER distribution. Key consequence: the mark is a
-property of the *weights*; you can't attach it, you must train it in AND have it
-generalize to triggers you never see.
+| Item | Value |
+|---|---|
+| Task / dataset | image classification, **CIFAR-100** (100 classes) |
+| Model | **ResNet-18** (CIFAR stem) |
+| Federated setup | **10 clients**, IID split, **FedAvg** aggregation |
+| Free-riders | **2 of 10** clients (indices 1 and 6) |
+| Rounds | **50** rounds; **5 local epochs**/round; batch 16; SGD lr 0.01, momentum 0.9, wd 5e-4 |
+| Watermark | **m = 10 bits**, group size l = 10, lambda = 5.0, memory beta = 0.6, 50 verification triggers |
+| Detector | **paper-faithful**: eta = mu+3sigma of benign BER, **cumulative** over all rounds (why eta swings 0.35-0.88) |
+| Threshold option | sweep uses `CALIB_ON_ALL=0`; some earlier runs used `=1` (attacker in the eta pool) |
+| Honest baseline | benign BER ~0.05, final accuracy ~**72-73%** (the "healthy" reference) |
+| Effort metric | `effort_ratio_samples` (and `_gpu`) = free-rider compute / honest compute |
 
-**Read results by `wm_fr_ber` and `final_acc`, NOT `wm_fr_recall`.** The
-paper-faithful η is cumulative and swings (~0.35–0.88) depending on the benign
-pool, so `recall` (caught rate) is a noisy, threshold-dependent readout. `fr_ber`
-below η = evades; `final_acc ≈ 72%` = model healthy; low acc = poisoned.
+One honest run ~3 h on one A100; ~30 runs in the full sweep.
 
-## 3. Attacks implemented (code state — all compile, all wired)
+## 3. Attacks implemented (all compile & wired; config idx in parentheses)
 
-| Attack | config idx | Idea | Status |
+| Attack | idx | Mechanism | Preliminary result |
 |---|---|---|---|
-| `previous_models`, `gaussian` | 8/9/12/13 | static fabricators, never embed | done — caught (baseline anchors) |
-| `train_then_attack`, `trigger_only`, `random_round`, `mixed` | 12/13 + flag | the paper's / forgery attacks | done — `trigger_only`/`mixed` overfit on CIFAR-100 (E7) |
-| `submarine` | 14 | warmup a mark, then **coast** (memory replay), tap only when BER drifts up. Coast modes: `transplant` (default), `blend`, `replay`, `noise`, `global` | built & run — **caught or poisons** (see §4) |
-| `memory_exploit` | 15 | train `warmup_rounds`, then **replay** frozen mark forever | built & run — **evades but poisons** (see §4) |
-| `reembed` | 16 | **NEW / not yet run.** Each round: take the fresh global (free backbone), freeze it, cheaply fine-tune only the **head** on trigger data → fresh + marked + cheap. Scopes: `head`/`block`/`full` | built, wired, **awaiting the sweep** |
+| `previous_models`, `gaussian` | 8/9/12/13 | never embed (static fabricators) | caught (baseline anchors) |
+| `trigger_only`, `mixed`, ... | 12/13 | the paper's / forgery attacks | trigger-only overfits on CIFAR-100 (BER 0.55-0.63) |
+| `submarine` | 14 | warmup embed -> coast -> **tap** (re-train) when the mark fades. Coast modes: transplant/blend/replay/noise/global; tap size = `sub_max_burst_batches` | **strong taps (150) WIN**: BER 0.17 < eta, acc 71%, effort 0.22. Weak taps (20) never embed -> caught |
+| `memory_exploit` | 15 | train `warmup_rounds`, then replay the frozen model forever | evades BER **but poisons** (acc 72->37, honest BER->0.5) |
+| `reembed` | 16 | each round: fresh global, **freeze backbone, re-train only the head** on trigger data | **running** — the cheap candidate |
+| `autopilot` | 17 | fully self-tuning submarine: self-terminating warmup, predicts the eta crossing and taps just before, adaptive tap size, no poisoning. **`autop_scope` = head/block/full** picks how much to re-train | **running** — should match the bb=150 win more cheaply |
 
-Effort is measured per client (`compute.summary.effort_ratio_samples/gpu`,
-duty cycle) and each free-rider logs a per-round decision `trace`.
+## 4. Results so far (PRELIMINARY)
 
-## 4. Results so far (PRELIMINARY — 50-round CIFAR-100, paper-faithful)
+- **The trilemma** (re-using a stored mark fails): replay evades but poisons
+  (acc 55, benign->0.5); blend/transplant stay healthy (acc 72) but the mark
+  decays / won't transfer -> caught. Confirmed across independent runs.
+- **Re-embedding works** (re-making the mark): submarine bb=150 -> BER 0.17 < eta,
+  acc 71%, effort 0.22 — first point in the "cheap + evades + healthy" corner.
+  (n=1 seed; being repeated.)
+- **Poisoning breaks the detector**: a stale replay drags honest BER to 0.5, so
+  honest clients get flagged and the free-rider ends up looking *more* honest —
+  a separate detector-fragility finding.
+- **Clean supporting result**: a generalizing mark needs full-shard training;
+  trigger-only shortcuts overfit (BER 0.55-0.63). See section 5 for the nuance.
 
-The headline picture is the **trilemma**: pick two of {cheap, keep-your-mark,
-don't-poison}. With std over seeds:
+## 5. Open question to settle with a graph: is full-shard/full-model worth it?
 
-| Strategy | effort | fr_ber | acc | verdict |
-|---|---|---|---|---|
-| memory_exploit (frozen **replay**, warmup 8) | 0.16 | 0.15 ± 0.04 | **55 ± 1** | evades η **but poisons** the model (honest BER→0.5, FPR↑) |
-| submarine **blend** (mem_blend 0.3, warmup 8) | 0.14 | 0.44 ± 0.06 | 70 ± 2 | healthy **but mark decays → caught** |
-| submarine **transplant** (global + frozen mark-delta) | 0.20 | 0.48 ± 0.04 | 72 ± 0 | healthy **but mark won't transfer (nonlinear) → caught** |
-| honest reference | 1.00 | 0.05 | 73 | — |
+Two INDEPENDENT axes decide embedding cost vs quality:
+- **Data source** — full shard (each batch mostly non-trigger; the watermark loss
+  fires rarely, so it needs more batches but generalizes) vs trigger-heavy (fires
+  every batch, embeds fast, but on the *whole model* it overfits — that's what E7
+  showed, BER 0.55).
+- **Parameter scope** — whole model (every batch backprops the backbone = most
+  compute) vs **head-only** (freeze the backbone, train only the final layer =
+  much cheaper per batch, and may still generalize because the backbone is
+  already good and freely received).
 
-Supporting result that is **clean and holds** (E7): embedding a *generalizing*
-mark needs the **full shard** — trigger-only shortcuts overfit (fr_ber 0.55–0.63
-regardless of sample count) while the full shard reaches ~0.05. This is *why* the
-coast attacks can't cheaply re-make the mark by the naive routes.
+What is **proven**: full-model + trigger-only overfits (E7). What is **assumed
+but NOT yet proven**: that you must pay full-model + full-shard. The cheap escape
+— **head-only** re-embedding — is exactly what `reembed` and `autopilot
+autop_scope=head` test. The graph to make (from the sweep): **effort (x) vs
+fr_ber (y), one point per scope in {head,block,full}**. If head-only sits
+low-and-left (evades cheaply), full-shard/full-model is *not* worth it and the
+theory ("the output layer is cheap to forge on the free backbone") holds. Plot
+the `autopilot_scope` and `R_frontier` families.
 
-**Interpretation (tentative):** the coast attacks all try to *reuse* a stored
-mark, which either goes stale (poisons) or decays/doesn't transfer (caught). The
-untested `reembed` attack instead *cheaply re-makes* the mark on the freely-
-received backbone — this is the route that should reach the empty "cheap + evades
-+ healthy" corner, if any does. The sweep decides.
+## 6. Next steps
 
-## 5. The theoretical angle (why a weak point should exist)
+1. Push the current code (5 files). Run `./scripts/run_full_sweep.sh` (~30 runs,
+   reembed + autopilot first), then `... PLOT`.
+2. Read the **weak-point map** (`figs/weakpoint_all.png`) and the **scope graph**
+   (section 5): does head-only evade cheaply?
+3. Confirm the bb=150 winner at 3 seeds.
+4. Deck: drop autopilot + reembed points onto the map; add the scope graph.
+5. Write-up: "re-using a watermark is hard (trilemma); re-making it — especially
+   head-only on the free backbone — defeats the detector cheaply."
 
-FareMark secures free-riding with an **output-layer** watermark. The mark is the
-map (trigger → softmax), produced by the **last layer(s)** on top of the backbone
-— and the free-rider **receives a good backbone for free** every round. Shaping
-the output on its own trigger class is low-dimensional and cheap (fine-tune the
-head), not full-task training. So the cost asymmetry the scheme assumes ("honest
-embedding is expensive, a free-rider can't afford it") may **collapse**. `reembed`
-is the direct test; the effort-vs-evasion frontier is the evidence.
+## 7. Doc map
 
-Honest caveat: this is about **cost**, not undetectability. Even if `reembed`
-wins, a defender could add a staleness / accuracy / backbone-consistency check
-outside the watermark. The likely thesis claim is "output-layer watermarking
-*alone* cannot detect free-riders cheaply."
-
-## 6. Next steps (in order)
-
-1. **Run `./scripts/run_full_sweep.sh`** (see §7) — measures every attack's
-   frontier and, critically, tests `reembed`.
-2. **Plot** with `./scripts/make_sweep_figs.sh` → per-attack `fr_ber`/`acc` vs
-   knob, plus the combined **weak-point map** (fr_ber vs effort, colored by acc).
-3. **Locate the weak point**: the lowest-effort config that puts `fr_ber` under η
-   while `acc` stays ~72. Re-run that config at 3 seeds as the clean result.
-4. **Write up**: either "output-layer watermarking is cheaply defeatable" (if
-   reembed wins) or "the trilemma — cheap free-riding is structurally hard" (if
-   it doesn't). Both are defensible.
-5. Later: non-IID (E4) and CIFAR-10 (E6) regimes where a weak mark passes anyway;
-   the theoretical proposition; collusion.
-
-## 7. Should you run `run_full_sweep.sh` now? — YES
-
-Push the current code first (the pod clones fresh), then run it. It is
-fire-and-forget (`WAIT=0`), priority-ordered (reembed + memory finish first), ~23
-runs at 1 seed. On ~4 GPUs it finishes overnight; on 1–2 GPUs it won't fully
-drain, but the priority order means you'll still get the reembed frontier and
-memory sweep. Command:
-
-```bash
-./scripts/run_full_sweep.sh          # 1 seed; SEEDS="0 1" for tighter bands
-DRY=1 ./scripts/run_full_sweep.sh    # preview only
-```
-
-When it finishes:
-```bash
-RES=/mnt/nfs/home/zu/results ./scripts/make_sweep_figs.sh
-```
-Then upload the PNGs for analysis + deck.
-
-## 8. Map of the docs (what to read for what)
-
-- **STATUS.md** (this file) — where you stand, read first.
-- **ADAPTIVE_ATTACKS.md** — deep reference: threat model, each attack's mechanism
-  and failure mode, the mixed-attack explainer, the experiment catalog.
-- **HYPERPARAMS.md** — every knob and what it does (incl. the adaptive/reembed
-  knobs + compute metrics glossary).
-- **RUNSHEET_ADAPTIVE.md** — copy-paste cluster commands.
-- **EXPERIMENTS.md** — the family registry (what each FAMILY tag means).
-- **DOCUMENTATION.md** — code↔paper map (modules, equations, tables).
-- **PROJECT_PLAN.md** — the thesis pillars and overall plan.
-- **README.md** / **GRETA.md** — project overview / personal log.
+STATUS.md (this) . ADAPTIVE_ATTACKS.md (deep reference) . HYPERPARAMS.md (every
+knob incl. autopilot/reembed/scope) . RUNSHEET_ADAPTIVE.md (commands) .
+EXPERIMENTS.md (family registry) . DOCUMENTATION.md (code<->paper) .
+PROJECT_PLAN.md (pillars) . README.md / GRETA.md (overview / log).

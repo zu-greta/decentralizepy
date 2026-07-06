@@ -11,28 +11,18 @@ Threat model:
     (realistic) and moderate BER even helps it by inflating η.
 
 attacks both subclass WatermarkClient via a factory, so they can embed
-before/while defecting, and compute_meter sees their work:
+before/while defecting, and compute_meter sees their work
 
-  submarine / flappy-bird  (make_submarine_attack)
-      Closed-loop controller. Each round it probes the BER it WOULD submit if it
-      coasted; if that is safely under its η-estimate it coasts (memory-replay,
-      ~0 compute); otherwise it "taps" — trains a minimal burst of ordinary
-      mini-batches until its (held-out) probe BER drops back under a floor. It
-      tracks the moving global so its update stays fresh-looking (unlike a frozen
-      memory replay), trading a little compute for robustness to staleness
-      checks. η-estimate mirrors the server's own calibrate_eta over the
-      attacker's estimate of its submitted-BER history.
+    idea: autopilot submarine:
+        free-rider that acts like an honest client in the first few rounds (warmup)
+        it trains and embeds the watermark until it estimates that it is safely under the 
+        threshold η, and then it coasts (TODO: how to coast?)
+        dynamically check the BER and calculate on the fly to estimate when it needs to
+        "tap" again (training a minimal burst of to re-embed the watermark and maintain the mark)
+        -> need to find the tradeoff point where it uses the minimal compute power while 
+        staying undetected
 
-  memory-exploit / momentum  (make_memory_exploit_attack)
-      Exploits that _memory_update is client-side and the verifier reads the
-      submitted model. Train (embed) for `warmup_rounds`, then replay the frozen,
-      mark-bearing memory forever — never retrain, never truly adopt the global.
-      BER stays ~0 at ~warmup_rounds of compute. This is the cheapest break, but
-      a staleness-aware detector could catch the frozen submissions; use the
-      submarine for the robust version. warmup_rounds=1 => pure memory-exploit;
-      warmup_rounds>1 => "momentum" (front-load work, then coast).
-
-Both record per-round decisions in `self.trace` (list of dicts) so plot_adaptive
+record per-round decisions in `self.trace` (list of dicts) so plot_adaptive
 can draw the duty cycle and the BER/η dance.
 """
 from __future__ import annotations
