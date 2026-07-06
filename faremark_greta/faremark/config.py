@@ -65,6 +65,9 @@ class ExpConfig:
     sub_max_burst_batches: int = 60     # cap on a maintenance tap's mini-batches
     sub_probe_every: int = 3            # re-check probe BER every k burst batches
     sub_common_samples: int = 50        # common-class samples in an enriched burst (stability/disguise)
+    reembed_scope: str = "head"         # reembed attack: which params to fine-tune (head|block|full)
+    reembed_steps: int = 40             # reembed attack: max fine-tune steps (the EFFORT knob)
+    reembed_floor: float = 0.05         # reembed attack: stop when held-out probe BER <= this
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front
     # shared: how much of the global to mix into a coast/replay (freshness vs mark)
@@ -194,12 +197,13 @@ CONFIGS = [
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="memory_exploit", num_free_riders=2, warmup_rounds=8,
               mem_blend_global=0.0, paper_faithful=True, expected_acc=(0.0, 100.0)),
-
-    # idx 16: REEMBED free-rider ...
+    # idx 16: output-layer re-embed attack (the theoretically-motivated one).
+    # Fresh global backbone + cheap head-only trigger fine-tune. Sweep reembed_scope
+    # and reembed_steps to trace the effort-vs-evasion frontier (the weak-point demo).
     ExpConfig("reembed_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
-              attack="reembed", num_free_riders=2,
-              paper_faithful=True, expected_acc=(0.0, 100.0)),
+              attack="reembed", num_free_riders=2, reembed_scope="head",
+              reembed_steps=40, paper_faithful=True, expected_acc=(0.0, 100.0)),
 ]
 
 

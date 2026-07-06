@@ -81,11 +81,14 @@ the contribution — they never even try to embed.
 | `A2_train_then_attack` | 12/13 + `ATTACK=train_then_attack` | `attack_round` | Embed then defect; how long the mark persists after training stops (Table IV). |
 | `A5_trigger_only` | + `ATTACK=trigger_only` | `n_trigger_samples` | Overfitting the mark on few trigger samples → self-BER low but **test** BER high (generalization gap, Table V). |
 | `A5_mixed` | + `ATTACK=mixed` | `blend`, `full_trigger_class`, `n_common_samples` | No-key-ish forgery blending a lightly-trained embed with the global. |
-| **`A7_submarine`** | **14** | `mem_blend_global`, `sub_margin`, `calib_on_all`, `sub_eta_mode` | **Closed-loop, keeps BER just under its η-estimate; taps minimal bursts only when needed. Tracks the global to stay fresh (robust to staleness checks). The headline "cheap evasion" result.** |
-| **`A8_memory_exploit`** | **15** | `warmup_rounds`, `mem_blend_global` | **Train once, replay the frozen marked memory forever. BER≈0 at ~1 round of compute — the cheapest break, but naive-detectable by staleness.** |
+| **`A7_submarine`** | **14** | `sub_warmup`, `sub_coast_mode`, `sub_max_burst_batches`, `mem_blend_global` | **Warmup a mark, then coast; tap only when BER drifts up. PRELIMINARY: caught (blend coast → mark decays) or poisons (replay coast → stale). Coast modes: transplant/blend/replay/noise/global.** |
+| **`A8_memory_exploit`** | **15** | `warmup_rounds` | **Train `warmup_rounds`, then replay the frozen mark. PRELIMINARY: evades η but POISONS the model (acc 72→55, honest BER→0.5). Cheapest but not stealthy.** |
+| **`F_reembed`** | **16** | `reembed_scope`, `reembed_steps` | **NEW / not yet run. Fresh global backbone + cheap head-only trigger fine-tune → fresh + marked + cheap. The theoretically-motivated attack; the sweep decides if it reaches the "cheap + evades + healthy" corner.** |
 
-For A7/A8 the point is the **compute** block: `effort_ratio_gpu ≪ 1` **with**
-`wm_fr_recall → 0` ⇒ the scheme is defeated cheaply (❌ for the defender).
+**Read results by `wm_fr_ber` (below η = evades) and `final_acc` (~72 = healthy,
+low = poisoned), NOT `wm_fr_recall`** — the paper-faithful η is cumulative and
+swings 0.35–0.88, so recall is a noisy, threshold-dependent readout. The claim is
+the pair: `effort_ratio ≪ 1` **with** `fr_ber < η` **and** `acc` healthy.
 
 ### Detector-fragility (context, not attacks)
 | Family | flag | What |
@@ -94,44 +97,20 @@ For A7/A8 the point is the **compute** block: `effort_ratio_gpu ≪ 1` **with**
 
 ---
 
-## Recommended matrix for the adaptive claim
+## Recommended matrix (CURRENT)
 
-Run each of A7 and A8 at **≥3 seeds** (`repeat` 0,1,2), under **both** threshold
-options, plus the static `previous_models` baseline as the "expensive-to-catch-
-never" anchor:
-
-```bash
-# A7 submarine — option 1 (attacker guesses eta) and option 2 (eta poisoned).
-# Note: bursts are trigger-enriched and the submarine warms up a generalizing
-# mark first (SUB_WARMUP rounds) — a naive tap over the general shard does NOT
-# embed on CIFAR-100 (trigger class ~1% of shard). Run >=50 rounds; 10 is a
-# transient where paper-faithful eta is still inflated by untrained early rounds.
-for CAL in 0 1; do for R in 0 1 2; do
-  ROUNDS=50 ATTACK=submarine PAPER_FAITHFUL=1 CALIB_ON_ALL=$CAL SUB_WARMUP=3 \
-    FAMILY=A7_submarine SWEEP_VAR=calib_on_all \
-    TAG=a7-cal$CAL WAIT=0 ./submit_experiment.sh 14 $R
-done; done
-
-# A8 memory-exploit — warmup sweep (1 = pure exploit, 5 = "momentum")
-for W in 1 3 5; do for R in 0 1 2; do
-  ATTACK=memory_exploit PAPER_FAITHFUL=1 WARMUP_ROUNDS=$W \
-    FAMILY=A8_memory_exploit SWEEP_VAR=warmup_rounds \
-    TAG=a8-w$W WAIT=0 ./submit_experiment.sh 15 $R
-done; done
-```
-
-Then:
+The single command that runs every attack's weak-point sweep (submarine warmup /
+samples / coast type, memory warmup, and the reembed frontier) is:
 
 ```bash
-python scripts/plot_adaptive.py effort --in "$RES/*a7-*" "$RES/*a8-*" "$RES/*prev*" \
-       --out figs/effort_plane --effort gpu --metric wm_fr_recall
-python scripts/plot_adaptive.py squeezing --in "$RES/*a7-cal1*" --out figs/a7_squeeze
-python scripts/plot_adaptive.py sweep --in "$RES/*a8-*" --sweep_var warmup_rounds \
-       --metric wm_fr_recall --out figs/a8_warmup
-python scripts/plot_adaptive.py duty --in "$RES/*a7-cal1*rep0*" --out figs/a7_duty
+./scripts/run_full_sweep.sh          # ~23 runs, 1 seed, WAIT=0, priority-ordered
+RES=/mnt/nfs/home/zu/results ./scripts/make_sweep_figs.sh   # all figures
 ```
 
-The **effort plane** (`figs/effort_plane`) is the money figure: static
-free-riders sit at high effort / high recall or zero effort / high recall
-(caught), while A7/A8 sit at **low effort / ~zero recall** — outside the region
-the scheme can defend.
+See **STATUS.md §4–7** for the preliminary results and what each sweep answers.
+The headline figure is the **weak-point map** (`figs/weakpoint_all.png`): fr_ber
+vs effort, colored by accuracy, with the η line — the target is the low-effort
+corner that is below η AND still green (healthy). As of now that corner is empty
+for the three coast attacks; `reembed` is the candidate to fill it.
+
+Older per-family commands are in RUNSHEET_ADAPTIVE.md, but prefer the sweep above.
