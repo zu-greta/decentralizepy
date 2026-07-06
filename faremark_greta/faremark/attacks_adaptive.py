@@ -239,6 +239,19 @@ def make_submarine_attack(base_cls):
                     else:
                         out[k] = g.clone()
                 return out
+            # GLOBAL / do-nothing: submit the received global unchanged (pure
+            # free-ride, no mark) -> baseline: should be caught.
+            if self.sub_coast_mode == "global":
+                return {k: v.clone() for k, v in global_state.items()}
+            # NOISE: global + small Gaussian (a la the gaussian free-rider).
+            if self.sub_coast_mode == "noise":
+                out = {}
+                for k, g in global_state.items():
+                    if torch.is_floating_point(g):
+                        out[k] = g + 0.01 * torch.randn_like(g)
+                    else:
+                        out[k] = g.clone()
+                return out
             # BLEND: mix live global into the frozen memory (dilutes the mark).
             if self.memory is not None:
                 if self.sub_coast_mode == "blend" and self.mem_blend_global > 0.0:
@@ -357,3 +370,94 @@ def make_memory_exploit_attack(base_cls):
                                "ber_after": None if ber is None else round(ber, 4)})
             return submit, n
     return MemoryExploitFreeRider
+
+
+def make_reembed_attack(base_cls):
+    """Output-layer free-rider — the theoretically-motivated attack.
+
+    Exploits the actual weak point of output-layer watermarking: the mark lives
+    in the map (trigger -> softmax), which is set by the LAST layer(s) on top of
+    the backbone the attacker receives for free (the global model). So each round
+    it starts from the FRESH global (no poisoning), freezes the backbone, and
+    cheaply fine-tunes only `reembed_scope` on trigger-focused data until the
+    held-out probe BER <= floor or a small step budget. Fresh + marked + cheap.
+
+    Effort knobs to SWEEP to find the weak point:
+      reembed_scope in {"head","block","full"}  (how much of the net it touches)
+      reembed_steps                              (max fine-tune steps)
+    Report fr_ber (server) and accuracy vs effort, with eta as a reference band.
+    """
+    class ReembedFreeRider(_AdaptiveMixin, base_cls):
+        is_free_rider = True
+        attack_name = "reembed"
+
+        def __init__(self, *a, reembed_scope: str = "head", reembed_steps: int = 40,
+                     reembed_floor: float = 0.05, sub_probe_every: int = 3,
+                     sub_common_samples: int = 50, **kw):
+            super().__init__(*a, **kw)
+            self.reembed_scope = reembed_scope
+            self.reembed_steps = reembed_steps
+            self.reembed_floor = reembed_floor
+            self.sub_probe_every = sub_probe_every
+            self.sub_common_samples = sub_common_samples
+            self._prepared = False
+            self._probe_x = None
+            self._enr_loader = None
+            self.trace = []
+
+        def _scope_params(self):
+            named = [(n, p) for n, p in self.model.named_parameters()]
+            if self.reembed_scope == "full":
+                return [p for _, p in named]
+            if self.reembed_scope == "block":
+                return [p for _, p in named[-8:]]   # ~last block + head
+            return [p for _, p in named[-2:]]       # head: final linear W,b
+
+        def produce_update(self, global_state, prev_global_state, round_idx):
+            self._ensure_triggers()
+            self.meter.start_round(round_idx)
+            self.model.load_state_dict(global_state)   # FRESH backbone (no poison)
+            self.model.train()
+            for p in self.model.parameters():
+                p.requires_grad_(False)
+            scope = self._scope_params()
+            for p in scope:
+                p.requires_grad_(True)
+            opt = torch.optim.SGD(scope, lr=self.lr, momentum=self.momentum,
+                                  weight_decay=self.weight_decay)
+            key = self.key.to(self.device); bits = self.target_bits.to(self.device)
+            loader = self._enr_loader if self._enr_loader is not None else self.loader
+            steps = 0; done = False
+            while not done:
+                for x, y in loader:
+                    x, y = x.to(self.device), y.to(self.device)
+                    opt.zero_grad()
+                    logits = self.model(x)
+                    # keep the head general on non-trigger classes (no poisoning)
+                    loss = F.cross_entropy(logits, y,
+                                           label_smoothing=self.label_smoothing)
+                    tmask = (y == self.trigger_class)
+                    if tmask.any():
+                        probs = F.softmax(logits[tmask], dim=1)
+                        loss = loss + self.wm_lambda * wm.watermark_loss(
+                            probs, key, bits, self.wm_kind, self.wm_alpha,
+                            exclude=self.exclude)
+                    loss.backward(); opt.step()
+                    self.meter.record_batch(len(x))
+                    steps += 1
+                    if steps % self.sub_probe_every == 0:
+                        b = self._probe_ber_current_model(); self.model.train()
+                        if b is not None and b <= self.reembed_floor:
+                            done = True; break
+                    if steps >= self.reembed_steps:
+                        done = True; break
+            for p in self.model.parameters():
+                p.requires_grad_(True)
+            submit = _to_cpu_state(self.model)
+            self.meter.end_round(trained=True)
+            ber = self._probe_ber_state(submit)
+            self.trace.append({"round": round_idx, "action": "reembed",
+                               "scope": self.reembed_scope, "steps": steps,
+                               "ber_after": None if ber is None else round(ber, 4)})
+            return submit, self.num_samples
+    return ReembedFreeRider

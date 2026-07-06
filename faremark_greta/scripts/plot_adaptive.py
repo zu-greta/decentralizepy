@@ -46,7 +46,7 @@ def load_results(patterns):
         if os.path.isdir(pat):
             cands = glob.glob(os.path.join(pat, "**", "result.json"), recursive=True)
         elif pat.endswith("result.json"):
-            cands = [pat]
+            cands = glob.glob(pat) if any(ch in pat for ch in "*?[") else [pat]
         else:
             cands = glob.glob(os.path.join(pat, "result.json")) or \
                     glob.glob(os.path.join(pat, "**", "result.json"), recursive=True) or \
@@ -101,12 +101,14 @@ def per_round_series(runs, key):
 
 
 def converged_metric(runs, key, window=10):
-    """Mean/std over seeds of a top-level metric (falls back to last-`window`
-    mean of the history key if the top-level summary is absent)."""
+    """Mean/std over seeds of a top-level metric (falls back to compute.summary,
+    then to the last-`window` mean of the history key)."""
     vals = []
     for r in runs:
         if r.get(key) is not None:
             vals.append(r[key])
+        elif (r.get("compute", {}).get("summary", {}) or {}).get(key) is not None:
+            vals.append(r["compute"]["summary"][key])
         else:
             tail = [h.get(key) for h in r.get("history", [])[-window:]
                     if h.get(key) is not None]
