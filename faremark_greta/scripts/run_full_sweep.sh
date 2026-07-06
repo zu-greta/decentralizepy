@@ -27,7 +27,7 @@ echo "###### PRIORITY 1 — REEMBED frontier (the theoretically-motivated attack
 # scope × steps: where does fr_ber fall under η at low effort AND acc stays healthy?
 for SC in head block full; do for ST in 10 40 100; do for R in $SEEDS; do
   sub 16 $R ATTACK=reembed REEMBED_SCOPE=$SC REEMBED_STEPS=$ST \
-      FAMILY=R_frontier SWEEP_VAR=reembed_effort NOTE="reembed $SC×$ST"
+      FAMILY=R_frontier SWEEP_VAR=reembed_effort NOTE="reembed $SCx$ST"
 done; done; done
 
 echo "###### PRIORITY 2 — MEMORY warmup (Q1 good point, Q2 effort) ######"
