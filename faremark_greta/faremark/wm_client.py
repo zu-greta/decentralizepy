@@ -233,6 +233,17 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     sub_common_samples=getattr(cfg, "sub_common_samples", 0),
                     sub_probe_every=getattr(cfg, "sub_probe_every", 5),
                     **wm_args, **common))
+            elif attack == "reembed":
+                # re-embeds a new mark 
+                from .attacks_adaptive import make_reembed_attack
+                cls = make_reembed_attack(WatermarkClient)
+                clients.append(cls(
+                    reembed_scope=getattr(cfg, "reembed_scope", "head"),
+                    reembed_steps=getattr(cfg, "reembed_steps", 10),
+                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.0),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 0),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 5),
+                    **wm_args, **common))
             else:
                 cls = ATTACKS[attack]
                 if cls is GaussianNoiseFreeRider:
