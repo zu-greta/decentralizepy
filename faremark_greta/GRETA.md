@@ -235,3 +235,12 @@ to sync it with the original repo
 - Next: 50-round validation (V) then the effort/eta/iid/bit-budget sweeps
   (E1–E6). See ADAPTIVE_ATTACKS.md for the plan + per-experiment analysis.
 - For meetings: threat model + implementation Q&A is in ADAPTIVE_ATTACKS.md §2–3.
+
+---
+
+### update — trilemma + reembed (read STATUS.md)
+
+- Built + ran three coast attacks at 50 rounds. Preliminary: none is cheap AND evasive AND harmless. memory_exploit (frozen replay) evades eta but POISONS (acc 72->55, honest BER->0.5); submarine blend stays healthy but the mark decays -> caught; transplant (global+mark-delta) healthy but the mark doesn't transfer (nonlinear) -> caught. This is the 'trilemma': pick two of {cheap, keep-mark, don't-poison}.
+- Clean supporting result (E7): a generalizing mark needs the full shard; trigger-only overfits (fr_ber 0.55-0.63).
+- Implemented `reembed` (config 16): fine-tune only the head on the fresh global backbone -> the theoretically-motivated attack that targets the real weak point (output layer is cheap to shape on the free backbone). NOT yet run.
+- Next: `./scripts/run_full_sweep.sh` -> `make_sweep_figs.sh` -> find the weak point on the fr_ber-vs-effort map. Read fr_ber + acc, not recall (eta swings).

@@ -222,6 +222,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     sub_probe_every=getattr(cfg, "sub_probe_every", 3),
                     sub_common_samples=getattr(cfg, "sub_common_samples", 50),
                     mem_blend_global=getattr(cfg, "mem_blend_global", 0.2),
+                    sub_coast_mode=getattr(cfg, "sub_coast_mode", "transplant"),
                     **wm_args, **common))
             elif attack == "memory_exploit":
                 # train once (or `warmup_rounds`), then replay frozen mark forever
@@ -234,13 +235,28 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     sub_probe_every=getattr(cfg, "sub_probe_every", 5),
                     **wm_args, **common))
             elif attack == "reembed":
-                # re-embeds a new mark 
                 from .attacks_adaptive import make_reembed_attack
                 cls = make_reembed_attack(WatermarkClient)
                 clients.append(cls(
                     reembed_scope=getattr(cfg, "reembed_scope", "head"),
                     reembed_steps=getattr(cfg, "reembed_steps", 40),
                     reembed_floor=getattr(cfg, "reembed_floor", 0.05),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
+                    **wm_args, **common))
+            elif attack == "autopilot":
+                from .attacks_adaptive import make_autopilot_attack
+                cls = make_autopilot_attack(WatermarkClient)
+                clients.append(cls(
+                    autop_floor=getattr(cfg, "autop_floor", 0.05),
+                    autop_margin0=getattr(cfg, "autop_margin0", 0.08),
+                    autop_min_batches=getattr(cfg, "autop_min_batches", 20),
+                    autop_max_batches=getattr(cfg, "autop_max_batches", 200),
+                    autop_lookahead=getattr(cfg, "autop_lookahead", 2),
+                    autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
+                    sub_eta_fixed=getattr(cfg, "sub_eta_fixed", 0.35),
+                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
+                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
                     **wm_args, **common))
             else:
                 cls = ATTACKS[attack]

@@ -461,3 +461,182 @@ def make_reembed_attack(base_cls):
                                "ber_after": None if ber is None else round(ber, 4)})
             return submit, self.num_samples
     return ReembedFreeRider
+
+
+def make_autopilot_attack(base_cls):
+    """Autopilot — a fully self-tuning submarine.
+
+    Same threat model and same cheap machinery, but NOTHING is a fixed schedule.
+    Every decision is computed on the fly from the attacker's own held-out probe
+    BER (measuring BER is ~free; only training costs compute, and it trains the
+    minimum needed):
+
+      * WARMUP ends itself. It keeps embedding until the mark is actually good
+        (probe BER <= floor) AND its estimate of the server threshold has settled
+        — not after a fixed `sub_warmup` rounds.
+      * WHEN TO TAP. It watches the BER trend during coasting. It does NOT wait
+        until BER crosses eta; it predicts (linear extrapolation of the last few
+        probes) when BER *will* cross the safety target and taps just before, so
+        it never submits an over-threshold model.
+      * HOW HARD TO TAP. Tap size adapts to how far the mark has drifted: a small
+        touch-up if BER crept a little, a bigger burst if it fell a lot. Bounded
+        by [autop_min_batches, autop_max_batches]. If a tap undershoots, the next
+        one automatically grows (multiplicative back-off), so it self-corrects
+        the "weak taps never embed" failure of the fixed submarine.
+      * ETA ESTIMATE. Tracks its clean post-embed BER (its honest-pool proxy) and
+        aims a safety margin below its estimate; the margin itself relaxes when it
+        has been safe for a while and tightens after a near-miss.
+
+    Result target: hold BER just under eta, healthy model (re-embeds on the fresh
+    global, never replays stale weights), at the minimum total training.
+    Everything it logs to self.trace so you can see the control decisions.
+    """
+    class AutopilotFreeRider(_AdaptiveMixin, base_cls):
+        is_free_rider = True
+        attack_name = "autopilot"
+
+        def __init__(self, *a,
+                     autop_floor: float = 0.05,       # "mark is good" bar
+                     autop_margin0: float = 0.08,     # initial safety gap below eta-est
+                     autop_min_batches: int = 20,     # smallest tap
+                     autop_max_batches: int = 200,    # largest tap
+                     autop_lookahead: int = 2,        # rounds ahead to predict the crossing
+                     autop_warmup_cap: int = 15,      # hard cap so warmup can't run forever
+                     sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
+                     sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
+            super().__init__(*a, **kw)
+            self.autop_floor = autop_floor
+            self.autop_margin = autop_margin0
+            self.autop_min_batches = autop_min_batches
+            self.autop_max_batches = autop_max_batches
+            self.autop_lookahead = autop_lookahead
+            self.autop_warmup_cap = autop_warmup_cap
+            self.sub_eta_fixed = sub_eta_fixed
+            self.sub_probe_every = sub_probe_every
+            self.sub_common_samples = sub_common_samples
+            self._prepared = False
+            self._probe_x = None
+            self._enr_loader = None
+            self._clean_ber_hist = []     # post-embed (honest-like) BERs
+            self._ber_trend = []          # recent coast probe BERs (for extrapolation)
+            self._last_tap_batches = autop_min_batches
+            self._warm_done = False       # has the self-terminating warmup finished?
+            self.trace = []
+
+        # --- on-the-fly estimates (all O(1), no training) --------------------
+        def _eta_est(self):
+            if self._clean_ber_hist:
+                return wm.calibrate_eta(self._clean_ber_hist[-5:], floor=self.autop_floor)
+            return self.sub_eta_fixed
+
+        def _predict_cross(self, target):
+            """Linear-extrapolate the recent BER trend; return rounds until it
+            reaches `target` (large number if flat/decreasing)."""
+            h = self._ber_trend[-3:]
+            if len(h) < 2:
+                return 99
+            slope = (h[-1] - h[0]) / (len(h) - 1)
+            if slope <= 1e-4:
+                return 99
+            return (target - h[-1]) / slope
+
+        def _record_clean(self, ber):
+            if ber is not None and ber <= 2.0 * self.autop_floor:
+                self._clean_ber_hist.append(ber)
+
+        # --- the controller ---------------------------------------------------
+        def produce_update(self, global_state, prev_global_state, round_idx):
+            self._ensure_triggers()
+            self.meter.start_round(round_idx)
+            eta = self._eta_est()
+            target = max(self.autop_floor, eta - self.autop_margin)
+
+            # PHASE 1 — self-terminating warmup: embed until the mark is good and
+            # the eta estimate has stabilised (or the safety cap is hit).
+            if not self._warm_done:
+                self._embed_loop(global_state, self.autop_max_batches,
+                                 floor=self.autop_floor, enriched=False)
+                w = _to_cpu_state(self.model)
+                submit = self._memory_update(global_state, w)
+                self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
+                ber = self._probe_ber_state(submit)
+                self._record_clean(ber)
+                self._ber_trend = []
+                # stop warming up once we can actually embed AND have >=2 clean
+                # samples to anchor eta (settled), or we hit the cap.
+                enough = (ber is not None and ber <= self.autop_floor
+                          and len(self._clean_ber_hist) >= 2)
+                if enough or round_idx + 1 >= self.autop_warmup_cap:
+                    self._warm_done = True
+                self.meter.end_round(trained=True)
+                self.trace.append({"round": round_idx, "action": "warmup",
+                                   "ber_after": None if ber is None else round(ber, 4),
+                                   "eta_est": round(eta, 4)})
+                return submit, self.num_samples
+
+            # PHASE 2 — coast with predictive, adaptive taps.
+            coast = self._coast_state(global_state, prev_global_state) \
+                if hasattr(self, "_coast_state") else copy.deepcopy(self.memory)
+            ber_coast = self._probe_ber_state(coast)
+            if ber_coast is not None:
+                self._ber_trend.append(ber_coast)
+            # decide: tap now if we're already near target OR predicted to cross soon
+            cross_in = self._predict_cross(target)
+            must_tap = (ber_coast is not None and
+                        (ber_coast >= target or cross_in <= self.autop_lookahead))
+
+            if not must_tap:
+                submit = coast; trained = False; ber_after = ber_coast
+                self.autop_margin = max(0.03, self.autop_margin * 0.98)  # relax when safe
+            else:
+                # adaptive tap size: bigger if the mark drifted further, and grow
+                # if the previous tap undershot (self-correcting).
+                drift = 0.0 if ber_coast is None else max(0.0, ber_coast - self.autop_floor)
+                want = int(self.autop_min_batches + drift * 4 * self.autop_max_batches)
+                if self._clean_ber_hist and self._clean_ber_hist[-1] > self.autop_floor:
+                    want = int(self._last_tap_batches * 1.6)   # last tap undershot -> grow
+                nb = int(min(self.autop_max_batches, max(self.autop_min_batches, want)))
+                self._embed_loop(global_state, nb, floor=self.autop_floor, enriched=False)
+                w = _to_cpu_state(self.model)
+                submit = self._memory_update(global_state, w)
+                self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
+                trained = True
+                ber_after = self._probe_ber_state(submit)
+                self._record_clean(ber_after)
+                self._last_tap_batches = nb
+                self._ber_trend = []
+                if ber_after is not None and ber_after > self.autop_floor:
+                    self.autop_margin = min(0.15, self.autop_margin + 0.02)  # tighten after a miss
+
+            self.meter.end_round(trained=trained)
+            self.trace.append({
+                "round": round_idx, "action": "tap" if trained else "coast",
+                "ber_coast": None if ber_coast is None else round(ber_coast, 4),
+                "eta_est": round(eta, 4), "target": round(target, 4),
+                "predict_cross_in": round(cross_in, 2),
+                "tap_batches": self._last_tap_batches if trained else 0,
+                "ber_after": None if ber_after is None else round(ber_after, 4),
+            })
+            return submit, self.num_samples
+
+        # autopilot coasts on the fresh global + mark-delta (no poisoning); reuse
+        # the submarine helpers if present, else fall back to memory replay.
+        def _coast_state(self, global_state, prev_global_state):
+            if getattr(self, "_mark_delta", None) is not None:
+                out = {}
+                for k, g in global_state.items():
+                    if k in self._mark_delta and torch.is_floating_point(g):
+                        out[k] = g + self._mark_delta[k]
+                    else:
+                        out[k] = g.clone()
+                return out
+            return copy.deepcopy(self.memory) if self.memory is not None \
+                else {k: v.clone() for k, v in global_state.items()}
+
+        def _update_mark_delta(self, global_state):
+            if self.memory is None:
+                return
+            self._mark_delta = {k: (self.memory[k] - global_state[k])
+                                for k, v in self.memory.items()
+                                if torch.is_floating_point(v) and k in global_state}
+    return AutopilotFreeRider

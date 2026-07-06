@@ -228,3 +228,19 @@ a low `effort_ratio` alone is meaningless (a free-rider that does nothing is als
 cheap — and caught). The claim is the **pair**: low `effort_ratio_*` **and**
 low `wm_fr_recall` **and** low `wm_fr_ber` (server-side, so the mark really is
 present). All three together = a cheap, *undetected*, genuinely-marked free-rider.
+
+---
+
+## Re-embed attack knobs (config 16, the output-layer attack)
+
+| Flag / env | Default | What it is | Effect |
+|---|---|---|---|
+| `--reembed_scope` / `REEMBED_SCOPE` | head | which params to fine-tune: `head` (final linear only), `block` (~last block+head), `full` | The core knob. `head` = cheapest, tests whether the mark is a pure output-layer phenomenon. Sweep it. |
+| `--reembed_steps` / `REEMBED_STEPS` | 40 | max fine-tune steps per round (early-stops at floor) | The effort dial. Fewer = cheaper. |
+| `--reembed_floor` / `REEMBED_FLOOR` | 0.05 | stop when held-out probe BER <= this | target mark quality |
+
+The re-embed attacker starts from the FRESH global each round (good backbone, no poisoning), freezes the backbone, and fine-tunes only `reembed_scope` on trigger-focused data. Fresh + marked + cheap. Read `wm_fr_ber` (below eta = evades) and `final_acc` (~72 = healthy).
+
+## Submarine coast modes (`--sub_coast_mode` / `SUB_COAST_MODE`)
+
+What the submarine submits while coasting: `transplant` (global + frozen mark-delta; default), `blend` (memory blended with global, uses `mem_blend_global`), `replay` (frozen memory — poisons over time), `noise` (global + small Gaussian), `global` (submit the received model unchanged = do-nothing baseline).

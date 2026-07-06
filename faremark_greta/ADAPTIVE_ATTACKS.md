@@ -1,3 +1,5 @@
+> **READ STATUS.md FIRST.** This file may contain older framing. Current state (preliminary, pending the `run_full_sweep.sh` results): the three *coast* attacks (submarine/memory_exploit) are NOT cleanly cheap+evasive+harmless — they hit a trilemma (cheap / keep-mark / don't-poison: pick two). A 4th attack `reembed` (output-layer head fine-tune on the fresh global) is implemented but not yet run; it targets the actual weak point. Read `wm_fr_ber` + `final_acc`, not `wm_fr_recall`.
+
 # ADAPTIVE ATTACKS — status, threat model, implementation, experiment catalog
 
 The authoritative reference for the effort-minimizing free-rider work (submarine,

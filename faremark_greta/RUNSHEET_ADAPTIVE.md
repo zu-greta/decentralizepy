@@ -22,6 +22,56 @@ Rules:
 Plotting is done locally — run `plot_results.py` locally after syncing `$RES`
 
 ------------------------------------------------------------------------
+## CURRENT: one sweep for every attack's weak point (prefer this)
+
+Read STATUS.md first. The single command that runs the whole weak-point sweep
+(submarine warmup / samples / coast-type, memory warmup, reembed frontier),
+priority-ordered, WAIT=0, ~23 runs at 1 seed:
+
+```bash
+./scripts/run_full_sweep.sh              # SEEDS="0 1" for tighter bands
+RES=/mnt/nfs/home/zu/results ./scripts/make_sweep_figs.sh   # all figures
+```
+
+Individual pieces if you want to run just one:
+
+```bash
+# REEMBED frontier (the theoretically-motivated attack): scope × steps
+for SC in head block full; do for ST in 10 40 100; do
+  ROUNDS=50 ATTACK=reembed REEMBED_SCOPE=$SC REEMBED_STEPS=$ST \
+    FAMILY=R_frontier SWEEP_VAR=reembed_effort NOTE="reembed $SC×$ST" \
+    WAIT=0 ./submit_experiment.sh 16 0
+done; done
+
+# MEMORY warmup (Q: good point + effort for evasion)
+for W in 2 5 8 12; do
+  ROUNDS=50 ATTACK=memory_exploit WARMUP_ROUNDS=$W \
+    FAMILY=M_warmup SWEEP_VAR=warmup_rounds NOTE="memory warmup=$W" \
+    WAIT=0 ./submit_experiment.sh 15 0
+done
+
+# SUBMARINE warmup (Q: rounds to fall under η)
+for W in 3 8 12; do
+  ROUNDS=50 ATTACK=submarine SUB_WARMUP=$W SUB_COAST_MODE=blend \
+    FAMILY=S_warmup SWEEP_VAR=sub_warmup NOTE="submarine warmup=$W" \
+    WAIT=0 ./submit_experiment.sh 14 0
+done
+
+# SUBMARINE coast type (Q: doing-nothing/noise/replay/blend/transplant)
+for CM in replay blend transplant noise global; do
+  ROUNDS=50 ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=$CM \
+    FAMILY=S_coast SWEEP_VAR=sub_coast_mode NOTE="coast=$CM" \
+    WAIT=0 ./submit_experiment.sh 14 0
+done
+```
+
+Read the results by **`wm_fr_ber`** (below η = evades) and **`final_acc`** (~72 =
+healthy, low = poisoned), not `wm_fr_recall`. The money figure is
+`figs/weakpoint_all.png`.
+
+------------------------------------------------------------------------
+## OLDER per-family commands (kept for reference; the sweep above supersedes them)
+------------------------------------------------------------------------
 ## 7.0  Robustness (finish baseline)
 ```bash
 SCRIPT=scripts/run_robustness.py TAG=robust WAIT=0 ./submit_experiment.sh 11 0
@@ -120,6 +170,12 @@ done
 ------------------------------------------------------------------------
 ## A7 — Submarine (adaptive threshold-tracking)
 
+> STATUS: preliminary runs show the submarine is caught (blend coast → mark
+> decays) or poisons (replay coast → stale). The `mem_blend_global` sweep below
+> is now the *freshness-vs-decay* diagnostic (E5), not a "cheap evasion" win. The
+> coast-type comparison lives in the CURRENT sweep (`S_coast`). Read `fr_ber` +
+> `final_acc`, not recall.
+
 Run **both** threshold options × 3 seeds. Option 1 = attacker guesses η
 (`CALIB_ON_ALL=0`); option 2 = η poisoned by the attacker (`CALIB_ON_ALL=1`).
 
@@ -159,6 +215,10 @@ done; done
 ```
 
 ## A8 — Memory-exploit (train once, replay frozen mark)
+
+> STATUS: preliminary runs show memory-exploit evades η (fr_ber ~0.15 at
+> warmup≥5) BUT poisons the global (acc 72→55, honest BER→0.5). The warmup sweep
+> below is the effort-vs-poisoning curve. Read `fr_ber` + `final_acc`.
 
 ```bash
 for W in 1 3 5; do for R in 0 1 2; do

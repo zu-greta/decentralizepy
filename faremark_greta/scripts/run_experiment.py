@@ -73,12 +73,19 @@ def parse_args():
                    choices=["none", "previous_models", "gaussian",
                             "train_then_attack", "trigger_only",
                             "random_round", "mixed",
-                            "submarine", "memory_exploit", "reembed"])
+                            "submarine", "memory_exploit"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
     # Adaptive-attack overrides (submarine / memory_exploit)
     p.add_argument("--sub_warmup", type=int, default=None)
+    p.add_argument("--reembed_scope", default=None, choices=["head","block","full"])
+    p.add_argument("--reembed_steps", type=int, default=None)
+    p.add_argument("--autop_max_batches", type=int, default=None)
+    p.add_argument("--autop_min_batches", type=int, default=None)
+    p.add_argument("--autop_margin0", type=float, default=None)
+    p.add_argument("--autop_warmup_cap", type=int, default=None)
+    p.add_argument("--sub_coast_mode", default=None, choices=["transplant","blend","replay","noise","global"])
     p.add_argument("--sub_warmup_batches", type=int, default=None)
     p.add_argument("--sub_common_samples", type=int, default=None)
     p.add_argument("--sub_margin", type=float, default=None)
@@ -121,7 +128,7 @@ _OVERRIDABLE = [
     "n_trigger_samples", "honest_prob", "blend", "full_trigger_class",
     "n_common_samples", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "noise_sigma", "noise_decay",
-    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_margin", "sub_floor", "sub_eta_mode",
+    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_coast_mode", "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_lookahead", "sub_margin", "sub_floor", "sub_eta_mode",
     "sub_eta_fixed", "sub_max_burst_batches", "sub_probe_every", "warmup_rounds",
     "mem_blend_global",
     "watermark", "wm_lambda", "wm_beta", "paper_faithful", "calib_on_all",

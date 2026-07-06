@@ -112,7 +112,12 @@ embed their real assigned mark *cheaply* and keep detection BER under an estimat
 each round coasts on memory-replay (~0 compute) unless a probe says the coast BER
 is drifting over η, in which case it taps a minimal enriched burst. `_eta_estimate`
 is anchored to its clean post-embed BER. memory_exploit trains for
-`warmup_rounds` then replays the frozen memory. Both log `self.trace`. Not in the
+`warmup_rounds` then replays the frozen memory. Both log `self.trace`. A third
+factory `make_reembed_attack` (config 16) is the **output-layer attack**: each
+round it loads the FRESH global, freezes the backbone, and fine-tunes only
+`reembed_scope` (head/block/full) on trigger data until the probe BER hits the
+floor — fresh backbone (no poisoning) + a cheaply re-made mark. Submarine coast
+modes: `transplant`/`blend`/`replay`/`noise`/`global`. Not in the
 paper — this is the "embedding is only *costly*, not impossible" contribution.
 See ADAPTIVE_ATTACKS.md.
 

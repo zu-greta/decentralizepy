@@ -88,6 +88,13 @@ PY_EXTRA=""
 
 # ---- adaptive-attack overrides (submarine / memory_exploit) ----
 [ -n "${SUB_WARMUP:-}" ]           && PY_EXTRA="$PY_EXTRA --sub_warmup ${SUB_WARMUP}"
+[ -n "${SUB_COAST_MODE:-}" ]       && PY_EXTRA="$PY_EXTRA --sub_coast_mode ${SUB_COAST_MODE}"
+[ -n "${REEMBED_SCOPE:-}" ]        && PY_EXTRA="$PY_EXTRA --reembed_scope ${REEMBED_SCOPE}"
+[ -n "${REEMBED_STEPS:-}" ]        && PY_EXTRA="$PY_EXTRA --reembed_steps ${REEMBED_STEPS}"
+[ -n "${AUTOP_MAX_BATCHES:-}" ]    && PY_EXTRA="$PY_EXTRA --autop_max_batches ${AUTOP_MAX_BATCHES}"
+[ -n "${AUTOP_MIN_BATCHES:-}" ]    && PY_EXTRA="$PY_EXTRA --autop_min_batches ${AUTOP_MIN_BATCHES}"
+[ -n "${AUTOP_MARGIN0:-}" ]        && PY_EXTRA="$PY_EXTRA --autop_margin0 ${AUTOP_MARGIN0}"
+[ -n "${AUTOP_WARMUP_CAP:-}" ]     && PY_EXTRA="$PY_EXTRA --autop_warmup_cap ${AUTOP_WARMUP_CAP}"
 [ -n "${SUB_WARMUP_BATCHES:-}" ]   && PY_EXTRA="$PY_EXTRA --sub_warmup_batches ${SUB_WARMUP_BATCHES}"
 [ -n "${SUB_COMMON_SAMPLES:-}" ]   && PY_EXTRA="$PY_EXTRA --sub_common_samples ${SUB_COMMON_SAMPLES}"
 [ -n "${SUB_MARGIN:-}" ]           && PY_EXTRA="$PY_EXTRA --sub_margin ${SUB_MARGIN}"

@@ -68,6 +68,12 @@ class ExpConfig:
     reembed_scope: str = "head"         # reembed attack: which params to fine-tune (head|block|full)
     reembed_steps: int = 40             # reembed attack: max fine-tune steps (the EFFORT knob)
     reembed_floor: float = 0.05         # reembed attack: stop when held-out probe BER <= this
+    autop_floor: float = 0.05           # autopilot: 'mark is good' bar
+    autop_margin0: float = 0.08         # autopilot: initial safety gap below eta-estimate
+    autop_min_batches: int = 20         # autopilot: smallest adaptive tap
+    autop_max_batches: int = 200        # autopilot: largest adaptive tap
+    autop_lookahead: int = 2            # autopilot: rounds ahead to predict the eta crossing
+    autop_warmup_cap: int = 15          # autopilot: hard cap so self-terminating warmup can't run forever
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front
     # shared: how much of the global to mix into a coast/replay (freshness vs mark)
@@ -204,6 +210,13 @@ CONFIGS = [
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="reembed", num_free_riders=2, reembed_scope="head",
               reembed_steps=40, paper_faithful=True, expected_acc=(0.0, 100.0)),
+    # idx 17: autopilot — fully self-tuning submarine. No fixed schedule: it ends
+    # warmup itself, predicts when BER will cross eta and taps just before, and
+    # sizes each tap to the drift. Re-embeds on the fresh global (no poisoning).
+    ExpConfig("autopilot_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+              num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
+              attack="autopilot", num_free_riders=2, paper_faithful=True,
+              expected_acc=(0.0, 100.0)),
 ]
 
 
