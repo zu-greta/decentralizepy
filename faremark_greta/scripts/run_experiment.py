@@ -73,7 +73,7 @@ def parse_args():
                    choices=["none", "previous_models", "gaussian",
                             "train_then_attack", "trigger_only",
                             "random_round", "mixed",
-                            "submarine", "memory_exploit"])
+                            "submarine", "memory_exploit", "reembed"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
