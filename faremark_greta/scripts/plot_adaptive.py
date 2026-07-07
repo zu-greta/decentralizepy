@@ -134,6 +134,10 @@ def _mpl():
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import os as _o, sys as _s
+    _s.path.insert(0, _o.path.dirname(__file__))
+    import plotstyle as _ps
+    _ps.apply()
     return plt
 
 

@@ -150,37 +150,41 @@ class _AdaptiveMixin:
                   else self.loader)
         steps, passes = 0, 0
 
-        def _restore():
+        # try/finally guarantees requires_grad is restored on EVERY exit path
+        # (normal return, early-stop, or an exception mid-tap) — otherwise a
+        # scope="head"/"block" tap that throws would leave the backbone frozen
+        # for all later rounds.
+        try:
+            while True:
+                for x, y in loader:
+                    x, y = x.to(self.device), y.to(self.device)
+                    opt.zero_grad()
+                    logits = self.model(x)
+                    loss = F.cross_entropy(logits, y,
+                                           label_smoothing=self.label_smoothing)
+                    tmask = (y == self.trigger_class)
+                    if tmask.any():
+                        probs = F.softmax(logits[tmask], dim=1)
+                        loss = loss + self.wm_lambda * wm.watermark_loss(
+                            probs, key, bits, self.wm_kind, self.wm_alpha,
+                            exclude=self.exclude)
+                    loss.backward()
+                    opt.step()
+                    self.meter.record_batch(len(x))
+                    steps += 1
+                    if steps % self.sub_probe_every == 0:
+                        b = self._probe_ber_current_model()
+                        self.model.train()
+                        if b is not None and b <= floor:
+                            return steps
+                    if max_batches is not None and steps >= max_batches:
+                        return steps
+                passes += 1
+                if max_batches is None and passes >= self.local_epochs:
+                    return steps
+        finally:
             for _, pp in named:
                 pp.requires_grad_(True)
-
-        while True:
-            for x, y in loader:
-                x, y = x.to(self.device), y.to(self.device)
-                opt.zero_grad()
-                logits = self.model(x)
-                loss = F.cross_entropy(logits, y,
-                                       label_smoothing=self.label_smoothing)
-                tmask = (y == self.trigger_class)
-                if tmask.any():
-                    probs = F.softmax(logits[tmask], dim=1)
-                    loss = loss + self.wm_lambda * wm.watermark_loss(
-                        probs, key, bits, self.wm_kind, self.wm_alpha,
-                        exclude=self.exclude)
-                loss.backward()
-                opt.step()
-                self.meter.record_batch(len(x))
-                steps += 1
-                if steps % self.sub_probe_every == 0:
-                    b = self._probe_ber_current_model()
-                    self.model.train()
-                    if b is not None and b <= floor:
-                        _restore(); return steps
-                if max_batches is not None and steps >= max_batches:
-                    _restore(); return steps
-            passes += 1
-            if max_batches is None and passes >= self.local_epochs:
-                _restore(); return steps
 
 
 def make_submarine_attack(base_cls):
@@ -512,6 +516,11 @@ def make_autopilot_attack(base_cls):
                      autop_max_batches: int = 200,    # largest tap
                      autop_lookahead: int = 2,        # rounds ahead to predict the crossing
                      autop_warmup_cap: int = 15,      # hard cap so warmup can't run forever
+                     autop_protect_until: int = 8,    # NEVER defect before this round: the
+                                                      # detector calibrates its frozen eta on a
+                                                      # no-free-rider window, and this is also how
+                                                      # long the honest clients need to converge so
+                                                      # the FR's own clean-BER eta anchor is valid.
                      autop_scope: str = "full",       # which params to train: full | block | head
                      autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
@@ -523,6 +532,7 @@ def make_autopilot_attack(base_cls):
             self.autop_max_batches = autop_max_batches
             self.autop_lookahead = autop_lookahead
             self.autop_warmup_cap = autop_warmup_cap
+            self.autop_protect_until = autop_protect_until
             self.autop_scope = autop_scope
             self.autop_enriched = autop_enriched
             self.sub_eta_fixed = sub_eta_fixed
@@ -534,6 +544,7 @@ def make_autopilot_attack(base_cls):
             self._clean_ber_hist = []     # post-embed (honest-like) BERs
             self._ber_trend = []          # recent coast probe BERs (for extrapolation)
             self._last_tap_batches = autop_min_batches
+            self._last_tap_undershot = False  # did the PREVIOUS tap fail to reach floor?
             self._warm_done = False       # has the self-terminating warmup finished?
             self.trace = []
 
@@ -577,10 +588,15 @@ def make_autopilot_attack(base_cls):
                 ber = self._probe_ber_state(submit)
                 self._record_clean(ber)
                 self._ber_trend = []
-                # stop warming up once we can actually embed AND have >=2 clean
-                # samples to anchor eta (settled), or we hit the cap.
+                # stop warming up once (a) the mark is actually good AND we have
+                # >=2 clean samples to anchor eta, AND (b) we are past the
+                # protected calibration window (never defect before it — the
+                # detector's frozen eta is calibrated there and the honest pool
+                # must have converged for our eta anchor to be valid). The cap is
+                # the hard safety stop.
                 enough = (ber is not None and ber <= self.autop_floor
-                          and len(self._clean_ber_hist) >= 2)
+                          and len(self._clean_ber_hist) >= 2
+                          and round_idx + 1 >= self.autop_protect_until)
                 if enough or round_idx + 1 >= self.autop_warmup_cap:
                     self._warm_done = True
                 self.meter.end_round(trained=True)
@@ -604,12 +620,16 @@ def make_autopilot_attack(base_cls):
                 submit = coast; trained = False; ber_after = ber_coast
                 self.autop_margin = max(0.03, self.autop_margin * 0.98)  # relax when safe
             else:
-                # adaptive tap size: bigger if the mark drifted further, and grow
-                # if the previous tap undershot (self-correcting).
+                # SOLID tap: re-embed on the FRESH global (full shard by default so
+                # the mark GENERALISES to the server's test triggers, not just our
+                # probe), early-stopping at `floor` so we drive BER down hard with a
+                # big margin — not barely under target. Tap size scales with the
+                # drift, and grows x1.6 only if the PREVIOUS tap genuinely failed to
+                # reach floor (self-correcting the "weak taps never embed" failure).
                 drift = 0.0 if ber_coast is None else max(0.0, ber_coast - self.autop_floor)
                 want = int(self.autop_min_batches + drift * 4 * self.autop_max_batches)
-                if self._clean_ber_hist and self._clean_ber_hist[-1] > self.autop_floor:
-                    want = int(self._last_tap_batches * 1.6)   # last tap undershot -> grow
+                if self._last_tap_undershot:
+                    want = max(want, int(self._last_tap_batches * 1.6))
                 nb = int(min(self.autop_max_batches, max(self.autop_min_batches, want)))
                 self._embed_loop(global_state, nb, floor=self.autop_floor,
                                  enriched=self.autop_enriched, scope=self.autop_scope)
@@ -620,8 +640,10 @@ def make_autopilot_attack(base_cls):
                 ber_after = self._probe_ber_state(submit)
                 self._record_clean(ber_after)
                 self._last_tap_batches = nb
+                self._last_tap_undershot = (ber_after is not None
+                                            and ber_after > self.autop_floor)
                 self._ber_trend = []
-                if ber_after is not None and ber_after > self.autop_floor:
+                if self._last_tap_undershot:
                     self.autop_margin = min(0.15, self.autop_margin + 0.02)  # tighten after a miss
 
             self.meter.end_round(trained=trained)

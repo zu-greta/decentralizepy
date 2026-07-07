@@ -85,6 +85,10 @@ def parse_args():
     p.add_argument("--autop_min_batches", type=int, default=None)
     p.add_argument("--autop_margin0", type=float, default=None)
     p.add_argument("--autop_warmup_cap", type=int, default=None)
+    p.add_argument("--autop_protect_until", type=int, default=None)
+    p.add_argument("--autop_lookahead", type=int, default=None)
+    p.add_argument("--autop_enriched", dest="autop_enriched",
+                   action="store_true", default=None)
     p.add_argument("--autop_scope", default=None, choices=["full","block","head"])
     p.add_argument("--sub_coast_mode", default=None, choices=["transplant","blend","replay","noise","global"])
     p.add_argument("--sub_warmup_batches", type=int, default=None)
@@ -129,7 +133,7 @@ _OVERRIDABLE = [
     "n_trigger_samples", "honest_prob", "blend", "full_trigger_class",
     "n_common_samples", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "noise_sigma", "noise_decay",
-    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_coast_mode", "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_lookahead", "autop_scope", "sub_margin", "sub_floor", "sub_eta_mode",
+    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_coast_mode", "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_protect_until", "autop_lookahead", "autop_enriched", "autop_scope", "sub_margin", "sub_floor", "sub_eta_mode",
     "sub_eta_fixed", "sub_max_burst_batches", "sub_probe_every", "warmup_rounds",
     "mem_blend_global",
     "watermark", "wm_lambda", "wm_beta", "paper_faithful", "calib_on_all",
