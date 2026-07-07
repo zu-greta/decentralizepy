@@ -21,14 +21,13 @@
 #
 # ---------------------------------------------------------------------
 # !!! WIRING CHECK (submit_experiment.sh must forward these ENV -> CLI flags):
-#     AUTOP_MAX_BATCHES -> --autop_max_batches   AUTOP_SCOPE  -> --autop_scope
 #     AUTOP_PROTECT_UNTIL -> --autop_protect_until   AUTOP_MARGIN0 -> --autop_margin0
-#     DATASET -> --dataset   MODEL -> --model   NUM_CLIENTS -> --num_clients
-#   The autop_* were wired previously; AUTOP_PROTECT_UNTIL/AUTOP_MARGIN0 and the
-#   DATASET/MODEL/NUM_CLIENTS overrides are the ones to double-check (idx 17 is
-#   hardcoded to cifar100, so cifar10 rides on the overrides). Run DRY=1 first
-#   and eyeball one CIFAR-10 command; confirm the first run's log shows the
-#   right dataset + that a tap can exceed 200 batches when AUTOP_MAX_BATCHES>200.
+#     DATASET -> --dataset   MODEL -> --model
+#   All of the above are now wired in submit_experiment.sh. (idx 17 defaults to
+#   10 clients, so cifar10 needs only DATASET+MODEL; num_clients is left default.)
+#   Run DRY=1 first and eyeball one CIFAR-10 command; confirm the first run's log
+#   (run_experiment.py dumps cfg at startup) shows the right dataset + that a tap
+#   can exceed 200 batches when AUTOP_MAX_BATCHES>200.
 # =====================================================================
 set -uo pipefail
 SEEDS="${SEEDS:-0}"                       # scout at 1 seed; re-run winners at "0 1 2"
@@ -90,8 +89,8 @@ sub(){ local cfg="$1" rep="$2"; shift 2
 
 for DS in $DATASETS; do
   # idx 17 is cifar100/resnet18/10-clients by default; override for cifar10.
-  if [ "$DS" = "cifar10" ]; then DSENV="DATASET=cifar10 MODEL=resnet18 NUM_CLIENTS=10"
-  else                           DSENV="DATASET=cifar100 MODEL=resnet18 NUM_CLIENTS=10"; fi
+  if [ "$DS" = "cifar10" ]; then DSENV="DATASET=cifar10 MODEL=resnet18"
+  else                           DSENV="DATASET=cifar100 MODEL=resnet18"; fi
   AP="ap_$DS"; SCOPE="apscope_$DS"
   echo "############################## DATASET=$DS ##############################"
 
