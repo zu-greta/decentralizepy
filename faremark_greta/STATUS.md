@@ -9,23 +9,20 @@ low = poisoned), NOT `wm_fr_recall` (η swings, so recall is noisy).
 
 ## 1. One-paragraph status
 
-Part 1 (reproduce FareMark) done. Part 2 (can a client free-ride past the
-watermark detector cheaply?): the pipeline is solid, five attacks are built, and
-**the full sweep is in (2026-07-07).** Read under the *fair* threshold
-(η = converged ≈ 0.17, the one HANDOFF says to headline) rather than the swingy
-cumulative one, the sweep **sharpens and partly reverses** the preliminary story.
-Two headline results: **(a)** *head-only re-embedding does NOT work* — freezing
-the backbone and retraining only the output head leaves BER ≈ 0.55 (caught), and
-even *full-model* re-embedding at 100 steps only reaches ≈ 0.25, still above η.
-So the thesis hypothesis "the output layer is cheap to forge on the free
-backbone" is **NOT supported** by this data; the backbone matters. **(b)** Under
-converged η the earlier submarine bb=150 "win" no longer clears the bar (it now
-sits ≈ 0.22, marginally caught); the only healthy point flirting with the fair
-line is **autopilot maxtap=250** (BER ≈ 0.175, effort ≈ 0.14) — confirm at 3
-seeds. Net: the cheap attacks beat only the paper's *inflated cumulative*
-threshold; a fair threshold largely neutralizes them — which is itself the
-emerging **defense** result (attack claim survives only as "evades the detector
-*as published*", not "the mark is cheap to forge in general").
+Part 1 (reproduce FareMark) done. Part 2 — **we have a working attack.** The
+autopilot free-rider, run on CIFAR-100 with the fair frozen threshold, has a
+**confirmed winner: `autop_scope=block`** (re-embed the last block only, not the
+whole model and not just the head): **free-rider BER 0.075 < fair η ≈ 0.097
+(evades ~50% of converged rounds), final accuracy 72.0% (healthy), at 18% of
+honest effort.** It is the sweet spot on the scope curve — `head` fails (BER 0.42,
+the mark won't generalise), `full` is caught (BER 0.155 > η) and costs about the
+same, `block` wins. The honest framing: the watermark is a *periodically
+re-embeddable* property, so a client that trains fully but only on the last block
+and only intermittently rides under a per-round detector at ~1/5 honest cost. Two
+caveats to carry: (a) single-seed — confirm `block` at 3 seeds; (b) CIFAR-10 is
+degenerate (only ~2 watermark bits → honest BER itself swings to 0.5), so its
+"evasion" is a detector-coarseness finding, not an attack win. Read every result
+against the FAIR frozen/converged η, never the swingy cumulative one.
 
 ## 2. Experimental setup (the exact configuration every result uses)
 
@@ -56,6 +53,68 @@ One honest run ~3 h on one A100; ~30 runs in the full sweep.
 | `autopilot` | 17 | fully self-tuning submarine: self-terminating warmup, predicts the eta crossing and taps just before, adaptive tap size, no poisoning. **`autop_scope` = head/block/full** picks how much to re-train | **running** — should match the bb=150 win more cheaply |
 
 ## 4. Results (updated 2026-07-07 from the full sweep — all single-seed unless noted)
+
+### 4.0 CONFIRMED headline (2026-07-08, real result.json, single seed)
+
+**REFINED FINDING (2026-07-08, from the per-round traces) — two independent effort
+levers, and the winner uses the SECOND one:**
+- **Lever 1 — coasting (temporal):** skip training rounds; re-embed occasionally.
+  This is the classic "submarine". `scope=full` uses it (coasts 31/50 rounds, taps
+  only 5×) — but it gets CAUGHT (BER 0.155 > η) because the mark decays too far
+  between rare taps.
+- **Lever 2 — cheap shallow re-embedding (structural):** retrain only the last
+  block (backbone frozen), which is cheap PER ROUND, so you can re-embed almost
+  every round and still be cheap. `scope=block` uses it (trains 37/50 rounds but
+  each is ~1/6 the cost) → BER 0.075 < η, effort 18%. **This is the winner.**
+
+So the honest thesis is sharper than "coasting evades": **the watermark is forgeable
+by retraining a shallow SLICE of the network — the last block. The head alone is too
+shallow (mark won't generalise, BER 0.42); the full model is unnecessary; the last
+block is both cheap and sufficient.** This partially resurrects the original
+"output layer is cheap to forge" intuition — one block deeper than the literal head.
+Coasting (lever 1) helps cost but, used alone (full-scope), gets caught. The two
+levers are visualised in the `submarine` plot (block = dives often but cheaply;
+full = coasts then caught).
+
+
+The autopilot sweep (CIFAR-100, 12 configs × the fair frozen/converged η). All
+BERs are the free-rider's server BER; η is the FAIR threshold (post-convergence,
+fixed). Effort = attacker samples ÷ honest samples. Accuracy ~72 = healthy.
+
+| Config | BER | fair η | effort | acc | verdict |
+|---|---|---|---|---|---|
+| **`scope=block`** | **0.075** | 0.097 | **0.182** | **72.0** | **EVADES (winner)** |
+| `margin=0.12` | 0.105 | ~0.095 | 0.156 | 72 | borderline (≈ η) |
+| `full maxtap=250` | 0.155 | 0.096 | 0.147 | 70.9 | caught |
+| `full maxtap=400` | 0.165 | 0.10 | 0.232 | 71 | caught (and pricier) |
+| `full maxtap=120` | 0.29 | 0.10 | 0.104 | 72 | caught |
+| `full maxtap=60` | 0.59 | 0.10 | 0.052 | 72 | caught (weak taps) |
+| `scope=head` | 0.42 | 0.10 | 0.214 | 70 | caught (mark won't generalise) |
+
+**The scope curve is the key finding:** BER falls head (0.42) → full (0.155) →
+**block (0.075)**. `block` re-embeds enough of the network to generalise the mark
+to the server's triggers, but skips most of the backbone's backward pass, so it's
+both effective AND cheaper than `full`. `head` fails outright (overfits its own
+probe triggers). This is a clean, monotonic, defensible result.
+
+**Knob findings (from the fixed per-knob `knob` plots):**
+- `autop_max_batches` (tap strength, on `full`): BER 0.59→0.29→0.155→0.165 as taps
+  go 60→120→250→400; effort rises 0.05→0.23. More taps help until ~250 then
+  plateau; `full` never clears η — that's why `block`, not bigger `full` taps, is
+  the answer.
+- `autop_margin0`: bigger safety margin → lower BER (0.16→0.155→0.105) but higher
+  effort (0.129→0.156). margin=0.12 gets `full` to the edge of η.
+- `autop_protect_until` {4,8,12}: **no effect** on BER/effort (flat) — the
+  calibration-window length doesn't change the outcome in this regime. A clean
+  null result; leave it at the default 8.
+
+**CIFAR-10 is degenerate — NOT an attack win.** Every autopilot config shows BER
+0.0 at 0.3% effort. Cause: m ≈ 2 watermark bits, so honest clients' own BER swings
+to 0.5 (visible in the timeline) and the detector is too coarse to mean anything.
+Report this as "the watermark/detector is unusable with few classes", a
+defence-relevant observation, not evasion.
+
+### 4.1 Earlier sweep results (context)
 
 All BERs below are read against **η = converged ≈ 0.17** (the fair threshold).
 The full sweep confirmed the mechanisms but moved the goalposts: most "wins" only
@@ -307,6 +366,14 @@ cumulative threshold. Under any fair threshold it is caught. Report evasion unde
 ALL variants (via `thresholds.evades_under`), not the swingy per-round recall.
 
 ## 11. Plots available
+- `scripts/plot_thresholds.py submarine` **[NEW]** — the "submarine line": free-rider
+  BER vs the fair η, TRAINING rounds shaded (dives) / coasting clear, per-tap cost
+  bars + total effort in title. Shows WHY each tap happens. Contrast `scope=block`
+  (dives often, cheaply — WINS) vs `scope=full` (coasts, caught) — the two levers (§4.0).
+- `scripts/plot_thresholds.py timeline` **[NEW]** — FR+honest BER + all η lines (top)
+  stacked with cumulative attacker-effort vs round (bottom). Interpretive per-run plot.
+- `scripts/plot_thresholds.py knob` **[NEW]** — per-knob sweep filtered by family AND
+  sweep_var (fixes merged sweeps): BER-vs-knob + effort-vs-knob, mean±std.
 - `scripts/plot_thresholds.py decay` **[NEW]** — one autopilot run: watermark decay while coasting (BER climbs to η) + re-embed cost per tap (batches-to-floor), stacked panels vs round. The mechanism plot: coast-rounds-gained / tap-batches-spent is the effort frontier, read straight off it.
 - `scripts/plot_thresholds.py overlay` — one run: fr_ber + benign_ber vs round,
   all eta variants as lines, % evade under each in the title. **[UPDATED]** now
@@ -338,3 +405,233 @@ All plotters import `plotstyle.py` and follow these rules (apply to every future
 - Descriptive titles, axis labels with units, legends, light grid, despined axes.
 - Semantic colours are consistent everywhere: honest=blue, free-rider=red,
   accuracy=green, eta=black.
+---
+
+## 14. HOW IT ALL WORKS — from scratch (documentation, read if new to the project)
+
+This section assumes no background. It explains the model, training, the watermark,
+and the three attack mechanisms in plain terms.
+
+### 14.1 The model: backbone + head, and what "training" costs
+
+A ResNet-18 image classifier is a stack of ~18 layers. Think of it in two parts:
+- **Backbone** (the first ~17 layers): turns a raw 32×32 image into a compact
+  "feature vector" — a list of numbers describing edges, textures, shapes, objects.
+  This is where almost all the model's knowledge lives and it is expensive to learn.
+- **Head** (the final single layer, a.k.a. the classifier / output layer): a simple
+  linear map from the feature vector to 100 class scores (for CIFAR-100), turned into
+  probabilities by softmax. Cheap; it only draws boundaries in the space the backbone
+  already built.
+
+**A training step has two halves.** (1) *Forward pass*: push a batch of images
+through every layer to get predictions. (2) *Backward pass* (backpropagation):
+compute how wrong the prediction was (the "loss") and push the error backwards
+through every layer to nudge each layer's weights. The backward pass through the
+backbone is the expensive part. **If you "freeze" the backbone (mark it
+`requires_grad=False`), you skip its backward pass entirely** — you still forward
+through it (cheap) but only update the head/last block. That is the whole trick
+behind the cheap attack: freezing saves most of the compute.
+
+**Cost units in this project.** "Effort ratio" = attacker samples ÷ honest samples.
+An honest client trains on its full shard every round (~25,000 sample-passes/round).
+A frozen-backbone tap of 250 mini-batches of 16 = 4,000 sample-passes and skips the
+backbone backward, so it is far cheaper per round.
+
+### 14.2 The watermark and BER (how FareMark detects free-riders)
+
+FareMark forces honest training to leave a hidden mark. The server picks, per client,
+a secret **trigger class** (a category of images) and a secret key. During training,
+honest clients add a **watermark loss** on trigger-class images: it pushes the model's
+softmax output on those images into a specific pattern that encodes `m` secret bits
+(for CIFAR-100, m ≈ 49 bits; for CIFAR-10 only ≈ 2 — which is why CIFAR-10 is
+degenerate). Total loss = classification loss + λ·watermark loss (λ=5).
+
+Each round the server reads the bits back from every client's model using held-out
+trigger images and computes the **Bit-Error-Rate (BER)** = fraction of the `m` bits
+that come out wrong. **Low BER = the mark is present = the client did real training.**
+If BER ≥ threshold **η**, the client is flagged as a free-rider. η is set to μ+3σ of
+honest clients' BER — see §10 for why the FAIR reading (frozen/converged) is the one
+to use, not the swingy cumulative one.
+
+Key subtlety the whole attack rests on: a mark only reads back correctly if it
+**generalises** — i.e. training on some trigger images makes the pattern appear on
+*other* (the server's) trigger images too. Training on too few triggers, or with too
+little of the network, **overfits**: the mark shows on the images you trained on but
+not the server's → high BER → caught. (This is the paper's own Table V effect.)
+
+### 14.3 The attack loop (autopilot) — warmup, coast, tap
+
+The working attack is a self-tuning free-rider ("autopilot"). It measures its own BER
+every round for free (forward-only on 16 held-out trigger images — no training cost)
+and acts on it. Three phases:
+
+1. **Warmup (embed honestly).** For the first rounds it trains like an honest client
+   until the mark is solidly embedded (probed BER ≤ floor 0.05) AND past the protected
+   calibration window (`autop_protect_until`, so the detector gets clean rounds to set
+   η). This is the attacker's one unavoidable honest investment.
+2. **Coast (free-ride).** It stops training and submits the fresh global model plus the
+   frozen "watermark direction" (transplant coast — keeps the model healthy, no
+   poisoning). With no training, the mark slowly **decays** as aggregation moves the
+   global model, so BER drifts upward toward η.
+3. **Tap (re-embed just in time).** It predicts (from its recent BER trend) when BER
+   will cross η and, just before, does a short burst of real training to drive BER back
+   down. Tap size self-adjusts (grows if the last tap undershot). Then it coasts again.
+
+The controller's numbers: it estimates η from its own recent clean BERs (μ+3σ), aims
+at `target = η_est − margin` so it acts before being caught, and predicts the crossing
+`autop_lookahead` rounds ahead. All decisions are logged to the per-client `trace`.
+
+### 14.4 The THREE re-embed mechanisms (the scope lever) — the core result
+
+When the attacker taps, HOW MUCH of the network it retrains is `autop_scope`. This is
+the decisive knob. The three mechanisms:
+
+- **`head` — retrain only the final linear layer (backbone frozen).** Cheapest. But
+  the head can only use the features the frozen backbone already provides; it cannot
+  reshape them. It overfits its own trigger images and the mark does NOT generalise to
+  the server's → **BER ≈ 0.42, caught.** *Mechanism of failure: too few degrees of
+  freedom.* (This falsifies the naive "the output layer is cheap to forge" claim.)
+- **`full` — retrain the whole network (backbone + head).** Most capacity, mark
+  generalises → low BER *when freshly embedded*. But every batch backprops the whole
+  backbone = expensive, so the attacker can only afford a few taps and must coast a lot;
+  between rare taps the mark decays too far → **BER ≈ 0.155, caught under the fair η.**
+  *Mechanism of failure: too expensive to refresh often enough.*
+- **`block` — retrain only the last block (~8 tensors), rest of the backbone frozen.**
+  Enough capacity to reshape features so the mark generalises, but skips most of the
+  backbone's backward pass → cheap per round. So it re-embeds almost every round and
+  stays fresh, at low total cost → **BER 0.075 < η, effort 18%, healthy 72%. WINNER.**
+  *Why it wins: cheap AND sufficient — the Goldilocks depth.*
+
+The monotonic scope curve (BER: head 0.42 → full 0.155 → block 0.075) is the headline.
+
+### 14.5 The TWO effort levers (why "cheap" happens two different ways)
+
+- **Lever 1 — coasting (temporal):** skip training rounds. `full` relies on this (trains
+  19/50 rounds). Saves cost but the mark decays between rare taps → caught.
+- **Lever 2 — cheap shallow re-embedding (structural):** make each re-embed cheap by
+  freezing the backbone. `block` relies on this (trains 37/50 rounds but each is ~1/6
+  cost) → stays fresh AND cheap → wins.
+
+So the honest thesis: the vulnerability is structural, not temporal — **the watermark
+is forgeable by retraining a shallow SLICE (the last block); the head is too shallow,
+the full model unnecessary.** Coasting helps but, used alone, gets caught. The
+`submarine` plot shows both: block dives often but cheaply (wins); full coasts then is
+caught.
+
+### 14.6 Why the detector is fooled (one paragraph)
+
+FareMark assumes "has the watermark" ⇔ "did the expensive training". The attack breaks
+that equivalence: the mark is an output-space property that a *shallow* re-embed can
+forge on the freely-received backbone, so a client can have the mark without doing the
+work. The fair threshold (frozen η) raises the bar — most cheap tricks are caught — but
+`block`-scope re-embedding still clears it. The eventual DEFENCE follows from this: add
+a check the shallow forgery can't pass (e.g. backbone-consistency), or a fair threshold,
+which already neutralises the coasting/poisoning routes.
+
+---
+
+## 15. WATERMARKING MECHANISM & GLOSSARY (answers to the deck TODOs)
+
+### 15.1 Exactly how FareMark's watermark works — the key and the secret message
+
+Three secrets are agreed per client at REGISTRATION and stored by BOTH the client
+and the server:
+1. **Trigger class** — one image category (e.g. "cat") assigned to the client; the
+   mark is read only from images of this class.
+2. **Watermark message B** — the secret bit-string the client must embed,
+   B = [b_1..b_m], m bits (CIFAR-100: m≈49; CIFAR-10: m≈2). Chosen at registration;
+   **the server keeps a copy — that is how it knows what the bits "should" be.**
+3. **Key M** — a secret pseudorandom projection matrix; each bit k has its own random
+   projection vector (row M_k).
+
+**Embed (client).** For a trigger image the model outputs softmax vector P (probs over
+classes). Bit k is read as: b̂_k = 1 if (P·M_k) ≥ 0 else 0 (a smoothing f(x)=x^α is
+applied to P first so it isn't too spiky). Training adds a watermark loss that pushes
+each projected sign to match the target b_k. So "embedding" = shaping the softmax on
+trigger images until its projections onto the secret directions spell out B.
+
+**Verify (server).** Take ~50 held-out trigger-class images, run them through the
+submitted model, recover B̂ the same way (project onto M, take signs, average over the
+50 images), compare to the registered B. **BER = fraction of the m bits where B̂ ≠ B.**
+Low BER ⇒ the client shaped the output as only real training can ⇒ not a free-rider.
+Flag if BER ≥ η.
+
+**How the attacker estimates the threshold.** The attacker is a registered client, so
+it holds its OWN B and M and can compute its own BER every round for free. It does NOT
+know the server's η, so it estimates η as μ+3σ of its recent clean BERs (or a fallback
+0.25 before it has data) and aims below that. Its estimate can be far from the true
+fair η — see the `estimate` plot; in our block run eta_est sat at 0.25 while the actual
+fair η was ~0.10 (false confidence).
+
+**The probe≠server gap.** The attacker probes BER on 16 of ITS OWN shard's trigger
+images; the server verifies on HELD-OUT trigger images. Same B and M, different images
+→ the attacker can read a lower BER than the server sees. This gap is why FR BER can be
+above the server's line even when the attacker thinks it is safe.
+
+### 15.2 Box-free vs black-box vs white-box — and why the attack is box-free-specific
+
+Watermarking methods differ by WHAT the verifier needs and WHERE the signal lives:
+- **White-box (feature-based, e.g. FedIPR):** signal is IN THE WEIGHTS. Verify by
+  reading bits from the parameters directly. Needs full parameter access.
+- **Black-box (backdoor-based, e.g. Adi et al.):** signal is a hidden INPUT→LABEL rule
+  (trigger image → planted label). Verify by querying. Recognizing the trigger is a
+  FEATURE-DETECTION job → lives in the BACKBONE.
+- **Box-free (FareMark):** signal is the SHAPE of the softmax OUTPUT on trigger-class
+  images (bits via projection onto M). Verify by querying. Signal is SHALLOW — a
+  property of the output mapping.
+
+**Why our shallow-slice attack is box-free-specific:**
+- Box-free: the mark is a shallow output property, so a cheap shallow re-embed (last
+  block) reaches it → our attack works.
+- Black-box: forging the label rule needs the network to RECOGNIZE the trigger, a
+  backbone job → a last-block-only tap can't build a trigger detector → you're pushed
+  to full-model cost (i.e. toward doing the real work). HARDER for our method.
+- White-box: verification reads weights, not outputs, so riding under an output BER is
+  irrelevant; you'd have to reproduce a weight-space signature. HARDEST for our method
+  — BUT white-box needs the server to hold every client's weights, which FL privacy
+  (secure aggregation) often forbids. That assumption is exactly WHY FareMark chose
+  box-free.
+
+**Sharper thesis:** the weakness is intrinsic to putting the mark in a SHALLOW
+output-space location. Box-free is the only method that works under FL privacy, but its
+shallowness is what makes it cheaply forgeable. This directly motivates the defence:
+anchor the mark deeper (force backbone dependence, like black-box) or add a
+backbone-consistency check so a shallow forgery is caught. CAVEAT: black/white-box
+resistance is reasoned from mechanism, not yet tested — a clean future experiment.
+
+### 15.3 GLOSSARY (plain definitions for the deck TODOs)
+
+- **Weights / parameters:** the numbers inside each layer that get adjusted during
+  training; "the model" is essentially its weights.
+- **Features / feature vector:** the compact numeric description of an image produced by
+  the backbone (edges→textures→shapes→objects); the head classifies from these.
+- **Layer:** one processing stage. ResNet-18 ≈ 18 such stages: a conv stem, 4 stages of
+  residual blocks (the backbone), then a final linear layer (the head).
+- **ResNet-18 / CNN:** ResNet-18 is one specific Convolutional Neural Network (CNN)
+  architecture — CNNs are the standard family for image classification. We use ResNet-18
+  because the paper does; the attack idea is architecture-agnostic (any backbone+head
+  model), but all our NUMBERS are ResNet-18 on CIFAR-100/10.
+- **Batch / mini-batch:** training processes images in small groups called mini-batches
+  (here 16 images). One "batch" in our tap counts = one mini-batch of 16. "250 batches"
+  = 250×16 = 4,000 image-passes.
+- **Effort from batches:** effort_ratio = attacker image-passes ÷ honest image-passes.
+  Honest ≈ 25,000 passes/round (full shard × 5 epochs). A frozen-backbone tap of 250
+  batches = 4,000 passes AND skips the backbone's backward pass, so it is much cheaper
+  per round. Sum over all rounds → the ~18% figure.
+- **Forward / backward pass:** forward = compute the prediction; backward
+  (backpropagation) = compute how to nudge weights. The backbone's backward pass is the
+  expensive part; freezing the backbone skips it.
+- **"Knee at 250":** on the tap-strength sweep, BER stops improving much past
+  max_batches=250 (the curve bends like a knee) — bigger taps cost more for little gain,
+  so 250 is the efficient choice.
+- **Safety margin (autop_margin0) and how it auto-adjusts:** the attacker aims at
+  target = eta_est − margin so it acts before being caught. It RELAXES the margin (×0.98,
+  coast longer, cheaper) after safe rounds and TIGHTENS it (+0.02, safer) after a tap
+  undershoots. Starts at 0.08.
+- **Sawtooth:** the shape of the free-rider's BER over rounds — it rises while coasting
+  (mark decaying) then drops sharply at a tap (re-embed), repeatedly, like saw teeth.
+- **Slope (decay plot):** how fast BER climbs per coasting round = how fast the mark
+  decays = how many rounds you can coast before nearing η. Read it as rise-over-run on
+  the BER curve during a clear (non-shaded) stretch.
+- **Duty cycle:** fraction of rounds the free-rider actually trains (block: 37/50; full:
+  19/50).

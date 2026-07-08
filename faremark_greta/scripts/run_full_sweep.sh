@@ -49,6 +49,14 @@ if [ "${1:-}" = "PLOT" ]; then
     run $PT decay   --in "'$ALL'" --family $AP --out "$OUT/decay_$DS"
     # 3) SAWTOOTH: fr_ber vs benign vs all eta lines, warmup/tap marked, %evade
     run $PT overlay --in "'$ALL'" --family $AP --out "$OUT/sawtooth_$DS"
+    # 3b) TIMELINE: BER (FR+honest) + all eta lines, stacked with cumulative
+    #     attacker-effort vs round. The interpretive per-run plot.
+    run $PT timeline --in "'$ALL'" --family $AP --out "$OUT/timeline_$DS"
+    # 3c) SUBMARINE: BER-vs-η with training(dive)/coast shading + per-tap cost.
+    #     Rendered for the two levers: scope=block (dives cheaply, wins) and
+    #     scope=full (coasts, caught). Needs the scope runs (family=$SCOPE).
+    run $PT submarine --in "'$ALL'" --family $SCOPE --out "$OUT/submarine_block_$DS"
+    run $PT submarine --in "'$ALL'" --family $AP    --out "$OUT/submarine_full_$DS"
     # 4) WORTH: effort + BER-vs-eta + accuracy, stacked, mean+/-std over seeds
     run $PT worth   --in "'$ALL'" --family $AP $SCOPE --out "$OUT/worth_$DS"
     # 5) WEAK-POINT MAP under each threshold (frozen = fair headline first)
@@ -56,20 +64,13 @@ if [ "${1:-}" = "PLOT" ]; then
       run python scripts/plot_frontier.py --in "'$ALL'" \
           --family $AP $SCOPE --eta $V --out "$OUT/weakpoint_${DS}_$V"
     done
-    # 6) SCOPE question (is head-only / "output layer cheap to forge" enough?)
-    run $PA sweep --in "'$ALL'" --family $SCOPE --sweep_var autop_scope \
-        --metric wm_fr_ber --out "$OUT/scope_frber_$DS"
-    run $PA sweep --in "'$ALL'" --family $SCOPE --sweep_var autop_scope \
-        --metric effort_ratio_samples --out "$OUT/scope_effort_$DS"
-    # 7) EFFORT-vs-STRENGTH and the two secondary knobs
-    run $PA sweep --in "'$ALL'" --family $AP --sweep_var autop_max_batches \
-        --metric wm_fr_ber --out "$OUT/maxtap_frber_$DS"
-    run $PA sweep --in "'$ALL'" --family $AP --sweep_var autop_max_batches \
-        --metric effort_ratio_samples --out "$OUT/maxtap_effort_$DS"
-    run $PA sweep --in "'$ALL'" --family $AP --sweep_var autop_protect_until \
-        --metric effort_ratio_samples --out "$OUT/protect_effort_$DS"
-    run $PA sweep --in "'$ALL'" --family $AP --sweep_var autop_margin0 \
-        --metric wm_fr_ber --out "$OUT/margin_frber_$DS"
+    # 6/7) PER-KNOB SWEEPS via plot_thresholds.py knob — filters by family AND
+    #      sweep_var so the three autopilot knobs DON'T pool onto one axis
+    #      (the fix for the merged sweeps). Each: BER-vs-knob + effort-vs-knob.
+    run $PT knob --in "'$ALL'" --family $SCOPE --sweep_var autop_scope         --out "$OUT/knob_scope_$DS"
+    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_max_batches   --out "$OUT/knob_maxtap_$DS"
+    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_protect_until --out "$OUT/knob_protect_$DS"
+    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_margin0       --out "$OUT/knob_margin_$DS"
     run $PA duty --in "'$RES/*${AP}*rep0*/result.json'" --out "$OUT/duty_$DS"
   done
   # coast-mode comparison (validates transplant as the coast) — cifar100 anchor

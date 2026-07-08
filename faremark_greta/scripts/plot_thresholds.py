@@ -40,8 +40,18 @@ def _fr_trace(r):
     return None
 
 
+def _pick(runs, family):
+    """First run matching --family (so overlay/decay show the dataset you asked
+    for, not just whatever glob returned first)."""
+    if family:
+        for f, r in runs:
+            if (r.get("manifest", {}) or {}).get("family") in family:
+                return f, r
+    return runs[0]
+
+
 def overlay(a):
-    _, r = _load(a.inp)[0]
+    _, r = _pick(_load(a.inp), a.family)
     h = r.get("history", [])
     rounds = [x["round"] for x in h]
     benign = [x.get("wm_benign_ber") for x in h]
@@ -132,6 +142,9 @@ def decay(a):
     a2.set_title("Re-embed cost per tap (lower = mark re-forms fast)")
     a2.legend(loc="upper right", fontsize=8)
     ps.finish(fig, a.out + ".png")
+
+
+def evade_bars(a):
     """PROVE-IT plot: for each attack config, the fraction of converged rounds it
     EVADES under every eta variant (mean +/- std over seeds). Reading it:
       * bars high ONLY under 'cumulative' -> the evasion is the threshold artifact
@@ -258,14 +271,266 @@ def worth(a):
     ps.finish(fig, a.out + ".png")
 
 
+def _fr_id(r):
+    for cid, c in r.get("compute", {}).get("per_client", {}).items():
+        if c.get("is_free_rider"):
+            return cid
+    return None
+
+
+def _cum_effort(r):
+    """Per-round cumulative attacker-effort ratio = cumsum(FR samples) /
+    cumsum(honest samples), round by round. Shows effort flat while coasting,
+    stepping up at each tap."""
+    h = r.get("history", [])
+    rounds = [x["round"] for x in h]
+    pc = r.get("compute", {}).get("per_client", {})
+    fid = _fr_id(r)
+    honest = [cid for cid in pc if not pc[cid].get("is_free_rider")]
+    def per_round(cid):
+        pr = pc[cid].get("per_round", {})
+        return {int(k): v.get("samples", 0) for k, v in pr.items()} if isinstance(pr, dict) else {}
+    frpr = per_round(fid) if fid else {}
+    hopr = [per_round(cid) for cid in honest]
+    cfr = chon = 0.0
+    out = []
+    for rd in rounds:
+        cfr += frpr.get(rd, 0.0)
+        chon += (sum(d.get(rd, 0.0) for d in hopr) / len(hopr)) if hopr else 0.0
+        out.append(cfr / chon if chon else 0.0)
+    return rounds, out
+
+
+def timeline(a):
+    """THE interpretive per-run plot. Top: free-rider BER, honest BER, and ALL
+    eta thresholds vs round (warmup/tap marked). Bottom (shared x): cumulative
+    attacker effort as a fraction of honest, vs round. Read together: the red
+    line dips under the fair (frozen) eta while the effort line stays far below
+    1.0 = evading cheaply."""
+    _, r = _pick(_load(a.inp), a.family)
+    h = r.get("history", [])
+    rounds = [x["round"] for x in h]
+    benign = [x.get("wm_benign_ber") for x in h]
+    frb = [x.get("wm_fr_ber") for x in h]
+    fig, (a1, a2) = ps.stacked_panels(2, figsize=(10.5, 7), height_ratios=[2.1, 1])
+    a1.plot(rounds, benign, color=ps.C_HONEST, lw=2.4, label="honest clients' BER")
+    a1.plot(rounds, frb, color=ps.C_FR, lw=2.4, label="free-rider BER")
+    for v in thr.ALL_VARIANTS:
+        st_ = thr.STYLE[v]
+        et = thr.eta_series([b if b is not None else 0.5 for b in benign], v)
+        a1.plot(rounds, et, color=st_["color"], ls=st_["ls"], lw=1.4, label=st_["label"])
+    tr = _fr_trace(r)
+    if tr:
+        at = {x["round"]: x.get("wm_fr_ber") for x in h}
+        warm = [(t["round"], at.get(t["round"])) for t in tr if t.get("action") in ("warmup", "embed") and at.get(t["round"]) is not None]
+        taps = [(t["round"], at.get(t["round"])) for t in tr if t.get("action") == "tap" and at.get(t["round"]) is not None]
+        if warm: a1.scatter(*zip(*warm), s=50, marker="s", color=ps.C_FR, edgecolor="k", zorder=5, label="warmup embed")
+        if taps: a1.scatter(*zip(*taps), s=68, marker="^", color=ps.C_FR, edgecolor="k", zorder=5, label="tap (re-embed)")
+    a1.set_ylabel("bit-error-rate  (lower = watermark present)")
+    a1.set_ylim(0, 0.7)
+    a1.set_title("Free-rider vs honest BER, with every threshold, per round")
+    a1.legend(ncol=2, loc="upper right", fontsize=7.5)
+    rr, eff = _cum_effort(r)
+    a2.plot(rr, eff, color=ps.OKABE["blue"], lw=2.4, label="attacker effort ÷ honest (cumulative)")
+    a2.axhline(1.0, color=ps.OKABE["grey"], ls=":", lw=1)
+    a2.text(rounds[0], 1.02, "honest = 1.0", fontsize=8, color=ps.OKABE["grey"])
+    a2.set_ylabel("effort ratio")
+    a2.set_xlabel("communication round")
+    a2.set_ylim(0, max(1.05, max(eff) * 1.15 if eff else 1.05))
+    a2.set_title("How cheap: cumulative attacker compute as a fraction of honest, per round")
+    a2.legend(loc="upper left", fontsize=8)
+    ps.finish(fig, a.out + ".png")
+
+
+def knob(a):
+    """Per-knob sweep DONE RIGHT: filter by family AND by which knob was actually
+    swept (manifest.sweep_var), so the three autopilot knobs don't pool onto one
+    axis. Two stacked panels vs the knob value: free-rider BER (with the fair
+    converged-eta line) and attacker effort — mean +/- std over seeds."""
+    runs = _load(a.inp)
+    groups = {}
+    for _, r in runs:
+        m = r.get("manifest", {}) or {}
+        if a.family and m.get("family") not in a.family:
+            continue
+        if a.sweep_var and m.get("sweep_var") != a.sweep_var:   # the fix: match the knob
+            continue
+        lvl = m.get("sweep_level")
+        benign = [hh.get("wm_benign_ber") for hh in r.get("history", [])]
+        eta = thr.eta_series([b or 0.5 for b in benign], "converged")[-1] if benign else None
+        groups.setdefault(lvl, []).append(dict(
+            ber=r.get("wm_fr_ber"), eff=r.get("compute", {}).get("summary", {}).get("effort_ratio_samples"),
+            acc=r.get("final_acc"), eta=eta))
+    if not groups:
+        print("no matching runs for", a.family, a.sweep_var); return
+    try:
+        levels = sorted(groups, key=lambda x: float(x))
+    except (TypeError, ValueError):
+        levels = sorted(groups, key=str)
+    xs = [str(l) for l in levels]
+    def ms(key):
+        out = []
+        for l in levels:
+            vs = [g[key] for g in groups[l] if g[key] is not None]
+            out.append((np.mean(vs) if vs else 0.0, np.std(vs) if len(vs) > 1 else 0.0))
+        return out
+    ber, eff, eta = ms("ber"), ms("eff"), ms("eta")
+    fig, (a1, a2) = ps.stacked_panels(2, figsize=(max(7, 1.3 * len(xs)), 6.6), height_ratios=[1, 1])
+    xi = np.arange(len(xs))
+    a1.errorbar(xi, [v[0] for v in ber], yerr=[v[1] for v in ber], marker="o", lw=2, color=ps.C_FR, capsize=3, label="free-rider BER")
+    a1.plot(xi, [v[0] for v in eta], marker="D", ls="--", color=ps.C_ETA, lw=1.5, label="η converged (fair) — below = evades")
+    a1.set_ylabel("free-rider BER")
+    a1.set_title(f"Evasion vs {a.sweep_var}  (BER below the η line = evades)")
+    a1.legend(fontsize=8, loc="best")
+    a2.errorbar(xi, [v[0] for v in eff], yerr=[v[1] for v in eff], marker="s", lw=2, color=ps.OKABE["blue"], capsize=3, label="attacker effort ÷ honest")
+    a2.set_ylabel("effort ratio (samples)")
+    a2.set_xlabel(a.sweep_var)
+    a2.set_title("Cost vs the same knob (lower = cheaper)")
+    a2.legend(fontsize=8, loc="best")
+    for ax in (a1, a2):
+        ax.set_xticks(xi); ax.set_xticklabels(xs)
+    ps.finish(fig, a.out + ".png")
+
+
+def submarine(a):
+    """THE submarine plot: why the free-rider taps, round by round.
+      Panel 1 — free-rider BER (the "submarine line") vs the fair frozen eta.
+        Rounds where it TRAINS (warmup or tap) are shaded; coasting rounds are
+        clear. You can see the sub let BER rise toward eta while coasting, then
+        dive (tap) just before crossing — staying submerged under the line.
+      Panel 2 — per-round training cost (tap batches) as bars, so each dive's
+        effort is visible; annotated with the cumulative effort ratio.
+    Reads straight off the trace: action in {warmup, tap} = training (a dive);
+    action == coast = drifting up."""
+    _, r = _pick(_load(a.inp), a.family)
+    h = r.get("history", [])
+    rounds = [x["round"] for x in h]
+    frb = [x.get("wm_fr_ber") for x in h]
+    benign = [x.get("wm_benign_ber") for x in h]
+    eta_f = thr.eta_series([b if b is not None else 0.5 for b in benign], "frozen")
+    eta_c = thr.eta_series([b if b is not None else 0.5 for b in benign], "converged")
+    tr = _fr_trace(r) or []
+    act = {t["round"]: t.get("action") for t in tr}
+    tapb = {t["round"]: (t.get("tap_batches") or 0) for t in tr if t.get("action") == "tap"}
+    warmr = [t["round"] for t in tr if t.get("action") in ("warmup", "embed")]
+    tapr = [t["round"] for t in tr if t.get("action") == "tap"]
+    fr_at = {x["round"]: x.get("wm_fr_ber") for x in h}
+    eff = r.get("compute", {}).get("summary", {}).get("effort_ratio_samples")
+
+    fig, (a1, a2) = ps.stacked_panels(2, figsize=(11, 6.8), height_ratios=[2.2, 1])
+    # shade every training round (a "dive")
+    lbl_used = False
+    for rd, ac in act.items():
+        if ac in ("warmup", "embed", "tap"):
+            a1.axvspan(rd - 0.5, rd + 0.5, color=ps.OKABE["orange"], alpha=0.18,
+                       label=("training round (dive)" if not lbl_used else None))
+            lbl_used = True
+    # the submarine line + the fair thresholds it hides under
+    a1.plot(rounds, frb, color=ps.C_FR, lw=2.6, marker="o", ms=3, label="free-rider BER (the submarine)")
+    a1.plot(rounds, eta_f, color=thr.STYLE["frozen"]["color"], lw=1.8, label="η frozen (fair ceiling)")
+    a1.plot(rounds, eta_c, color=thr.STYLE["converged"]["color"], ls="-.", lw=1.4, label="η converged (fair)")
+    if warmr:
+        a1.scatter(warmr, [fr_at.get(x) for x in warmr], s=55, marker="s",
+                   color=ps.C_FR, edgecolor="k", zorder=6, label="warmup embed")
+    if tapr:
+        a1.scatter(tapr, [fr_at.get(x) for x in tapr], s=80, marker="v",
+                   color=ps.C_FR, edgecolor="k", zorder=6, label="tap = dive (re-embed)")
+    a1.set_ylabel("bit-error-rate  (below η = hidden)")
+    a1.set_ylim(0, max(0.7, (max([f for f in frb if f is not None] + [0.3])) * 1.1))
+    a1.set_title("The submarine: BER drifts up while coasting, dives (taps) just before crossing η")
+    a1.legend(ncol=2, loc="upper right", fontsize=8)
+    # per-round dive cost
+    if tapb:
+        a2.bar(list(tapb), list(tapb.values()), width=0.8, color=ps.OKABE["blue"],
+               label="tap cost (training batches)")
+    a2.set_ylabel("dive cost\n(batches)")
+    a2.set_xlabel("communication round")
+    a2.set_title(f"Cost of each dive  —  total attacker effort = {eff:.0%} of honest"
+                 if eff is not None else "Cost of each dive")
+    a2.legend(loc="upper right", fontsize=8)
+    ps.finish(fig, a.out + ".png")
+
+
+def estimate(a):
+    """Attacker's BELIEVED threshold vs the ACTUAL fair one. The free-rider can't
+    see the server's eta, so it ESTIMATES it (eta_est, from its own recent clean
+    BERs, or a fallback) and aims a margin below that. This plot overlays:
+      - free-rider BER (what it actually submits),
+      - eta_est (what the attacker THINKS the ceiling is),
+      - the actual fair eta (frozen) it is really judged against.
+    Where eta_est sits ABOVE the actual eta, the attacker believes it is safe but
+    is not — the visual explanation of why a config fails to stay under."""
+    _, r = _pick(_load(a.inp), a.family)
+    h = r.get("history", [])
+    rounds = [x["round"] for x in h]
+    frb = [x.get("wm_fr_ber") for x in h]
+    benign = [x.get("wm_benign_ber") for x in h]
+    eta_actual = thr.eta_series([b if b is not None else 0.5 for b in benign], "frozen")
+    tr = _fr_trace(r) or []
+    est = {t["round"]: t.get("eta_est") for t in tr if t.get("eta_est") is not None}
+    tgt = {t["round"]: t.get("target") for t in tr if t.get("target") is not None}
+    est_line = [est.get(rd) for rd in rounds]
+    tgt_line = [tgt.get(rd) for rd in rounds]
+    fig, ax = plt.subplots(figsize=(10.5, 5.8))
+    ax.plot(rounds, frb, color=ps.C_FR, lw=2.6, marker="o", ms=3, label="free-rider BER (submitted)")
+    ax.plot(rounds, eta_actual, color=thr.STYLE["frozen"]["color"], lw=2.2,
+            label="ACTUAL fair η (frozen) — judged against this")
+    # attacker's believed ceiling + where it aims
+    ex = [rd for rd in rounds if est.get(rd) is not None]
+    ey = [est[rd] for rd in ex]
+    if ex:
+        ax.plot(ex, ey, color=ps.OKABE["grey"], ls="--", lw=2, label="attacker's BELIEVED η (its estimate)")
+    tx = [rd for rd in rounds if tgt.get(rd) is not None]
+    ty = [tgt[rd] for rd in tx]
+    if tx:
+        ax.plot(tx, ty, color=ps.OKABE["purple"], ls=":", lw=1.8, label="attacker's target (η_est − margin)")
+    ax.fill_between(ex, ey, [eta_actual[rounds.index(rd)] for rd in ex],
+                    where=[est[rd] > eta_actual[rounds.index(rd)] for rd in ex],
+                    color=ps.OKABE["vermillion"], alpha=0.12,
+                    label="danger gap (thinks safe, isn't)") if ex else None
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("bit-error-rate / threshold")
+    ax.set_ylim(0, 0.55)
+    ax.set_title("Attacker's believed threshold vs the actual fair one\n"
+                 "(estimate above actual = false confidence → why it can drift into being caught)")
+    ax.legend(loc="upper right", fontsize=8.5)
+    ps.finish(fig, a.out + ".png")
+
+
+def thresholds_demo(a):
+    """Slide-5 plot: the SAME run's free-rider + honest BER with ALL FIVE eta
+    definitions overlaid vs round — to show how differently each 'threshold' behaves
+    on identical data (cumulative swings up; frozen/converged sit low and fixed)."""
+    _, r = _pick(_load(a.inp), a.family)
+    h = r.get("history", [])
+    rounds = [x["round"] for x in h]
+    benign = [x.get("wm_benign_ber") for x in h]
+    frb = [x.get("wm_fr_ber") for x in h]
+    fig, ax = plt.subplots(figsize=(10.5, 5.8))
+    ax.plot(rounds, benign, color=ps.C_HONEST, lw=2.6, label="honest clients' BER")
+    ax.plot(rounds, frb, color=ps.C_FR, lw=2.6, label="free-rider BER")
+    for v in thr.ALL_VARIANTS:
+        stl = thr.STYLE[v]
+        et = thr.eta_series([b if b is not None else 0.5 for b in benign], v)
+        ax.plot(rounds, et, color=stl["color"], ls=stl["ls"], lw=1.8, label=stl["label"])
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("bit-error-rate / threshold η")
+    ax.set_ylim(0, 0.7)
+    ax.set_title("One run, five ways to set η: the choice decides who is flagged")
+    ax.legend(ncol=2, loc="upper right", fontsize=8)
+    ps.finish(fig, a.out + ".png")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("overlay", "worth", "evade_bars", "decay"):
+    for name in ("overlay", "worth", "evade_bars", "decay", "timeline", "knob", "submarine", "estimate", "thresholds_demo"):
         s = sub.add_parser(name)
         s.add_argument("--in", dest="inp", nargs="+", required=True)
         s.add_argument("--out", required=True)
         s.add_argument("--family", nargs="+", default=None)
+        s.add_argument("--sweep_var", default=None)
     a = ap.parse_args()
     {"overlay": overlay, "worth": worth, "evade_bars": evade_bars,
-     "decay": decay}[a.cmd](a)
+     "decay": decay, "timeline": timeline, "knob": knob, "submarine": submarine,
+     "estimate": estimate, "thresholds_demo": thresholds_demo}[a.cmd](a)

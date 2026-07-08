@@ -133,9 +133,17 @@ P:
 - Q1: output layer embedding - alone does not work? prove that you need another detection with it like stale etc
 - Q2: timeline plan ?
 
-collusion - estimate by avg
-start fixing the threshold when the free-rider starts free-riding (assumption - no one will free ride before first 10)
-estimated threshold minus some delta to be safer -> how close you are to the surface (defense)
+- collusion - estimate by avg
+- start fixing the threshold when the free-rider starts free-riding (assumption - no one will free ride before first 10)
+- estimated threshold minus some delta to be safer -> how close you are to the surface (defense)
+
+July9:
+- TODO
+    - update STATUS.MD
+    - finish the slides and plots for the meeting
+    - checkup on the 3 seeds run and the final plotting
+    - cleanup the results dir
+    - cleanup and document the codebase
 
 ---
 ---
