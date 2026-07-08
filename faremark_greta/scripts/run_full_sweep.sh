@@ -1,135 +1,58 @@
 #!/usr/bin/env bash
-# =====================================================================
-# run_full_sweep.sh — autopilot free-rider vs FareMark, the focused sweep.
-# ONE command to submit every autopilot experiment (CIFAR-100 AND CIFAR-10),
-# then (PLOT mode) build every figure. Fire-and-forget (WAIT=0).
+# run_full_sweep.sh — push scope=block from a BOUNDARY result to (hopefully) a
+# clean break, at 3 seeds. Four ablations, each isolating one lever:
+#   E0 baseline        : block, current settings (reproduce the boundary result)
+#   E1 eta-fix         : real mu+3sigma estimate (Fix 1) — aims lower, taps harder
+#   E2 honest-schedule : embeds on the SAME schedule as honest clients (Fix 2)
+#   E3 deeper slice    : block2 = last TWO stages (Fix 3) — better generalisation
+#   E4 bigger margin   : larger safety gap below eta
+# Requires the code fixes 1-4 pushed first. CALIB_ON_ALL=0 = fair (honest-only) eta.
 #
-#   push code first, then from the repo root:
-#     ./scripts/run_full_sweep.sh              # submit everything (scout: 1 seed)
-#     SEEDS="0 1 2" ./scripts/run_full_sweep.sh   # 3-seed confirmation (error bars)
-#     DATASETS="cifar100" ./scripts/run_full_sweep.sh   # one dataset only
-#     DRY=1 ./scripts/run_full_sweep.sh        # preview, submit nothing
-#   when the jobs finish:
-#     RES=/mnt/nfs/home/zu/results ./scripts/run_full_sweep.sh PLOT
-#
-# FOCUS: autopilot submarine (idx 17). memory_exploit dropped (can't be healthy
-# AND below the fair eta). All results judged vs the FAIR threshold `frozen`
-# (post-convergence, fixed) — see faremark/thresholds.py — not the swingy
-# cumulative one. Read wm_fr_ber (below eta_frozen = evades) and final_acc
-# (~72 c100 / ~90 c10 = healthy). Attacker forces honest warmup through the
-# calibration window (AUTOP_PROTECT_UNTIL), then coasts.
-#
-# ---------------------------------------------------------------------
-# !!! WIRING CHECK (submit_experiment.sh must forward these ENV -> CLI flags):
-#     AUTOP_PROTECT_UNTIL -> --autop_protect_until   AUTOP_MARGIN0 -> --autop_margin0
-#     DATASET -> --dataset   MODEL -> --model
-#   All of the above are now wired in submit_experiment.sh. (idx 17 defaults to
-#   10 clients, so cifar10 needs only DATASET+MODEL; num_clients is left default.)
-#   Run DRY=1 first and eyeball one CIFAR-10 command; confirm the first run's log
-#   (run_experiment.py dumps cfg at startup) shows the right dataset + that a tap
-#   can exceed 200 batches when AUTOP_MAX_BATCHES>200.
-# =====================================================================
+#   ./run_full_sweep.sh            # submit all (SEEDS="0 1 2")
+#   RES=/path ./run_full_sweep.sh PLOT   # when done, build every figure
 set -uo pipefail
-SEEDS="${SEEDS:-0}"                       # scout at 1 seed; re-run winners at "0 1 2"
-DATASETS="${DATASETS:-cifar100 cifar10}"
-DRY="${DRY:-0}"
+SEEDS="${SEEDS:-0 1 2}"
 RES="${RES:-/mnt/nfs/home/zu/results}"
+PT="python scripts/plot_thresholds.py"; SB="python scripts/seedband.py"; PA="python scripts/plot_adaptive.py"
 
-# ------------------------------- PLOT MODE -------------------------------
 if [ "${1:-}" = "PLOT" ]; then
-  OUT="${OUT:-figs}"; mkdir -p "$OUT"
-  ALL="$RES/*/result.json"
-  PA="python scripts/plot_adaptive.py"; PT="python scripts/plot_thresholds.py"
+  OUT="${OUT:-figs}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
-  for DS in $DATASETS; do
-    AP="ap_$DS"; SCOPE="apscope_$DS"
-    # 1) GO/NO-GO: does it evade the FAIR threshold, or only the swingy one?
-    run $PT evade_bars --in "'$ALL'" --family $AP $SCOPE --out "$OUT/evade_bars_$DS"
-    # 2) MECHANISM: watermark decay (coast) + re-embed cost (tap) vs round
-    run $PT decay   --in "'$ALL'" --family $AP --out "$OUT/decay_$DS"
-    # 3) SAWTOOTH: fr_ber vs benign vs all eta lines, warmup/tap marked, %evade
-    run $PT overlay --in "'$ALL'" --family $AP --out "$OUT/sawtooth_$DS"
-    # 3b) TIMELINE: BER (FR+honest) + all eta lines, stacked with cumulative
-    #     attacker-effort vs round. The interpretive per-run plot.
-    run $PT timeline --in "'$ALL'" --family $AP --out "$OUT/timeline_$DS"
-    # 3c) SUBMARINE: BER-vs-η with training(dive)/coast shading + per-tap cost.
-    #     Rendered for the two levers: scope=block (dives cheaply, wins) and
-    #     scope=full (coasts, caught). Needs the scope runs (family=$SCOPE).
-    run $PT submarine --in "'$ALL'" --family $SCOPE --out "$OUT/submarine_block_$DS"
-    run $PT submarine --in "'$ALL'" --family $AP    --out "$OUT/submarine_full_$DS"
-    # 4) WORTH: effort + BER-vs-eta + accuracy, stacked, mean+/-std over seeds
-    run $PT worth   --in "'$ALL'" --family $AP $SCOPE --out "$OUT/worth_$DS"
-    # 5) WEAK-POINT MAP under each threshold (frozen = fair headline first)
-    for V in frozen converged cumulative; do
-      run python scripts/plot_frontier.py --in "'$ALL'" \
-          --family $AP $SCOPE --eta $V --out "$OUT/weakpoint_${DS}_$V"
-    done
-    # 6/7) PER-KNOB SWEEPS via plot_thresholds.py knob — filters by family AND
-    #      sweep_var so the three autopilot knobs DON'T pool onto one axis
-    #      (the fix for the merged sweeps). Each: BER-vs-knob + effort-vs-knob.
-    run $PT knob --in "'$ALL'" --family $SCOPE --sweep_var autop_scope         --out "$OUT/knob_scope_$DS"
-    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_max_batches   --out "$OUT/knob_maxtap_$DS"
-    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_protect_until --out "$OUT/knob_protect_$DS"
-    run $PT knob --in "'$ALL'" --family $AP    --sweep_var autop_margin0       --out "$OUT/knob_margin_$DS"
-    run $PA duty --in "'$RES/*${AP}*rep0*/result.json'" --out "$OUT/duty_$DS"
+  # go/no-go with error bars across all ablations
+  run $PT evade_bars --in "'$ALL'" --family blk_base blk_etafix blk_honest blk2 blk_margin confirm_head --out "$OUT/evade_ablations"
+  # seed-band (mean +/- std shaded, honest BER, actual + estimated eta) per ablation
+  for N in "block baseline 3seed" "block etafix 3seed" "block honest-sched 3seed" "block2 3seed" "block bigmargin 3seed"; do
+    tag=$(echo "$N" | tr ' =' '__')
+    run $SB --in "'$ALL'" --note "'$N'" --title "'$N'" --out "$OUT/seedband_$tag"
   done
-  # coast-mode comparison (validates transplant as the coast) — cifar100 anchor
-  run $PA sweep --in "'$ALL'" --family S_coast --sweep_var sub_coast_mode --metric wm_fr_ber  --out "$OUT/coast_frber"
-  run $PA sweep --in "'$ALL'" --family S_coast --sweep_var sub_coast_mode --metric final_acc --out "$OUT/coast_acc"
-  echo; echo "Figures in $OUT/. Read evade_bars_*.png FIRST (go/no-go), then decay_*.png."
+  # why it does / doesn't clear the line: estimated vs actual eta
+  run $PT estimate  --in "'$ALL'" --family blk_etafix --out "$OUT/estimate_etafix"
+  # the submarine + timeline on the best ablation (edit family after reading evade)
+  run $PT submarine --in "'$ALL'" --family blk_etafix --out "$OUT/submarine_etafix"
+  run $PT timeline  --in "'$ALL'" --family blk_etafix --out "$OUT/timeline_etafix"
+  echo; echo "Read evade_ablations.png FIRST: is any 'frozen'/'converged' bar HIGH with a SMALL error bar? that's a clean break."
   exit 0
 fi
 
-# ------------------------------- RUN MODE --------------------------------
-# sub(): forward env->flags to submit. All autopilot runs FORCE honest warmup
-# through the calibration window (protect), then coast; CALIB_ON_ALL=0 keeps eta
-# on the known-honest pool.
-sub(){ local cfg="$1" rep="$2"; shift 2
-  if [ "$DRY" = 1 ]; then echo "[DRY] $* ROUNDS=50 CALIB_ON_ALL=0 WAIT=0 ./submit_experiment.sh $cfg $rep"
-  else env "$@" ROUNDS=50 CALIB_ON_ALL=0 WAIT=0 ./submit_experiment.sh "$cfg" "$rep"; fi; }
-
-for DS in $DATASETS; do
-  # idx 17 is cifar100/resnet18/10-clients by default; override for cifar10.
-  if [ "$DS" = "cifar10" ]; then DSENV="DATASET=cifar10 MODEL=resnet18"
-  else                           DSENV="DATASET=cifar100 MODEL=resnet18"; fi
-  AP="ap_$DS"; SCOPE="apscope_$DS"
-  echo "############################## DATASET=$DS ##############################"
-
-  echo "###### A1 — TAP STRENGTH (the effort frontier): full-model, forced warmup ######"
-  for MB in 60 120 250 400; do for R in $SEEDS; do
-    sub 17 $R $DSENV ATTACK=autopilot AUTOP_SCOPE=full AUTOP_PROTECT_UNTIL=8 \
-        AUTOP_MAX_BATCHES=$MB FAMILY=$AP SWEEP_VAR=autop_max_batches \
-        NOTE="autopilot $DS full maxtap=$MB"
-  done; done
-
-  echo "###### A2 — PROTECT WINDOW (forced-honest calibration rounds vs cheapness) ######"
-  for PU in 4 8 12; do for R in $SEEDS; do
-    sub 17 $R $DSENV ATTACK=autopilot AUTOP_SCOPE=full AUTOP_MAX_BATCHES=250 \
-        AUTOP_PROTECT_UNTIL=$PU FAMILY=$AP SWEEP_VAR=autop_protect_until \
-        NOTE="autopilot $DS protect=$PU"
-  done; done
-
-  echo "###### A3 — SAFETY DELTA (margin below estimated eta: safe vs cheap) ######"
-  for MG in 0.04 0.08 0.12; do for R in $SEEDS; do
-    sub 17 $R $DSENV ATTACK=autopilot AUTOP_SCOPE=full AUTOP_MAX_BATCHES=250 \
-        AUTOP_PROTECT_UNTIL=8 AUTOP_MARGIN0=$MG FAMILY=$AP SWEEP_VAR=autop_margin0 \
-        NOTE="autopilot $DS margin=$MG"
-  done; done
-
-  echo "###### A4 — TRAINING SCOPE (is head-only / 'output layer cheap to forge' enough?) ######"
-  for SC in head block full; do for R in $SEEDS; do
-    sub 17 $R $DSENV ATTACK=autopilot AUTOP_SCOPE=$SC AUTOP_MAX_BATCHES=250 \
-        AUTOP_PROTECT_UNTIL=8 FAMILY=$SCOPE SWEEP_VAR=autop_scope \
-        NOTE="autopilot $DS scope=$SC"
-  done; done
+sub(){ local r="$1"; shift; env "$@" ROUNDS=50 CALIB_ON_ALL=0 WAIT=0 ./submit_experiment.sh 17 "$r"; }
+for R in $SEEDS; do
+  # E0 baseline (reproduce boundary)
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=blk_base    SWEEP_VAR=none NOTE="block baseline 3seed"
+  # E1 eta-fix (needs Fix 1)
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_MARGIN0=0.10 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=blk_etafix  SWEEP_VAR=none NOTE="block etafix 3seed"
+  # E2 honest-schedule (needs Fix 2); honest clients converge ~round 6-8
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_HONEST_UNTIL=8 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=blk_honest  SWEEP_VAR=none NOTE="block honest-sched 3seed"
+  # E3 deeper slice (needs Fix 3)
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block2 AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=blk2        SWEEP_VAR=none NOTE="block2 3seed"
+  # E4 bigger margin
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_MARGIN0=0.15 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=blk_margin  SWEEP_VAR=none NOTE="block bigmargin 3seed"
+  # head baseline for the scope curve (no fix needed)
+  sub $R ATTACK=autopilot AUTOP_SCOPE=head   AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
+      FAMILY=confirm_head SWEEP_VAR=none NOTE="autopilot cifar100 scope=head 3seed"
 done
-
-echo "###### C — SUBMARINE coast type (cifar100 anchor: validates transplant coast) ######"
-for CM in replay blend transplant noise global; do for R in $SEEDS; do
-  sub 14 $R ATTACK=submarine SUB_WARMUP=8 SUB_COAST_MODE=$CM \
-      FAMILY=S_coast SWEEP_VAR=sub_coast_mode NOTE="coast=$CM"
-done; done
-
-echo; echo "submitted. Check: runai list jobs"
-echo "When done:  RES=$RES ./scripts/run_full_sweep.sh PLOT"
-echo "NOTE: this is a SCOUT at SEEDS='$SEEDS'. Re-run winners with SEEDS='0 1 2' for error bars."
+echo "submitted $(echo $SEEDS | wc -w) seeds x 6 configs. When done: RES=$RES ./run_confirm_sweep.sh PLOT"

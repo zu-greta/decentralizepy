@@ -27,6 +27,7 @@ can draw the duty cycle and the BER/η dance.
 """
 from __future__ import annotations
 
+import statistics
 import copy
 
 import torch
@@ -126,14 +127,16 @@ class _AdaptiveMixin:
                           much cheaper per batch. Tests whether the watermark is a
                           pure output-layer phenomenon on the free backbone.
           "block"     -> last ~block (last 8 tensors).
+          "block2"    -> last ~two stages (last 20 tensors) — deeper than block,
+                          better generalization, small extra cost.
         `enriched` picks the DATA SOURCE (trigger-heavy vs full shard); `scope`
         picks the PARAMETERS. They are independent axes.
         """
         self.model.load_state_dict(global_state)
         self.model.train()
         named = list(self.model.named_parameters())
-        if scope in ("head", "block"):
-            keep = 2 if scope == "head" else 8
+        if scope in ("head", "block", "block2"):
+            keep = {"head": 2, "block": 8, "block2": 20}[scope]
             for i, (_, pp) in enumerate(named):
                 pp.requires_grad_(i >= len(named) - keep)
             train_params = [pp for pp in self.model.parameters() if pp.requires_grad]
@@ -521,7 +524,11 @@ def make_autopilot_attack(base_cls):
                                                       # no-free-rider window, and this is also how
                                                       # long the honest clients need to converge so
                                                       # the FR's own clean-BER eta anchor is valid.
-                     autop_scope: str = "full",       # which params to train: full | block | head
+                     autop_honest_until: int = 0,     # act EXACTLY like an honest client (full model,
+                                                      # full epoch, embed every round) until this round,
+                                                      # so the FR embeds on the SAME schedule as honest
+                                                      # clients before it starts free-riding. 0 = off.
+                     autop_scope: str = "full",       # which params to train: full | block | block2 | head
                      autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
                      sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
@@ -533,6 +540,7 @@ def make_autopilot_attack(base_cls):
             self.autop_lookahead = autop_lookahead
             self.autop_warmup_cap = autop_warmup_cap
             self.autop_protect_until = autop_protect_until
+            self.autop_honest_until = autop_honest_until
             self.autop_scope = autop_scope
             self.autop_enriched = autop_enriched
             self.sub_eta_fixed = sub_eta_fixed
@@ -550,8 +558,18 @@ def make_autopilot_attack(base_cls):
 
         # --- on-the-fly estimates (all O(1), no training) --------------------
         def _eta_est(self):
-            if self._clean_ber_hist:
-                return wm.calibrate_eta(self._clean_ber_hist[-5:], floor=self.autop_floor)
+            # Estimate the server's threshold from the attacker's OWN recent post-embed
+            # BERs (mu+3sigma), the same rule the server uses on honest clients. Only
+            # falls back to the fixed guess until it has >=3 samples. This replaces the
+            # old behaviour where the history stayed empty (probe read > 0.10) and the
+            # estimate was stuck at sub_eta_fixed=0.25 all run.
+            hist = self._clean_ber_hist[-10:]
+            if len(hist) >= 3:
+                mu = statistics.mean(hist)
+                sd = statistics.pstdev(hist) if len(hist) > 1 else 0.0
+                return max(mu + 3.0 * sd, self.autop_floor + 0.02)
+            if hist:
+                return wm.calibrate_eta(hist, floor=self.autop_floor)
             return self.sub_eta_fixed
 
         def _predict_cross(self, target):
@@ -566,8 +584,15 @@ def make_autopilot_attack(base_cls):
             return (target - h[-1]) / slope
 
         def _record_clean(self, ber):
-            if ber is not None and ber <= 2.0 * self.autop_floor:
+            # Record every genuinely-embedded post-embed BER (honest-proxy during
+            # warmup, achievable BER after taps); keep the last 10 so early
+            # pre-convergence values age out of the mu+3sigma estimate. Gated at 0.3
+            # to drop clearly-unembedded rounds while still capturing the realistic
+            # ~0.1-0.2 range (the old <=2*floor gate was too strict and left the
+            # history empty).
+            if ber is not None and ber <= 0.30:
                 self._clean_ber_hist.append(ber)
+                self._clean_ber_hist = self._clean_ber_hist[-10:]
 
         # --- the controller ---------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
@@ -579,9 +604,17 @@ def make_autopilot_attack(base_cls):
             # PHASE 1 — self-terminating warmup: embed until the mark is good and
             # the eta estimate has stabilised (or the safety cap is hit).
             if not self._warm_done:
-                self._embed_loop(global_state, self.autop_max_batches,
-                                 floor=self.autop_floor, enriched=self.autop_enriched,
-                                 scope=self.autop_scope)
+                # Until autop_honest_until, behave EXACTLY like an honest client:
+                # full model, a full local epoch (max_batches=None), no early-stop
+                # (floor=0), embedding every round on the same schedule as honest
+                # clients. After that, resume the (cheaper) scoped warmup.
+                honest_phase = round_idx < self.autop_honest_until
+                self._embed_loop(
+                    global_state,
+                    None if honest_phase else self.autop_max_batches,
+                    floor=0.0 if honest_phase else self.autop_floor,
+                    enriched=self.autop_enriched,
+                    scope="full" if honest_phase else self.autop_scope)
                 w = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w)
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
@@ -589,18 +622,17 @@ def make_autopilot_attack(base_cls):
                 self._record_clean(ber)
                 self._ber_trend = []
                 # stop warming up once (a) the mark is actually good AND we have
-                # >=2 clean samples to anchor eta, AND (b) we are past the
-                # protected calibration window (never defect before it — the
-                # detector's frozen eta is calibrated there and the honest pool
-                # must have converged for our eta anchor to be valid). The cap is
-                # the hard safety stop.
+                # >=2 clean samples to anchor eta, AND (b) we are past BOTH the
+                # protected calibration window and the honest-schedule window.
                 enough = (ber is not None and ber <= self.autop_floor
                           and len(self._clean_ber_hist) >= 2
-                          and round_idx + 1 >= self.autop_protect_until)
+                          and round_idx + 1 >= max(self.autop_protect_until,
+                                                   self.autop_honest_until))
                 if enough or round_idx + 1 >= self.autop_warmup_cap:
                     self._warm_done = True
                 self.meter.end_round(trained=True)
-                self.trace.append({"round": round_idx, "action": "warmup",
+                self.trace.append({"round": round_idx,
+                                   "action": "honest" if honest_phase else "warmup",
                                    "ber_after": None if ber is None else round(ber, 4),
                                    "eta_est": round(eta, 4)})
                 return submit, self.num_samples

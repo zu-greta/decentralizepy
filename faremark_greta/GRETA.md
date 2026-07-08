@@ -144,6 +144,9 @@ July9:
     - checkup on the 3 seeds run and the final plotting
     - cleanup the results dir
     - cleanup and document the codebase
+- NOTES
+    - try to find a way to estimate the threshold better - should stay under the actual (maybe adjust the delta?)
+    - shallow vs coasting
 
 ---
 ---
