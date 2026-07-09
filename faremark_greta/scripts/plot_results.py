@@ -11,7 +11,7 @@ Figures produced (whichever the data supports):
   2. sweep.png                  auto-detects the swept variable (num_free_riders,
                                 n_trigger_samples, attack_round, dataset, attack)
                                 and plots converged det-acc / recall / FPR / BER.
-  3. separability.png           THE thesis figure: the converged benign-BER and
+  3. separability.png           thesis figure: the converged benign-BER and
                                 free-rider-BER distributions side by side, plus a
                                 detection-accuracy-vs-eta curve. If the two
                                 distributions overlap, no eta separates them and

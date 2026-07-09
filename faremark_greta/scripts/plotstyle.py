@@ -1,4 +1,4 @@
-"""Shared plotting style for every figure in this project.
+"""shared plotting style
 
 Rules (apply to ALL current and future plots):
   * NEVER use a dual / twin y-axis. If two quantities have different units, use

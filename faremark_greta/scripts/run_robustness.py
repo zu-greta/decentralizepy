@@ -1,6 +1,5 @@
 #!/usr/bin/env python
-""" TODO:
-Stage 4 (part 2): robustness experiment driver — Figs. 9-10 and Table VI.
+""" robustness experiment driver — Figs. 9-10 and Table VI.
 
 Trains a fully-watermarked model (all honest clients, no free-riders), then
 applies each watermark-removal operation at a range of strengths and records

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Threshold overlay + worth/cheap multi-metric plots.
-
-Style: colour-blind-safe (Okabe-Ito), NO dual y-axes (uses stacked panels),
-clear legends/labels/grids. See scripts/plotstyle.py.
+"""Threshold overlay + worth/cheap multi-metric plots
 
 1) overlay (per run): fr_ber + benign_ber vs round with ALL eta variants:
      python scripts/plot_thresholds.py overlay --in RUN/result.json --out figs/thr
@@ -59,14 +56,14 @@ def overlay(a):
     fig, ax = plt.subplots(figsize=(10, 5.8))
     ax.plot(rounds, benign, color=ps.C_HONEST, lw=2.4, marker="", label="benign BER (honest clients)")
     ax.plot(rounds, frber, color=ps.C_FR, lw=2.4, marker="", label="free-rider BER")
-    # all eta variants, each in its own consistent colour/linestyle (thresholds.STYLE)
+    # all eta variants, each in its own consistent colour/linestyle 
     for v in thr.ALL_VARIANTS:
         stl = thr.STYLE[v]
         et = thr.eta_series([b if b is not None else 0.5 for b in benign], v)
         ax.plot(rounds, et, color=stl["color"], lw=1.4, linestyle=stl["ls"],
                 label=stl["label"])
     # mark the attacker's actions (warmup / tap) on its own BER curve, so the
-    # warmup -> coast -> tap -> coast "sawtooth" is visible: proof of HOW it works.
+    # warmup -> coast -> tap -> coast is visible
     tr = _fr_trace(r)
     if tr:
         fr_at = {x["round"]: x.get("wm_fr_ber") for x in h}
@@ -147,7 +144,7 @@ def decay(a):
 def evade_bars(a):
     """PROVE-IT plot: for each attack config, the fraction of converged rounds it
     EVADES under every eta variant (mean +/- std over seeds). Reading it:
-      * bars high ONLY under 'cumulative' -> the evasion is the threshold artifact
+      * bars high only under 'cumulative' -> the evasion is the threshold artifact
         (poisoning inflated the swingy eta), NOT a real break.
       * bars high under 'frozen'/'converged' (the fair thresholds) -> a genuine,
         credible evasion.
@@ -181,7 +178,7 @@ def evade_bars(a):
     ax.set_ylabel("fraction of converged rounds evaded\n(1.0 = always slips past)")
     ax.set_ylim(0, 1.05)
     ax.axhline(1.0, color=ps.OKABE["grey"], ls=":", lw=1)
-    ax.set_title("Does the attack evade the FAIR threshold, or only the swingy one?\n"
+    ax.set_title("attack evade the fair threshold?\n"
                  "(high under 'frozen'/'converged' = real break; high only under "
                  "'cumulative' = artifact)")
     ax.legend(ncol=2, loc="upper right", fontsize=8)
@@ -243,7 +240,7 @@ def worth(a):
     a1.axhline(1.0, color=ps.OKABE["grey"], ls=":", lw=1)
     a1.text(0, 1.02, "honest = 1.0", fontsize=8, color=ps.OKABE["grey"])
     a1.set_ylabel("fraction of\nan honest client")
-    a1.set_title("How CHEAP  (lower = cheaper)")
+    a1.set_title("How cheap  (lower = cheaper)")
     a1.legend(ncol=3, loc="upper right")
     # panel 2: free-rider BER with per-config eta marker
     a2.bar(x, [v[0] for v in frb], 0.5, yerr=[v[1] for v in frb], capsize=3,
@@ -254,7 +251,7 @@ def worth(a):
         a2.hlines(e, xi - 0.35, xi + 0.35, color=ps.C_ETA, lw=1.4)
     a2.set_ylabel("free-rider BER")
     a2.set_ylim(0, 0.7)
-    a2.set_title("Does it EVADE  (BER below the eta marker = evades)")
+    a2.set_title("Evasion  (BER below the eta marker = evades)")
     a2.legend(loc="upper right")
     # panel 3: accuracy (model health)
     bars = a3.bar(x, [v[0] for v in acc], 0.5, yerr=[v[1] for v in acc], capsize=3,
@@ -263,7 +260,7 @@ def worth(a):
     a3.text(0, 73, "honest ~72%", fontsize=8, color=ps.OKABE["grey"])
     a3.set_ylabel("accuracy (%)")
     a3.set_ylim(20, 80)
-    a3.set_title("Is the model HEALTHY  (near 72% = not poisoned)")
+    a3.set_title("Is the model accuracy ok  (near 72% = not poisoned)")
     a3.set_xticks(x); a3.set_xticklabels(labs, rotation=30, ha="right", fontsize=9)
     a3.legend(loc="upper right")
     fig.suptitle("Worth / cheap: effort vs evasion vs model health  (mean +/- std over seeds)",
@@ -302,7 +299,7 @@ def _cum_effort(r):
 
 
 def timeline(a):
-    """THE interpretive per-run plot. Top: free-rider BER, honest BER, and ALL
+    """interpretive per-run plot. Top: free-rider BER, honest BER, and ALL
     eta thresholds vs round (warmup/tap marked). Bottom (shared x): cumulative
     attacker effort as a fraction of honest, vs round. Read together: the red
     line dips under the fair (frozen) eta while the effort line stays far below
@@ -343,7 +340,7 @@ def timeline(a):
 
 
 def knob(a):
-    """Per-knob sweep DONE RIGHT: filter by family AND by which knob was actually
+    """Per-knob sweep: filter by family and by which knob was actually
     swept (manifest.sweep_var), so the three autopilot knobs don't pool onto one
     axis. Two stacked panels vs the knob value: free-rider BER (with the fair
     converged-eta line) and attacker effort — mean +/- std over seeds."""
@@ -442,8 +439,8 @@ def submarine(a):
     # per-round dive cost
     if tapb:
         a2.bar(list(tapb), list(tapb.values()), width=0.8, color=ps.OKABE["blue"],
-               label="tap cost (training batches)")
-    a2.set_ylabel("dive cost\n(batches)")
+               label="mini-batches per tap (16 imgs each)")
+    a2.set_ylabel("mini-batches\nper tap")
     a2.set_xlabel("communication round")
     a2.set_title(f"Cost of each dive  —  total attacker effort = {eff:.0%} of honest"
                  if eff is not None else "Cost of each dive")

@@ -10,13 +10,13 @@ Threat model:
     calib_on_all=True => the attacker's submissions are inside the μ+3σ calc
     (realistic) and moderate BER even helps it by inflating η.
 
-attacks both subclass WatermarkClient via a factory, so they can embed
+attacks are both subclass WatermarkClient via a factory, so they can embed
 before/while defecting, and compute_meter sees their work
 
     idea: autopilot submarine:
         free-rider that acts like an honest client in the first few rounds (warmup)
         it trains and embeds the watermark until it estimates that it is safely under the 
-        threshold η, and then it coasts (TODO: how to coast?)
+        threshold η, and then it coasts
         dynamically check the BER and calculate on the fly to estimate when it needs to
         "tap" again (training a minimal burst of to re-embed the watermark and maintain the mark)
         -> need to find the tradeoff point where it uses the minimal compute power while 
@@ -39,6 +39,8 @@ from .attacks import _extrapolate
 from . import watermark as wm
 
 
+# function to blend two model states (dicts of tensors) with a given weight. 
+# used in the memory_exploit and submarine attack to blend the frozen memory with the fresh global model.
 def _blend_states(a: dict, b: dict, wa: float) -> dict:
     """wa*a + (1-wa)*b over float weights; non-float buffers taken from `b`."""
     out = {}
@@ -50,16 +52,17 @@ def _blend_states(a: dict, b: dict, wa: float) -> dict:
     return out
 
 
+# Mixin class for adaptive free-rider attacks. It provides methods to ensure triggers are prepared, probe the bit error rate (BER) of the current model, and perform embedding loops with different scopes and data sources. 
+# The mixin is designed to be used with a WatermarkClient class that has the necessary attributes and methods for watermarking and training.
 class _AdaptiveMixin:
-    """Trigger bookkeeping + self-BER probing + an efficient enriched loader.
-
+    """
     Host class is a WatermarkClient (has key, target_bits, trigger_class,
     wm_kind, wm_alpha, exclude, model, loader, device, meter, lr, momentum,
     weight_decay, wm_lambda, label_smoothing, local_epochs).
     """
 
     def _ensure_triggers(self, n_probe: int = 16):
-        """Gather the shard's trigger-class samples once; reserve a HELD-OUT
+        """Gather the shard's trigger-class samples once; reserve a held-out
         probe slice; keep the rest (+ common samples) for enriched training."""
         if getattr(self, "_prepared", False):
             return
@@ -95,6 +98,28 @@ class _AdaptiveMixin:
         self._enr_loader = DataLoader(TensorDataset(X, Y), batch_size=bs,
                                       shuffle=True)
 
+        # reduced shard (data-ablation): trigger samples + autop_common_per_class random
+        # images from each common class. -1 = off (use full shard). measure how
+        # little data the re-embed actually needs (BER vs data-samples)
+        ncpc = getattr(self, "autop_common_per_class", -1)
+        self._reduced_loader = None
+        if ncpc >= 0:
+            xs2 = [trig_train]
+            ys2 = [torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)]
+            if ncpc > 0 and comm_x:
+                cx = torch.cat(comm_x); cy = torch.cat(comm_y)
+                for cls in cy.unique():
+                    m = (cy == cls).nonzero(as_tuple=True)[0]
+                    take = m[torch.randperm(len(m))[:ncpc]]
+                    xs2.append(cx[take]); ys2.append(cy[take])
+            X2, Y2 = torch.cat(xs2), torch.cat(ys2)
+            self._reduced_data_n = len(X2)   # actual number of samples used 
+            self._reduced_loader = DataLoader(
+                TensorDataset(X2, Y2), batch_size=min(32, len(X2)), shuffle=True)
+
+    # Probe the bit error rate (BER) of the current model on the held-out probe samples. If no probe samples are available, return None. 
+    # The model is set to evaluation mode, and the probabilities are computed using softmax. 
+    # The watermark bits are extracted and compared to the target bits to calculate the BER. If a meter is available, it records the number of forward passes.
     @torch.no_grad()
     def _probe_ber_current_model(self):
         if self._probe_x is None:
@@ -108,6 +133,7 @@ class _AdaptiveMixin:
             self.meter.record_forward_only(len(x))
         return wm.bit_error_rate(bits, self.target_bits)
 
+    # Probe the bit error rate (BER) of a given model state on the held-out probe samples. If no probe samples are available, return None.
     @torch.no_grad()
     def _probe_ber_state(self, state):
         if self._probe_x is None:
@@ -119,8 +145,8 @@ class _AdaptiveMixin:
         """Load global, train until the held-out probe BER <= floor or the batch
         budget. Returns #batches.
 
-        `scope` controls WHICH PARAMETERS train (the effort/generalization dial):
-          None/"full" -> whole model (generalizes, but every batch backprops the
+        `scope` controls the parameter trained:
+          None/"full" -> whole model (every batch backprops the
                           backbone = most compute per batch)
           "head"      -> only the final linear layer (last 2 weight tensors); the
                           backbone is frozen so its backward pass is skipped =
@@ -129,8 +155,8 @@ class _AdaptiveMixin:
           "block"     -> last ~block (last 8 tensors).
           "block2"    -> last ~two stages (last 20 tensors) — deeper than block,
                           better generalization, small extra cost.
-        `enriched` picks the DATA SOURCE (trigger-heavy vs full shard); `scope`
-        picks the PARAMETERS. They are independent axes.
+        `enriched` picks the DATA SOURCE (trigger-heavy vs full shard); 
+        `scope` picks the PARAMETERS. 
         """
         self.model.load_state_dict(global_state)
         self.model.train()
@@ -149,14 +175,17 @@ class _AdaptiveMixin:
                               weight_decay=self.weight_decay)
         key = self.key.to(self.device)
         bits = self.target_bits.to(self.device)
-        loader = (self._enr_loader if (enriched and self._enr_loader is not None)
-                  else self.loader)
+        # loader priority: reduced (data-ablation) > enriched (trigger-heavy) > full shard
+        if getattr(self, "autop_common_per_class", -1) >= 0 and self._reduced_loader is not None:
+            loader = self._reduced_loader
+        elif enriched and self._enr_loader is not None:
+            loader = self._enr_loader
+        else:
+            loader = self.loader
         steps, passes = 0, 0
 
-        # try/finally guarantees requires_grad is restored on EVERY exit path
-        # (normal return, early-stop, or an exception mid-tap) — otherwise a
-        # scope="head"/"block" tap that throws would leave the backbone frozen
-        # for all later rounds.
+        # try/finally guarantees requires_grad is restored on every exit path
+        # (normal return, early-stop, or an exception mid-tap) 
         try:
             while True:
                 for x, y in loader:
@@ -229,10 +258,8 @@ def make_submarine_attack(base_cls):
             self.trace = []
 
         def _eta_estimate(self):
-            # eta the attacker THINKS it is judged against. Anchor to the recent
-            # CLEAN (genuinely-low) BERs it reaches after a real embed - its proxy
-            # for the honest pool. If it has no clean embed yet, fall back to the
-            # fixed guess rather than inflating off failed attempts.
+            # free-rider estimated eta. anchored to the recent clean BERs it reaches after full warmup and embedding
+            # proxy for the honest pool. If it has no clean embed yet, fall back to a fixed guess (sub_eta_fixed). 
             if self.sub_eta_mode == "adaptive" and self._clean_ber_hist:
                 recent = self._clean_ber_hist[-5:]
                 return wm.calibrate_eta(recent, floor=self.sub_floor)
@@ -245,7 +272,7 @@ def make_submarine_attack(base_cls):
                 self._clean_ber_hist.append(ber)
 
         def _coast_state(self, global_state, prev_global_state):
-            # TRANSPLANT (default, experimental): submit the FRESH global plus the
+            # TRANSPLANT (default, experimental): submit the fresh global plus the
             # frozen mark-direction (memory - global_at_embed). Tracks everyone
             # (no staleness, no poisoning) while re-injecting the mark for ~0 cost.
             if self.sub_coast_mode == "transplant" and self._mark_delta is not None:
@@ -260,7 +287,7 @@ def make_submarine_attack(base_cls):
             # free-ride, no mark) -> baseline: should be caught.
             if self.sub_coast_mode == "global":
                 return {k: v.clone() for k, v in global_state.items()}
-            # NOISE: global + small Gaussian (a la the gaussian free-rider).
+            # NOISE: global + small Gaussian noise (dilutes the mark, but keeps it generalizing)
             if self.sub_coast_mode == "noise":
                 out = {}
                 for k, g in global_state.items():
@@ -290,12 +317,8 @@ def make_submarine_attack(base_cls):
 
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
-
-            # Phase 1 - warmup: embed a GENERALIZING mark the honest way (full
-            # shard). A trigger-enriched shortcut overfits the attacker's own
-            # samples and does NOT transfer to the server's test triggers (that is
-            # the paper's Table V mechanism). super() = WatermarkClient does full
-            # local embedding + memory and meters itself.
+            # embedding watermark the honest way (full shard).
+            # super() = WatermarkClient does full local embedding + memory and meters itself
             if self._embeds_done < self.sub_warmup:
                 submit, n = super().produce_update(global_state,
                                                    prev_global_state, round_idx)
@@ -307,7 +330,7 @@ def make_submarine_attack(base_cls):
                                    "ber_after": None if ber is None else round(ber, 4)})
                 return submit, n
 
-            # Phase 2 - maintain: coast if safe, else a bounded full-shard tap.
+            # maintain coast if safe, else a bounded full-shard tap.
             self.meter.start_round(round_idx)
             coast_state = self._coast_state(global_state, prev_global_state)
             ber_coast = self._probe_ber_state(coast_state)
@@ -319,7 +342,7 @@ def make_submarine_attack(base_cls):
                 trained = False
                 ber_after = ber_coast
             else:
-                # tap: refresh on the FULL shard (keeps the mark general), capped
+                # tap: refresh on the full shard (keeps the mark general), capped
                 # and early-stopped at floor so it is cheap.
                 self._embed_loop(global_state, self.sub_max_burst_batches,
                                  floor=self.sub_floor, enriched=False)
@@ -481,32 +504,29 @@ def make_reembed_attack(base_cls):
 
 
 def make_autopilot_attack(base_cls):
-    """Autopilot — a fully self-tuning submarine.
+    """dynamic submarine
 
-    Same threat model and same cheap machinery, but NOTHING is a fixed schedule.
     Every decision is computed on the fly from the attacker's own held-out probe
     BER (measuring BER is ~free; only training costs compute, and it trains the
     minimum needed):
 
-      * WARMUP ends itself. It keeps embedding until the mark is actually good
-        (probe BER <= floor) AND its estimate of the server threshold has settled
-        — not after a fixed `sub_warmup` rounds.
-      * WHEN TO TAP. It watches the BER trend during coasting. It does NOT wait
+      * WARMUP : keep embedding until the mark is actually good (probe BER <= floor) 
+        and its estimate of the server threshold has settled
+      * WHEN TO TAP: watch the BER trend during coasting. It does not wait
         until BER crosses eta; it predicts (linear extrapolation of the last few
-        probes) when BER *will* cross the safety target and taps just before, so
-        it never submits an over-threshold model.
-      * HOW HARD TO TAP. Tap size adapts to how far the mark has drifted: a small
+        probes) when BER will cross the safety target and taps just before, so
+        it never submits an over-threshold model
+      * HOW HARD TO TAP: tap size adapts to how far the mark has drifted: a small
         touch-up if BER crept a little, a bigger burst if it fell a lot. Bounded
         by [autop_min_batches, autop_max_batches]. If a tap undershoots, the next
         one automatically grows (multiplicative back-off), so it self-corrects
         the "weak taps never embed" failure of the fixed submarine.
-      * ETA ESTIMATE. Tracks its clean post-embed BER (its honest-pool proxy) and
+      * ETA ESTIMATE: tracks its clean post-embed BER and
         aims a safety margin below its estimate; the margin itself relaxes when it
         has been safe for a while and tightens after a near-miss.
 
     Result target: hold BER just under eta, healthy model (re-embeds on the fresh
-    global, never replays stale weights), at the minimum total training.
-    Everything it logs to self.trace so you can see the control decisions.
+    global), at the minimum total training.
     """
     class AutopilotFreeRider(_AdaptiveMixin, base_cls):
         is_free_rider = True
@@ -532,6 +552,15 @@ def make_autopilot_attack(base_cls):
                                                       # honest rounds. 0 = honest phase off.
                      autop_conv_eps: float = 0.02,    # convergence = honest BER improves by < this for
                                                       # two rounds running (a rate test, not a BER cutoff)
+                     # === DIAGNOSTIC / ABLATION KNOBS =====================
+                     autop_oracle_eta: float = 0.0,   # ORACLE THRESHOLD: if > 0, the free-rider is given 
+                                                      # the true server eta instead of estimating it. 
+                                                      # Set to the known fair eta (~0.09).
+                     autop_common_per_class: int = -1,# DATA-SHARD SIZE for taps: -1 = full shard (default);
+                                                      # 0 = TRIGGER SAMPLES ONLY; N>0 = trigger samples +
+                                                      # N random images from each common class (a small,
+                                                      # class-balanced subset). Sweep 0,10,20,... vs BER.
+                     # ====================================================================
                      autop_scope: str = "full",       # which params to train: full | block | block2 | head
                      autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
@@ -546,6 +575,9 @@ def make_autopilot_attack(base_cls):
             self.autop_protect_until = autop_protect_until
             self.autop_honest_until = autop_honest_until
             self.autop_conv_eps = autop_conv_eps
+            self.autop_oracle_eta = autop_oracle_eta
+            self.autop_common_per_class = autop_common_per_class
+            self._reduced_loader = None
             self.autop_scope = autop_scope
             self.autop_enriched = autop_enriched
             self.sub_eta_fixed = sub_eta_fixed
@@ -555,33 +587,31 @@ def make_autopilot_attack(base_cls):
             self._probe_x = None
             self._enr_loader = None
             self._clean_ber_hist = []     # post-embed (honest-like) BERs
-            self._honest_cal = []         # BERs from the CONVERGED forced-honest rounds only: a
-                                          # genuine sample of the honest distribution the SERVER
-                                          # calibrates its fair eta on. Used to estimate eta.
+            self._honest_cal = []         # BERs from the converged forced-honest rounds only.Used to estimate eta.
             self._honest_ber_seq = []     # all forced-honest-round BERs (to detect flattening)
             self._honest_converged = False  # has the honest BER curve flattened?
             self._honest_done = False     # honest phase finished (converged+calibrated, or cap)
             self._ber_trend = []          # recent coast probe BERs (for extrapolation)
             self._last_tap_batches = autop_min_batches
-            self._last_tap_undershot = False  # did the PREVIOUS tap fail to reach floor?
+            self._last_tap_undershot = False  # did the previous tap fail to reach floor?
             self._warm_done = False       # has the self-terminating warmup finished?
             self.trace = []
 
         # --- on-the-fly estimates (all O(1), no training) --------------------
         def _eta_est(self):
-            # BEST estimate: calibrate on the FORCED-HONEST rounds. In those rounds the
+            # ORACLE (diagnostic): if given the true eta, use it directly.
+            if self.autop_oracle_eta and self.autop_oracle_eta > 0:
+                return self.autop_oracle_eta
+            # BEST estimate: calibrate on the forced honest rounds. 
             # free-rider trained the full model like an honest client, so its BER there
-            # is a genuine sample of the SAME distribution the server's fair eta is
-            # calibrated on -> mu+3sigma of it ~= the true fair eta (~0.09), not the
-            # pessimistic coast/tap probe (~0.25). This is the fix that lets "coast
-            # under the estimate" mean "coast under the REAL line".
+            # is a genuine sample of the same distribution the server's fair eta is
+            # calibrated on -> mu+3sigma of it ~= the true fair eta (~0.09)
             hcal = self._honest_cal[-10:]
             if len(hcal) >= 2:
                 mu = statistics.mean(hcal)
                 sd = statistics.pstdev(hcal) if len(hcal) > 1 else 0.0
                 return max(mu + 3.0 * sd, self.autop_floor + 0.02)
-            # FALLBACK (no honest rounds, e.g. autop_honest_until=0): use recent
-            # post-embed BERs (still better than the fixed guess), then the fixed guess.
+            # FALLBACK (no honest rounds, autop_honest_until=0): use recent post-embed BERs, then the fixed guess.
             hist = self._clean_ber_hist[-10:]
             if len(hist) >= 3:
                 mu = statistics.mean(hist)
@@ -607,8 +637,7 @@ def make_autopilot_attack(base_cls):
             # warmup, achievable BER after taps); keep the last 10 so early
             # pre-convergence values age out of the mu+3sigma estimate. Gated at 0.3
             # to drop clearly-unembedded rounds while still capturing the realistic
-            # ~0.1-0.2 range (the old <=2*floor gate was too strict and left the
-            # history empty).
+            # ~0.1-0.2 range 
             if ber is not None and ber <= 0.30:
                 self._clean_ber_hist.append(ber)
                 self._clean_ber_hist = self._clean_ber_hist[-10:]
@@ -620,14 +649,13 @@ def make_autopilot_attack(base_cls):
             eta = self._eta_est()
             target = max(self.autop_floor, eta - self.autop_margin)
 
-            # PHASE 1 — self-terminating warmup: embed until the mark is good and
+            # self-terminating warmup: embed until the mark is good and
             # the eta estimate has stabilised (or the safety cap is hit).
             if not self._warm_done:
-                # HONEST PHASE: behave EXACTLY like an honest client (full model, full
-                # local epoch, no early-stop). It runs until the honest BER FLATTENS
-                # (auto-detected — no hand-tuned BER threshold), capped at
-                # autop_honest_until rounds as a safety stop. autop_honest_until <= 0
-                # disables the honest phase entirely (the no-cal control).
+                # HONEST PHASE: behave like an honest client (full model, full
+                # local epoch, no early-stop). runs until the honest BER flattens (converges)
+                # (auto-detected using the last 3 honest rounds) or the autop_honest_until cap is hit. 
+                # autop_honest_until <= 0 disables the honest phase entirely (the no-cal control).
                 honest_phase = (self.autop_honest_until > 0 and not self._honest_done)
                 self._embed_loop(
                     global_state,
@@ -642,7 +670,7 @@ def make_autopilot_attack(base_cls):
                 self._record_clean(ber)
                 if honest_phase and ber is not None:
                     self._honest_ber_seq.append(ber)
-                    # CONVERGENCE = the honest BER curve FLATTENS: two consecutive
+                    # CONVERGENCE = the honest BER curve flattens: two consecutive
                     # round-to-round improvements both below eps (a RATE test, not an
                     # absolute-BER cutoff, so it is dataset-agnostic).
                     seq = self._honest_ber_seq
@@ -650,8 +678,7 @@ def make_autopilot_attack(base_cls):
                         if abs(seq[-1] - seq[-2]) < self.autop_conv_eps and \
                            abs(seq[-2] - seq[-3]) < self.autop_conv_eps:
                             self._honest_converged = True
-                    # only calibrate eta on CONVERGED honest rounds (same distribution
-                    # the server's fair eta uses); pre-convergence rounds are excluded.
+                    # only calibrate eta on converged honest rounds. pre-convergence rounds are excluded.
                     if self._honest_converged:
                         self._honest_cal.append(ber)
                     # auto-stop the honest phase once converged with >=2 calibration
@@ -660,8 +687,8 @@ def make_autopilot_attack(base_cls):
                        round_idx + 1 >= self.autop_honest_until:
                         self._honest_done = True
                 self._ber_trend = []
-                # stop warming up once the mark is good AND we have >=2 clean samples
-                # AND we are past the protected window AND the honest phase is done.
+                # stop warming up once the mark is good and we have >=2 clean samples
+                # and we are past the protected window and the honest phase is done.
                 enough = (ber is not None and ber <= self.autop_floor
                           and len(self._clean_ber_hist) >= 2
                           and round_idx + 1 >= self.autop_protect_until
@@ -675,13 +702,13 @@ def make_autopilot_attack(base_cls):
                                    "eta_est": round(eta, 4)})
                 return submit, self.num_samples
 
-            # PHASE 2 — coast with predictive, adaptive taps.
+            # coast with predictive, adaptive taps.
             coast = self._coast_state(global_state, prev_global_state) \
                 if hasattr(self, "_coast_state") else copy.deepcopy(self.memory)
             ber_coast = self._probe_ber_state(coast)
             if ber_coast is not None:
                 self._ber_trend.append(ber_coast)
-            # decide: tap now if we're already near target OR predicted to cross soon
+            # tap now if we're already near target OR predicted to cross soon
             cross_in = self._predict_cross(target)
             must_tap = (ber_coast is not None and
                         (ber_coast >= target or cross_in <= self.autop_lookahead))
@@ -690,12 +717,12 @@ def make_autopilot_attack(base_cls):
                 submit = coast; trained = False; ber_after = ber_coast
                 self.autop_margin = max(0.03, self.autop_margin * 0.98)  # relax when safe
             else:
-                # SOLID tap: re-embed on the FRESH global (full shard by default so
-                # the mark GENERALISES to the server's test triggers, not just our
-                # probe), early-stopping at `floor` so we drive BER down hard with a
+                # SOLID tap: re-embed on the fresh global (full shard by default so
+                # the mark generalises to the server's test triggers. 
+                # early-stopping at `floor` to drive BER down hard with a
                 # big margin — not barely under target. Tap size scales with the
-                # drift, and grows x1.6 only if the PREVIOUS tap genuinely failed to
-                # reach floor (self-correcting the "weak taps never embed" failure).
+                # drift, and grows x1.6 only if the previous tap genuinely failed to
+                # reach floor 
                 drift = 0.0 if ber_coast is None else max(0.0, ber_coast - self.autop_floor)
                 want = int(self.autop_min_batches + drift * 4 * self.autop_max_batches)
                 if self._last_tap_undershot:
@@ -727,8 +754,8 @@ def make_autopilot_attack(base_cls):
             })
             return submit, self.num_samples
 
-        # autopilot coasts on the fresh global + mark-delta (no poisoning); reuse
-        # the submarine helpers if present, else fall back to memory replay.
+        # autopilot coasts on the fresh global + mark-delta; reuse
+        # the submarine helpers, else fall back to memory replay.
         def _coast_state(self, global_state, prev_global_state):
             if getattr(self, "_mark_delta", None) is not None:
                 out = {}

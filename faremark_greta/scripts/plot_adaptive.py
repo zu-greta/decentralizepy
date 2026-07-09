@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Cross-condition plots for the adaptive-attack story.
+"""Cross-condition plots 
 
-Design rules baked in (per meeting notes):
-  * EVERY curve/point carries standard deviation over seeds (repeats).
-  * SINGLE y-axis only. Where two quantities matter (e.g. BER and accuracy) they
+Design rule:
+  * every curve/point carries standard deviation over seeds (repeats).
+  * single y-axis only. Where two quantities matter (e.g. BER and accuracy) they
     go in stacked panels sharing the x-axis, never a twin y-axis.
 
 Figures:
@@ -11,13 +11,9 @@ Figures:
                 the eta line, and the margin (mu_FR - mu_honest) shrinking. Shows
                 the honest/FR distributions being squeezed together.
   effort      : attacker effort (normalized to honest = 1.0) vs a detection metric
-                (recall or detect_acc), error bars over seeds; one point per
-                condition. The thesis plane: cheap + low recall = broken.
+                (recall or detect_acc), error bars over seeds; one point per condition
   sweep       : one outcome metric vs a swept variable, std bands, single axis.
   duty        : submarine tap/coast timeline + BER-vs-eta dance (from trace).
-
-The data layer (load/group/aggregate) is torch/matplotlib-free and unit-tested;
-plotting is guarded so import failures degrade to a clear message.
 
 Usage:
   python scripts/plot_adaptive.py squeezing --in $RES/*a7-sub* --out figs/a7_squeeze

@@ -39,20 +39,6 @@ import torch.nn.functional as F
 #   Eq. 16    BER < eta ; eta = mu + 3*sigma            -> bit_error_rate()/detected()
 #   Grouping  "the (l*(k-1)+j)-th element" => consecutive blocks of size l = n//m,
 #             using the first m*l softmax outputs (paper: only {p_1..p_{m*l}}).
-#
-# NOTE: changes from claude (faithful to intent, needed for the small-group case):
-#   (1) `exclude` the trigger class from the projection. The paper handles the
-#       dominant class with the Eq. 4-6/10 constraint (p_max<=0.5 in a group).
-#       With a small group size (l=2) and argmax==trigger that constraint cannot
-#       be met without breaking classification, so the trigger group's bit
-#       freezes. Excluding the trigger class enforces the SAME anti-dominance
-#       intent by construction. Set exclude=None to run the paper-exact full
-#       softmax (use a larger l, e.g. l>=3, so the tail can outweigh the peak).
-#   (2) `make_key` rows are sign-balanced. The paper's M is pseudo-random; with a
-#       large l a random row is almost surely mixed-sign. With l=2 a same-sign
-#       row (e.g. [-1,-1]) forces z<0 for every input because f(p)>=0, making a
-#       bit unembeddable. Balancing rows is the discrete-l realization of the
-#       paper's mixed-sign example M=[1,-1,1] (section IV-A) and guarantees embeddability.
 # ============================================================================
 
 

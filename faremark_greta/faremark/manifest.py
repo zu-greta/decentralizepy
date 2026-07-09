@@ -1,21 +1,12 @@
 """Self-describing run metadata.
 
-Problem this solves: a bare `result.json` tells you the config but not *why* the
-run existed, which sweep it belongs to, or how to read its numbers. Six months
-later `cfg12_rep0-a5-nc50_...` is opaque. `build_manifest` stamps a small
-`manifest` block into every `result.json` so each run explains itself and so
-`aggregate_results.py` / `plot_adaptive.py` can group runs without you
-remembering tag conventions.
-
-The manifest is *descriptive only* — it never changes what is computed. Values
-come from CLI flags (forwarded by submit_experiment.sh as FAMILY/NOTE/SWEEP_VAR/
-SWEEP_LEVEL) with sensible fallbacks derived from the config, so old-style runs
-still get a usable (if terser) manifest.
+The manifest is descriptive only. Values come from CLI flags 
+(forwarded by submit_experiment.sh as FAMILY/NOTE/SWEEP_VAR/
+SWEEP_LEVEL) 
 """
 from __future__ import annotations
 
-# Per-metric reading guide, embedded in every run so "which direction is good?"
-# is never ambiguous. Keep in sync with wm_verify.py's emitted keys.
+# Per-metric reading guide, embedded in every run. Keep in sync with wm_verify.py's emitted keys.
 INTERPRETATION = {
     "wm_benign_ber": "honest bit-error-rate; LOWER = watermark embeds well (defender-good).",
     "wm_fr_ber": "free-rider bit-error-rate; HIGHER = free-rider looks un-watermarked "

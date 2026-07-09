@@ -148,6 +148,29 @@ July9:
     - try to find a way to estimate the threshold better - should stay under the actual (maybe adjust the delta?)
     - shallow vs coasting
 
+- try with if free-rider knowns the threshold
+- how to find the delta
+- experiment on findind the threshold
+- how to trick the threshold
+- optimal delta and attack
+
+- test if need samples from non-trigger
+- effort bar plot - do not use dive cost (+ what is it exacatly - why does it vary) -> 250 batches is a lot as well
+- write the algorithm - pseudo - schematic diagram => next meeting have a storyline with algorithm and research question
+- double check the block - do exact and check that block code is right -> doesnt make sense that it keeps dipping down instead of submarine
+
+
+- act like an honest client completly for the first warmup rounds + a few rounds after convergence (enough to get a good threshold). this is to ensure the server gets a good estimate based on all the clients witout inflation, and for the free-rider to get a good estimate of the threshold using its own converged numbers. 
+- it will then have two seperate runs:
+    1. full scope: taps using full training (like an honest client) but just until it remains under the threshold. full watermark embedding and safe. less effort than honest but more than block
+    2. block scope (not sure what it is named anymore -> might be honest block or block2? clean this up for code clarity. keep only the best options): taps by only training the last two blocks (less backpropagation and less effort) but still enough to embed the watermark. less effort than full scope but more than honest.
+- the free-rider estimates the threshold once using the beginning numbers and uses that frozen eta throughout to stay under
+- delta the threshold so there is a safe space between -> TODO figure out different ways to estimate this delta and find the optimal delta for the free-rider to stay under the threshold
+- for each of the two above seperate runs (full and block scope) i also want to test ablation on the number of samples used: 
+        - 1. only trigger samples
+        - 2. trigger + some common samples
+        - 3. full shard (like an honest client)
+
 ---
 ---
 ## resources

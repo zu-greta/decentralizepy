@@ -4,11 +4,6 @@ memory-enhanced update so the watermark survives FedAvg aggregation.
 Maps to the paper:
   * trigger / common split + L = L_cl + lambda * L_wm        (section IV-B, Eq. 11-12)
   * memory-enhanced parameter update                          (section IV-C, Eq. 14)
-
-CHANGE (adaptive-attacks work): every WatermarkClient now owns a ComputeMeter so
-honest effort and attacker effort are measured on the same footing (see
-compute_meter.py). Honest clients are metered here; the adaptive attackers
-(attacks_adaptive.py) meter their own bursts/coasts.
 """
 from __future__ import annotations
 
@@ -178,7 +173,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
-                # MUST match the honest clients' projection mode, or a
+                # must match the honest clients' projection mode, or a
                 # watermark-capable free-rider extracts against a different column
                 # set than the verifier registered. In paper_faithful this is
                 # None (full softmax); otherwise the "trigger" sentinel. Without
@@ -249,6 +244,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     sub_probe_every=getattr(cfg, "sub_probe_every", 3),
                     sub_common_samples=getattr(cfg, "sub_common_samples", 50),
                     **wm_args, **common))
+            # --------------------------------------- potential best attack ------------------------------------ #
             elif attack == "autopilot":
                 from .attacks_adaptive import make_autopilot_attack
                 cls = make_autopilot_attack(WatermarkClient)
@@ -262,6 +258,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_protect_until=getattr(cfg, "autop_protect_until", 8),
                     autop_honest_until=getattr(cfg, "autop_honest_until", 0),
                     autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.02),
+                    autop_oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0),
+                    autop_common_per_class=getattr(cfg, "autop_common_per_class", -1),
                     autop_scope=getattr(cfg, "autop_scope", "full"),
                     autop_enriched=getattr(cfg, "autop_enriched", False),
                     sub_eta_fixed=getattr(cfg, "sub_eta_fixed", 0.35),

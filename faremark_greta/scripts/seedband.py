@@ -5,6 +5,7 @@ matplotlib.use("Agg"); import matplotlib.pyplot as plt
 import plotstyle as ps, thresholds as thr
 ps.apply()
 
+# Load JSON files from glob patterns
 def load(globs):
     out=[]
     for g in globs:
@@ -13,9 +14,11 @@ def load(globs):
             except: pass
     return out
 
+# Extract a series of values for a given key from the history
 def series(r, key):
     return [x.get(key) for x in r.get("history", [])]
 
+# Extract the free-rider's trace of per-round events (including eta_est and whether it was poisoned)
 def fr_trace(r):
     for _,c in r.get("compute",{}).get("per_client",{}).items():
         if c.get("is_free_rider") and c.get("trace"): return c["trace"]

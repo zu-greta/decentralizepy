@@ -1,51 +1,29 @@
-"""Threshold (eta) variants for the free-rider detector.
+"""Threshold (eta) variants 
 
-KEY FACT: eta only decides the detection LABEL (flag / don't flag) from BERs; it
-never changes the model or training. So every eta definition can be recomputed
-AFTER a run from the per-round benign-BER series in result.json — identical to
-having run the server with that eta, but with zero re-runs. This module is the
-single source of truth for all eta variants; plotters call it so every figure can
-show all thresholds for reference.
+eta only decides the detection LABEL (flag / don't flag) from BERs; it
+never changes the model or training. 
 
 Each variant maps the benign mean-BER time series b[0..T-1] -> an eta value per
 round eta[0..T-1] (a scalar line you overlay; a free-rider evades at round t iff
 fr_ber[t] < eta[t]).
 
 ------------------------------------------------------------------------------
-WHICH VARIANT IS "THE PAPER"?  (see FareMark Eq. 16 / Fig. 8)
-The paper sets eta = mu+3sigma of legitimate clients' BER, measured over "many
-rounds ... to observe the TYPICAL error rate for legitimate clients". Their Fig.8
-shows benign BER is HIGH until ~round 30 and only then converges. "Typical error
-rate" therefore means the CONVERGED error, calibrated once and held fixed — NOT a
-per-round cumulative recompute. So:
-  * `frozen`  (post-convergence, fixed)  == the faithful, fair headline threshold.
-  * `converged`(last-C, fixed)           == a fair backup (but its tail can be
-                                            inflated by a *poisoning* attacker).
-  * `cumulative`                          == the over-literal reading; it INFLATES
-                                            when benign BER rises, which is the
-                                            artifact that let memory_exploit/replay
-                                            "evade". Keep it only for reference.
-Report evasion under ALL variants (evades_under / summary_evasion); headline
-`frozen`.
-------------------------------------------------------------------------------
 
 Variants (all selectable as flags in the plotters via --eta):
-  cumulative : mu+3sigma over b[0..t]      (the old 'paper_faithful'; swings)
-  frozen     : mu+3sigma over a STABLE post-convergence window, then held FIXED.
+  cumulative : mu+3sigma over b[0..t]      
+  ->frozen     : mu+3sigma over a stable post-convergence window, then held fixed.
                window = b[warmup : warmup+converged]  (skip the noisy pre-embed
-               rounds; calibrate on the first converged block; freeze). This is
-               the faithful, fair threshold and cannot be inflated by a later
-               defection because it is computed before it.   [params: warmup,
-               converged, or an explicit calib_start]
+               rounds; calibrate on the first converged block; freeze). 
+               [params: warmup, converged, or an explicit calib_start]
   windowed   : mu+3sigma over the last K rounds b[t-K..t] (adaptive, no memory)
-  converged  : mu+3sigma over the last C rounds, held FIXED (fair, but tail can be
+  converged  : mu+3sigma over the last C rounds, held fixed (fair, but tail can be
                poisoned)
   fixed      : a constant (e.g. 0.25) for reference
 """
 from __future__ import annotations
 import statistics as st
 
-# The variant to headline in text/plots (see module docstring).
+# The variant to headline in text/plots 
 HEADLINE = "frozen"
 
 
@@ -63,12 +41,12 @@ def eta_series(benign, variant="cumulative", floor=0.05, warmup=10, window=10,
     """Return a per-round eta list the same length as `benign` (list of per-round
     mean benign BERs).
 
-    `frozen` calibrates on a STABLE post-convergence window and freezes it:
+    `frozen` calibrates on a stable post-convergence window and freezes it:
         start = calib_start if given else `warmup`   (skip the pre-embed rounds)
         win   = benign[start : start+converged]
-    This is deliberately NOT the first `warmup` rounds: in those rounds honest
-    clients have not embedded yet, so benign BER is high and mu+3sigma would be a
-    too-loose threshold. Calibrating on the first converged block matches the
+    This is not the first `warmup` rounds: honest clients have not embedded yet, 
+    so benign BER is high and mu+3sigma would be a too-loose threshold. 
+    Calibrating on the first converged block matches the
     paper's "typical error rate" and is computed before any defection.
     """
     T = len(benign)
@@ -108,9 +86,9 @@ STYLE = {
 
 
 def evades_under(fr_ber, benign, variant, tail=10, **kw):
-    """Fraction of the last `tail` rounds where the free-rider is UNDER eta
+    """Fraction of the last `tail` rounds where the free-rider is under eta
     (i.e. evades) under a given variant. 1.0 = fully evades; 0.0 = always caught.
-    Robust summary that replaces the swingy `recall`."""
+    """
     et = eta_series(benign, variant, **kw)
     pairs = [(f, e) for f, e in zip(fr_ber[-tail:], et[-tail:]) if f is not None]
     if not pairs:
@@ -119,5 +97,5 @@ def evades_under(fr_ber, benign, variant, tail=10, **kw):
 
 
 def summary_evasion(fr_ber, benign, tail=10, **kw):
-    """{variant: evade_fraction} across ALL variants — for the 'prove it' bar plot."""
+    """{variant: evade_fraction} across all variants"""
     return {v: evades_under(fr_ber, benign, v, tail=tail, **kw) for v in ALL_VARIANTS}

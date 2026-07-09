@@ -6,8 +6,7 @@ Usage:
         --config_idx 0 --repeat 0 --device cuda \
         --output_dir /path/out --data_root /path/data
 
-It runs one (config, repeat), writes result.json to --output_dir, and prints a
-PASS/FAIL correctness verdict against the expected accuracy band in config.py
+It runs one (config, repeat), writes result.json to --output_dir
 
 result.json now also carries:
   * "manifest": self-describing run metadata (family/hypothesis/sweep var+level
@@ -87,6 +86,8 @@ def parse_args():
     p.add_argument("--autop_warmup_cap", type=int, default=None)
     p.add_argument("--autop_protect_until", type=int, default=None)
     p.add_argument("--autop_honest_until", type=int, default=None)
+    p.add_argument("--autop_oracle_eta", type=float, default=None)
+    p.add_argument("--autop_common_per_class", type=int, default=None)
     p.add_argument("--autop_lookahead", type=int, default=None)
     p.add_argument("--autop_enriched", dest="autop_enriched",
                    action="store_true", default=None)
@@ -134,7 +135,7 @@ _OVERRIDABLE = [
     "n_trigger_samples", "honest_prob", "blend", "full_trigger_class",
     "n_common_samples", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "noise_sigma", "noise_decay",
-    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_coast_mode", "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_protect_until", "autop_honest_until", "autop_lookahead", "autop_enriched", "autop_scope", "sub_margin", "sub_floor", "sub_eta_mode",
+    "sub_warmup", "sub_warmup_batches", "sub_common_samples", "sub_coast_mode", "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_protect_until", "autop_honest_until", "autop_oracle_eta", "autop_common_per_class", "autop_lookahead", "autop_enriched", "autop_scope", "sub_margin", "sub_floor", "sub_eta_mode",
     "sub_eta_fixed", "sub_max_burst_batches", "sub_probe_every", "warmup_rounds",
     "mem_blend_global",
     "watermark", "wm_lambda", "wm_beta", "paper_faithful", "calib_on_all",

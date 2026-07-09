@@ -1,8 +1,6 @@
 """Experiment configs
 
-`config_idx` selects an experiment; `repeat` selects a seed (the paper averages
-over 10 repeats). Matches the existing submit script's
-`--config_idx N --repeat M` interface.
+`config_idx` selects an experiment; `repeat` selects a seed (paper: 10). 
 
 `expected_acc` is a loose [low, high] band on final FedAvg test accuracy
 (optional for pass/fail reference). For example, the reference points are
@@ -14,12 +12,6 @@ the FedAvg(%) column of Table I in the paper:
     AlexNet    CIFAR-10  (10 clients)  86.35
     AlexNet    MNIST     (10 clients)  91.54
     AlexNet    CIFAR-100 (10 clients)  68.45
-
-NOTE: Paper training budget for the fidelity table: 50 rounds x 5 local epochs,
-lr=0.01, batch=16 (the experimental-settings section says local_epoch=2 /
-global=100 — the paper is internally inconsistent; we follow the fidelity
-section since Table I is the fidelity result). All of these are overridable on
-the CLI.
 """
 from dataclasses import dataclass, field, asdict
 
@@ -53,7 +45,7 @@ class ExpConfig:
     partition: str = "iid"      # data split: 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5  # dirichlet skew; small=severe non-IID, large~=IID
 
-    # ---- adaptive free-riders (submarine / memory-exploit) ----
+    # ---- adaptive free-riders autopilot submarine ----
     # submarine: closed-loop controller that keeps its own BER just under its
     # estimate of eta, training a minimal burst only when needed.
     sub_warmup: int = 8                 # rounds of full-shard honest embedding up-front (CIFAR-100 needs ~8 to generalize)
@@ -80,6 +72,8 @@ class ExpConfig:
     autop_scope: str = "full"           # autopilot: which params to re-train (full|block|block2|head) — the effort dial
     autop_honest_until: int = 0         # autopilot: SAFETY CAP on honest-client rounds; FR trains fully
                                         #   honest until its BER FLATTENS (auto-detected) or this cap. 0=off.
+    autop_oracle_eta: float = 0.0       # autopilot DIAGNOSTIC: if >0, FR is GIVEN the true eta (~0.09) not estimated
+    autop_common_per_class: int = -1    # autopilot DATA-ABLATION: -1=full shard; 0=triggers only; N=+N/common class
     autop_conv_eps: float = 0.02        # autopilot: convergence = honest BER improves < this for 2 rounds
     autop_enriched: bool = False        # autopilot: data source (False=full shard, True=trigger-heavy)
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
@@ -92,9 +86,7 @@ class ExpConfig:
                                         #   0.3 (blend)          -> no poisoning (acc 72%) BUT the mark
                                         #        decays -> the FR is caught by BER
                                         # Neither is a clean stealthy free-ride; see sub_coast_mode.
-    sub_coast_mode: str = "transplant"  # "transplant" (global_now + frozen mark-delta; fresh+marked,
-                                        #   EXPERIMENTAL escape from the trilemma), "blend" (use
-                                        #   mem_blend_global), or "replay" (frozen memory, poisons).
+    sub_coast_mode: str = "transplant"  # "transplant" (global_now + frozen mark-delta; fresh+marked)
 
     # ---- watermarking ----
     watermark: bool = False     # honest clients embed an output-space watermark
@@ -107,19 +99,19 @@ class ExpConfig:
     wm_num_triggers: int = 50   # N_T trigger samples used for extraction (Eq.15)
     wm_eta: float = 0.25        # detection threshold on BER (Eq. 16)
     wm_verify_every: int = 1    # run verification every k rounds (cost control)
-    # paper_faithful=True strips our three deviations so the run matches the bare
+    # paper_faithful=True strips the three deviations so the run matches the bare
     # FareMark algorithm: (1) random (not sign-balanced) keys, (2) NO trigger-class
     # exclusion (full softmax, Eq.1/10 anti-dominance only), (3) threshold = the
     # paper's cumulative mu+3sigma over ALL rounds, no sliding window, no 0.25 cap.
     # Use with a high-class dataset (e.g. CIFAR-100) so the full-softmax projection
-    # is embeddable. Default False keeps our robust mode.
-    paper_faithful: bool = False
+    # is embeddable.
+    paper_faithful: bool = True
     # calib_on_all controls the attacker-vs-threshold relationship:
-    #   False -> server calibrates eta on a trusted benign pool that EXCLUDES the
-    #            attacker (idealized; attacker must GUESS eta). "option 1".
-    #   True  -> eta is mu+3sigma over ALL clients incl. the attacker, computed
+    #   False -> server calibrates eta on a trusted benign pool that excludes the
+    #            attacker (idealized; attacker must GUESS eta). 
+    #   True  -> eta is mu+3sigma over all clients incl. the attacker, computed
     #            each round during training (realistic; attacker poisons/inflates
-    #            eta). "option 2".
+    #            eta). 
     calib_on_all: bool = False
 
     def to_dict(self):

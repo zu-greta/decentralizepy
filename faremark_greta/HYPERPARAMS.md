@@ -1,3 +1,7 @@
+> TODO: update the documentation files
+
+
+
 # Hyperparameter & Toggle Reference
 
 Every movable part in the code, what it maps to, how to set it, and its effect.

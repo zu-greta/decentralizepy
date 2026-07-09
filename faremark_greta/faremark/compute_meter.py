@@ -1,8 +1,7 @@
-"""Per-client compute accounting — the "how much work did this client do?" meter.
+"""Per-client compute accounting 
 
-The whole point of the adaptive attacks is that evasion is *cheap*, so we must
-measure effort, not just detection. This module gives every training client a
-meter that accumulates, per round and in total:
+Measuring effort for attacks vs. honest clients
+This module gives every training client a meter that accumulates, per round and in total:
 
   * fwd_passes / bwd_passes : # forward / backward calls (batch granularity)
   * samples                 : # training examples processed (sum of batch sizes)
@@ -10,8 +9,7 @@ meter that accumulates, per round and in total:
   * gpu_ms                  : GPU wall-time of the metered region (CUDA events)
   * wall_ms                 : CPU wall-clock of the metered region
   * flops                   : estimated fwd+bwd FLOPs = samples * fps * FWD_BWD_MULT
-  * trained                 : bool, did this client actually train this round
-                              (lets us plot a submarine's duty cycle)
+  * trained                 : bool - if client trained this round (or coasted / free-rode)
 
 Cluster note: on the RunAI A100 the meaningful cost unit is GPU-seconds, so
 `gpu_ms` is measured with CUDA events (accurate for the GPU stream), not just
@@ -19,9 +17,7 @@ Python wall time. `samples`/`passes`/`flops` are device-independent and
 deterministic, so they are what you should put on the x-axis of an
 effort-vs-detection plot when comparing across machines. Use `gpu_ms` when you
 specifically want "what did this cost on the cluster".
-
-The meter has NO hard torch dependency for its bookkeeping; CUDA-event timing is
-used only when torch+CUDA are present, otherwise it falls back to perf_counter.
+CUDA-event timing is used only when torch+CUDA are present, otherwise it falls back to perf_counter.
 """
 from __future__ import annotations
 
@@ -91,8 +87,7 @@ class ComputeMeter:
         b["samples"] += n_samples
 
     def record_forward_only(self, n_samples: int, fwd: int = 1):
-        """For probe/extraction forward passes that carry no backward (e.g. the
-        submarine measuring its own BER). Counted so 'cheap' isn't understated."""
+        """For probe/extraction forward passes that carry no backward"""
         b = self._cur
         b["fwd_passes"] += fwd
         b["samples"] += n_samples

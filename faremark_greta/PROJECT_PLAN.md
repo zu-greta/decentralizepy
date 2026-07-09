@@ -1,3 +1,6 @@
+> TODO: update the documentation files
+
+
 # Project Plan — Limits of Output-Layer Watermarking for Free-Rider Detection in Federated Learning
 
 Status: 
