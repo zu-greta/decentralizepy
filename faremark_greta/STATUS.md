@@ -635,3 +635,41 @@ resistance is reasoned from mechanism, not yet tested — a clean future experim
   the BER curve during a clear (non-shaded) stretch.
 - **Duty cycle:** fraction of rounds the free-rider actually trains (block: 37/50; full:
   19/50).
+
+---
+
+## 16. HONEST-ROUND ETA CALIBRATION + adaptive convergence (2026-07-09)
+
+**Why:** the 3-seed confirm sweep showed the block attack rides ON the fair eta
+(BER ~0.10-0.13 vs eta ~0.09), not under it. Root cause: the attacker estimated eta
+(mu+3sigma) from its own COAST/TAP probe, which reads high (~0.15-0.25), so the
+estimate was ~0.25 and it aimed too high. The `blk_honest` arm evaded best because a
+deep full-model warmup buys a long coast — but it still used the wrong eta target.
+
+**Fix (in `attacks_adaptive.py`, autopilot):** during the forced-honest warmup the FR
+IS an honest client, so its BER there samples the SAME distribution the server's fair
+eta is calibrated on. It now:
+  1. Trains fully-honest (full model, full epoch) at the start;
+  2. **Auto-detects convergence** = the honest BER curve FLATTENS (two consecutive
+     round-to-round improvements < `autop_conv_eps`, default 0.02 — a RATE test, not a
+     hand-tuned BER cutoff, so it is dataset-agnostic);
+  3. Calibrates eta = mu+3sigma over the CONVERGED honest rounds only (~0.09), not the
+     pessimistic probe (~0.25);
+  4. **Auto-stops the honest phase** at convergence (>=2 calibration samples), with
+     `autop_honest_until` now just a SAFETY CAP (not an exact schedule).
+
+**IMPORTANT — which numbers are computed vs assumed (for the write-up):**
+  * COMPUTED from the run: all eta values (mu+3sigma), FR/honest BER, effort, accuracy,
+    tap timing, and NOW the convergence round (auto-detected) and the eta estimate
+    (calibrated on the converged honest rounds).
+  * ASSUMED (fixed hyperparameters, not measured): `autop_conv_eps=0.02` (flattening
+    rate), `autop_honest_until` cap (default 10 in the sweep), `autop_margin0`,
+    `autop_max_batches`. The old hard-coded `ber<=0.15` convergence gate has been
+    REMOVED and replaced by the rate test. mu+3sigma itself is from the FareMark paper.
+
+**Test:** `run_honestcal_sweep.sh` — arms hc_block / hc_block2 / hc_full (all do the
+honest warmup + converged-round calibration) + hc_block_nocal (honest_until=0, A/B
+baseline). Read `honestcal_evade.png` first; then the seed-bands — the tell is the grey
+ESTIMATED-eta line dropping from ~0.25 to ~0.09, and red (FR) dipping under green
+(actual eta). Wiring: config.py/run_experiment.py/wm_client.py/submit_experiment.sh
+forward `AUTOP_HONEST_UNTIL`; `autop_conv_eps` is tunable via config.

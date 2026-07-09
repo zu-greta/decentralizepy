@@ -78,7 +78,9 @@ class ExpConfig:
                                         # calibrates its frozen eta on this no-free-rider window;
                                         # keep it >= honest convergence, ~8 on CIFAR-100)
     autop_scope: str = "full"           # autopilot: which params to re-train (full|block|block2|head) — the effort dial
-    autop_honest_until: int = 0         # autopilot: act exactly like an honest client (full model, full
+    autop_honest_until: int = 0         # autopilot: SAFETY CAP on honest-client rounds; FR trains fully
+                                        #   honest until its BER FLATTENS (auto-detected) or this cap. 0=off.
+    autop_conv_eps: float = 0.02        # autopilot: convergence = honest BER improves < this for 2 rounds
     autop_enriched: bool = False        # autopilot: data source (False=full shard, True=trigger-heavy)
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
     warmup_rounds: int = 1              # rounds of honest embedding up-front

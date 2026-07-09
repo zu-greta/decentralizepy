@@ -1,58 +1,56 @@
 #!/usr/bin/env bash
-# run_full_sweep.sh — push scope=block from a BOUNDARY result to (hopefully) a
-# clean break, at 3 seeds. Four ablations, each isolating one lever:
-#   E0 baseline        : block, current settings (reproduce the boundary result)
-#   E1 eta-fix         : real mu+3sigma estimate (Fix 1) — aims lower, taps harder
-#   E2 honest-schedule : embeds on the SAME schedule as honest clients (Fix 2)
-#   E3 deeper slice    : block2 = last TWO stages (Fix 3) — better generalisation
-#   E4 bigger margin   : larger safety gap below eta
-# Requires the code fixes 1-4 pushed first. CALIB_ON_ALL=0 = fair (honest-only) eta.
+# run_honestcal_sweep.sh — test the HONEST-ROUND eta calibration fix.
+# The free-rider trains fully-honest for the first AUTOP_HONEST_UNTIL rounds, and
+# calibrates its eta estimate on THOSE rounds (the same converged-honest distribution
+# the server's fair eta uses) -> aims below the REAL line instead of the pessimistic
+# probe estimate (~0.25). Then it coasts/taps. Four arms, 3 seeds each:
+#   hc_block   : honest-cal + block  scope  (cheap re-embed)
+#   hc_block2  : honest-cal + block2 scope  (deeper, best generalization)
+#   hc_full    : honest-cal + full   scope  (control: does deep re-embed clear it?)
+#   hc_block_nocal (AUTOP_HONEST_UNTIL=0) : block WITHOUT honest-cal = the old estimate,
+#                                           as an A/B baseline to isolate the fix's effect.
+# AUTOP_HONEST_UNTIL=10 so there are >=3 CONVERGED honest rounds to calibrate on.
+# AUTOP_MARGIN0=0.06 = a big safety margin below the (now-accurate) eta, per the plan.
 #
-#   ./run_full_sweep.sh            # submit all (SEEDS="0 1 2")
-#   RES=/path ./run_full_sweep.sh PLOT   # when done, build every figure
+#   ./run_honestcal_sweep.sh              # submit all (SEEDS="0 1 2")
+#   RES=/path ./run_honestcal_sweep.sh PLOT
 set -uo pipefail
-SEEDS="${SEEDS:-0 1 2}"
-RES="${RES:-/mnt/nfs/home/zu/results}"
-PT="python scripts/plot_thresholds.py"; SB="python scripts/seedband.py"; PA="python scripts/plot_adaptive.py"
+SEEDS="${SEEDS:-0 1 2}"; RES="${RES:-/mnt/nfs/home/zu/results}"
+PT="python scripts/plot_thresholds.py"; SB="python scripts/seedband.py"
 
 if [ "${1:-}" = "PLOT" ]; then
   OUT="${OUT:-figs}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
-  # go/no-go with error bars across all ablations
-  run $PT evade_bars --in "'$ALL'" --family blk_base blk_etafix blk_honest blk2 blk_margin confirm_head --out "$OUT/evade_ablations"
-  # seed-band (mean +/- std shaded, honest BER, actual + estimated eta) per ablation
-  for N in "block baseline 3seed" "block etafix 3seed" "block honest-sched 3seed" "block2 3seed" "block bigmargin 3seed"; do
-    tag=$(echo "$N" | tr ' =' '__')
+  # go/no-go with error bars across all arms
+  run $PT evade_bars --in "'$ALL'" --family hc_block hc_block2 hc_full hc_block_nocal --out "$OUT/honestcal_evade"
+  # seed-band (std shaded + honest BER + ACTUAL vs ESTIMATED eta) per arm — the key read:
+  # does the grey ESTIMATED-eta line now sit DOWN at ~0.09 (fix working) and the red FR
+  # line dip UNDER the green ACTUAL-eta line?
+  for N in "honestcal block 3seed" "honestcal block2 3seed" "honestcal full 3seed" "block nocal 3seed"; do
+    tag=$(echo "$N" | tr ' ' '_')
     run $SB --in "'$ALL'" --note "'$N'" --title "'$N'" --out "$OUT/seedband_$tag"
   done
-  # why it does / doesn't clear the line: estimated vs actual eta
-  run $PT estimate  --in "'$ALL'" --family blk_etafix --out "$OUT/estimate_etafix"
-  # the submarine + timeline on the best ablation (edit family after reading evade)
-  run $PT submarine --in "'$ALL'" --family blk_etafix --out "$OUT/submarine_etafix"
-  run $PT timeline  --in "'$ALL'" --family blk_etafix --out "$OUT/timeline_etafix"
-  echo; echo "Read evade_ablations.png FIRST: is any 'frozen'/'converged' bar HIGH with a SMALL error bar? that's a clean break."
+  # why it clears (or not): estimated vs actual eta on the block arm
+  run $PT estimate  --in "'$ALL'" --family hc_block  --out "$OUT/estimate_hc_block"
+  run $PT estimate  --in "'$ALL'" --family hc_block2 --out "$OUT/estimate_hc_block2"
+  # the submarine + timeline on block2 (edit family to the winner after reading evade)
+  run $PT submarine --in "'$ALL'" --family hc_block2 --out "$OUT/submarine_hc_block2"
+  run $PT timeline  --in "'$ALL'" --family hc_block2 --out "$OUT/timeline_hc_block2"
+  echo; echo "READ FIRST: honestcal_evade.png — is a FAIR (frozen/converged) bar HIGH with a SMALL error bar?"
+  echo "Then seedband_*: has the grey ESTIMATED-eta dropped to ~0.09, and does red dip under green?"
   exit 0
 fi
 
 sub(){ local r="$1"; shift; env "$@" ROUNDS=50 CALIB_ON_ALL=0 WAIT=0 ./submit_experiment.sh 17 "$r"; }
 for R in $SEEDS; do
-  # E0 baseline (reproduce boundary)
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=blk_base    SWEEP_VAR=none NOTE="block baseline 3seed"
-  # E1 eta-fix (needs Fix 1)
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_MARGIN0=0.10 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=blk_etafix  SWEEP_VAR=none NOTE="block etafix 3seed"
-  # E2 honest-schedule (needs Fix 2); honest clients converge ~round 6-8
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_HONEST_UNTIL=8 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=blk_honest  SWEEP_VAR=none NOTE="block honest-sched 3seed"
-  # E3 deeper slice (needs Fix 3)
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block2 AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=blk2        SWEEP_VAR=none NOTE="block2 3seed"
-  # E4 bigger margin
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_MAX_BATCHES=250 AUTOP_MARGIN0=0.15 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=blk_margin  SWEEP_VAR=none NOTE="block bigmargin 3seed"
-  # head baseline for the scope curve (no fix needed)
-  sub $R ATTACK=autopilot AUTOP_SCOPE=head   AUTOP_MAX_BATCHES=250 AUTOP_PROTECT_UNTIL=8 \
-      FAMILY=confirm_head SWEEP_VAR=none NOTE="autopilot cifar100 scope=head 3seed"
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_HONEST_UNTIL=10 AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 \
+      FAMILY=hc_block       SWEEP_VAR=none NOTE="honestcal block 3seed"
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block2 AUTOP_HONEST_UNTIL=10 AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 \
+      FAMILY=hc_block2      SWEEP_VAR=none NOTE="honestcal block2 3seed"
+  sub $R ATTACK=autopilot AUTOP_SCOPE=full   AUTOP_HONEST_UNTIL=10 AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 \
+      FAMILY=hc_full        SWEEP_VAR=none NOTE="honestcal full 3seed"
+  # A/B control: block WITHOUT honest-cal (honest_until=0) -> old pessimistic estimate
+  sub $R ATTACK=autopilot AUTOP_SCOPE=block  AUTOP_HONEST_UNTIL=0  AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 \
+      FAMILY=hc_block_nocal SWEEP_VAR=none NOTE="block nocal 3seed"
 done
-echo "submitted $(echo $SEEDS | wc -w) seeds x 6 configs. When done: RES=$RES ./run_confirm_sweep.sh PLOT"
+echo "submitted $(echo $SEEDS|wc -w) seeds x 4 arms. When done: RES=$RES ./run_honestcal_sweep.sh PLOT"

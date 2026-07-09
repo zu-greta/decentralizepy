@@ -524,10 +524,14 @@ def make_autopilot_attack(base_cls):
                                                       # no-free-rider window, and this is also how
                                                       # long the honest clients need to converge so
                                                       # the FR's own clean-BER eta anchor is valid.
-                     autop_honest_until: int = 0,     # act EXACTLY like an honest client (full model,
-                                                      # full epoch, embed every round) until this round,
-                                                      # so the FR embeds on the SAME schedule as honest
-                                                      # clients before it starts free-riding. 0 = off.
+                     autop_honest_until: int = 0,     # SAFETY CAP on honest-client rounds: the FR
+                                                      # behaves exactly like an honest client (full
+                                                      # model, full epoch) until its honest BER
+                                                      # FLATTENS (auto-detected), or at most this many
+                                                      # rounds. It calibrates eta on the converged
+                                                      # honest rounds. 0 = honest phase off.
+                     autop_conv_eps: float = 0.02,    # convergence = honest BER improves by < this for
+                                                      # two rounds running (a rate test, not a BER cutoff)
                      autop_scope: str = "full",       # which params to train: full | block | block2 | head
                      autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
@@ -541,6 +545,7 @@ def make_autopilot_attack(base_cls):
             self.autop_warmup_cap = autop_warmup_cap
             self.autop_protect_until = autop_protect_until
             self.autop_honest_until = autop_honest_until
+            self.autop_conv_eps = autop_conv_eps
             self.autop_scope = autop_scope
             self.autop_enriched = autop_enriched
             self.sub_eta_fixed = sub_eta_fixed
@@ -550,6 +555,12 @@ def make_autopilot_attack(base_cls):
             self._probe_x = None
             self._enr_loader = None
             self._clean_ber_hist = []     # post-embed (honest-like) BERs
+            self._honest_cal = []         # BERs from the CONVERGED forced-honest rounds only: a
+                                          # genuine sample of the honest distribution the SERVER
+                                          # calibrates its fair eta on. Used to estimate eta.
+            self._honest_ber_seq = []     # all forced-honest-round BERs (to detect flattening)
+            self._honest_converged = False  # has the honest BER curve flattened?
+            self._honest_done = False     # honest phase finished (converged+calibrated, or cap)
             self._ber_trend = []          # recent coast probe BERs (for extrapolation)
             self._last_tap_batches = autop_min_batches
             self._last_tap_undershot = False  # did the PREVIOUS tap fail to reach floor?
@@ -558,11 +569,19 @@ def make_autopilot_attack(base_cls):
 
         # --- on-the-fly estimates (all O(1), no training) --------------------
         def _eta_est(self):
-            # Estimate the server's threshold from the attacker's OWN recent post-embed
-            # BERs (mu+3sigma), the same rule the server uses on honest clients. Only
-            # falls back to the fixed guess until it has >=3 samples. This replaces the
-            # old behaviour where the history stayed empty (probe read > 0.10) and the
-            # estimate was stuck at sub_eta_fixed=0.25 all run.
+            # BEST estimate: calibrate on the FORCED-HONEST rounds. In those rounds the
+            # free-rider trained the full model like an honest client, so its BER there
+            # is a genuine sample of the SAME distribution the server's fair eta is
+            # calibrated on -> mu+3sigma of it ~= the true fair eta (~0.09), not the
+            # pessimistic coast/tap probe (~0.25). This is the fix that lets "coast
+            # under the estimate" mean "coast under the REAL line".
+            hcal = self._honest_cal[-10:]
+            if len(hcal) >= 2:
+                mu = statistics.mean(hcal)
+                sd = statistics.pstdev(hcal) if len(hcal) > 1 else 0.0
+                return max(mu + 3.0 * sd, self.autop_floor + 0.02)
+            # FALLBACK (no honest rounds, e.g. autop_honest_until=0): use recent
+            # post-embed BERs (still better than the fixed guess), then the fixed guess.
             hist = self._clean_ber_hist[-10:]
             if len(hist) >= 3:
                 mu = statistics.mean(hist)
@@ -604,11 +623,12 @@ def make_autopilot_attack(base_cls):
             # PHASE 1 — self-terminating warmup: embed until the mark is good and
             # the eta estimate has stabilised (or the safety cap is hit).
             if not self._warm_done:
-                # Until autop_honest_until, behave EXACTLY like an honest client:
-                # full model, a full local epoch (max_batches=None), no early-stop
-                # (floor=0), embedding every round on the same schedule as honest
-                # clients. After that, resume the (cheaper) scoped warmup.
-                honest_phase = round_idx < self.autop_honest_until
+                # HONEST PHASE: behave EXACTLY like an honest client (full model, full
+                # local epoch, no early-stop). It runs until the honest BER FLATTENS
+                # (auto-detected — no hand-tuned BER threshold), capped at
+                # autop_honest_until rounds as a safety stop. autop_honest_until <= 0
+                # disables the honest phase entirely (the no-cal control).
+                honest_phase = (self.autop_honest_until > 0 and not self._honest_done)
                 self._embed_loop(
                     global_state,
                     None if honest_phase else self.autop_max_batches,
@@ -620,14 +640,32 @@ def make_autopilot_attack(base_cls):
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
                 ber = self._probe_ber_state(submit)
                 self._record_clean(ber)
+                if honest_phase and ber is not None:
+                    self._honest_ber_seq.append(ber)
+                    # CONVERGENCE = the honest BER curve FLATTENS: two consecutive
+                    # round-to-round improvements both below eps (a RATE test, not an
+                    # absolute-BER cutoff, so it is dataset-agnostic).
+                    seq = self._honest_ber_seq
+                    if (not self._honest_converged) and len(seq) >= 3:
+                        if abs(seq[-1] - seq[-2]) < self.autop_conv_eps and \
+                           abs(seq[-2] - seq[-3]) < self.autop_conv_eps:
+                            self._honest_converged = True
+                    # only calibrate eta on CONVERGED honest rounds (same distribution
+                    # the server's fair eta uses); pre-convergence rounds are excluded.
+                    if self._honest_converged:
+                        self._honest_cal.append(ber)
+                    # auto-stop the honest phase once converged with >=2 calibration
+                    # samples, or at the safety cap.
+                    if (self._honest_converged and len(self._honest_cal) >= 2) or \
+                       round_idx + 1 >= self.autop_honest_until:
+                        self._honest_done = True
                 self._ber_trend = []
-                # stop warming up once (a) the mark is actually good AND we have
-                # >=2 clean samples to anchor eta, AND (b) we are past BOTH the
-                # protected calibration window and the honest-schedule window.
+                # stop warming up once the mark is good AND we have >=2 clean samples
+                # AND we are past the protected window AND the honest phase is done.
                 enough = (ber is not None and ber <= self.autop_floor
                           and len(self._clean_ber_hist) >= 2
-                          and round_idx + 1 >= max(self.autop_protect_until,
-                                                   self.autop_honest_until))
+                          and round_idx + 1 >= self.autop_protect_until
+                          and (self.autop_honest_until <= 0 or self._honest_done))
                 if enough or round_idx + 1 >= self.autop_warmup_cap:
                     self._warm_done = True
                 self.meter.end_round(trained=True)

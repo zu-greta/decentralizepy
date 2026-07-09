@@ -483,10 +483,10 @@ def estimate(a):
     tx = [rd for rd in rounds if tgt.get(rd) is not None]
     ty = [tgt[rd] for rd in tx]
     if tx:
-        ax.plot(tx, ty, color=ps.OKABE["purple"], ls=":", lw=1.8, label="attacker's target (η_est − margin)")
+        ax.plot(tx, ty, color=getattr(ps,"C_PURPLE","#CC79A7"), ls=":", lw=1.8, label="attacker's target (η_est − margin)")
     ax.fill_between(ex, ey, [eta_actual[rounds.index(rd)] for rd in ex],
                     where=[est[rd] > eta_actual[rounds.index(rd)] for rd in ex],
-                    color=ps.OKABE["vermillion"], alpha=0.12,
+                    color="#D55E00", alpha=0.12,
                     label="danger gap (thinks safe, isn't)") if ex else None
     ax.set_xlabel("communication round")
     ax.set_ylabel("bit-error-rate / threshold")
