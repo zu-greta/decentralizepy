@@ -673,3 +673,42 @@ baseline). Read `honestcal_evade.png` first; then the seed-bands — the tell is
 ESTIMATED-eta line dropping from ~0.25 to ~0.09, and red (FR) dipping under green
 (actual eta). Wiring: config.py/run_experiment.py/wm_client.py/submit_experiment.sh
 forward `AUTOP_HONEST_UNTIL`; `autop_conv_eps` is tunable via config.
+
+---
+
+## 17. WHY THE honest-cal RUN DIDN'T EVADE (2026-07-09) + restructure
+
+**Diagnosis from the traces (hc_block rep0):** the free-rider's 16-image PROBE reads
+~0.0 while the SERVER reads 0.10-0.25 — even during the honest warmup. The probe
+overfits its tiny held-out set, so the FR *thinks* it is safe and coasts while the
+server has it above the fair eta. Two gaps, both real:
+  1. PROBE->SERVER gap: the FR cannot see its true standing (probe << server BER).
+  2. GENERALIZATION gap: a shallow re-embed generalizes worse than honest full
+     training, so server BER floors ABOVE the fair eta (~0.09).
+This is a robustness/defense signal: under a fair threshold the cheap attack grazes
+but doesn't clear the line.
+
+**Code fixes applied (attacks_adaptive.py):**
+  * FREEZE eta ONCE after the honest phase (`_eta_frozen`), held fixed thereafter.
+  * Stay honest `autop_honest_extra` (=3) rounds AFTER convergence for a better estimate.
+  * Bigger, more representative PROBE: hold out up to HALF the trigger images (was 1/3,
+    n_probe 16->32) so the probe stops reading ~0 while the server reads high.
+  * Kept ONLY the best attacks: `autopilot` (+ `submarine` as coast baseline). REMOVED
+    `make_memory_exploit_attack` and `make_reembed_attack` (dead ends) and their
+    wm_client branches. Scopes kept: `full` and `block2` (last two blocks); `head`/`block`
+    remain for ablation only.
+
+**Restructured test (`run_final_sweep.sh`):** every run = honest-until-flatten + extra,
+freeze eta, coast/tap. Arms: full & block2 (full shard) + ORACLE (given true eta) +
+DATA ABLATION (trigger-only / trigger+common / full shard) per scope. The ORACLE arm is
+the decider: if even a free-rider GIVEN the true eta can't stay under cheaply, the
+detector is robust and we pivot to the defense.
+
+**New plots:** `meters` (effort under every compute meter — samples/gpu_ms/fwd/bwd/opt —
+so we report the one that best captures the scope attack; bwd_passes & gpu_ms reward
+block2, samples does not); `submarine` now shows the honest BER reference and tap cost in
+SAMPLES (image-passes), not mini-batches.
+
+**Delta/margin (open TODO):** margin is `autop_margin0` (aims target = eta - margin),
+auto-relaxing when safe. Still to explore: set margin from the honest BER std (e.g.
+k*sigma) and find the optimal k. Not yet swept.

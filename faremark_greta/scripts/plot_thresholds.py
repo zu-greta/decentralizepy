@@ -133,8 +133,8 @@ def decay(a):
     a1.legend(loc="upper right", fontsize=8)
     if taps:
         a2.bar([t for t, _ in taps], [b for _, b in taps], width=0.8,
-               color=ps.OKABE["blue"], label="batches to re-embed to floor")
-    a2.set_ylabel("tap cost\n(batches)")
+               color=ps.OKABE["blue"], label="training samples to re-embed")
+    a2.set_ylabel("samples\nto re-embed")
     a2.set_xlabel("communication round")
     a2.set_title("Re-embed cost per tap (lower = mark re-forms fast)")
     a2.legend(loc="upper right", fontsize=8)
@@ -321,6 +321,12 @@ def timeline(a):
         at = {x["round"]: x.get("wm_fr_ber") for x in h}
         warm = [(t["round"], at.get(t["round"])) for t in tr if t.get("action") in ("warmup", "embed") and at.get(t["round"]) is not None]
         taps = [(t["round"], at.get(t["round"])) for t in tr if t.get("action") == "tap" and at.get(t["round"]) is not None]
+        # the attacker's OWN threshold line (frozen estimate, or the oracle value)
+        est = [(t["round"], t.get("eta_est")) for t in tr if t.get("eta_est") is not None]
+        if est:
+            is_oracle = ((r.get("config", {}) or {}).get("autop_oracle_eta") or 0) > 0
+            a1.plot(*zip(*est), color="#555555", ls="--", lw=2.0,
+                    label=("oracle η (given true)" if is_oracle else "attacker's estimated η"))
         if warm: a1.scatter(*zip(*warm), s=50, marker="s", color=ps.C_FR, edgecolor="k", zorder=5, label="warmup embed")
         if taps: a1.scatter(*zip(*taps), s=68, marker="^", color=ps.C_FR, edgecolor="k", zorder=5, label="tap (re-embed)")
     a1.set_ylabel("bit-error-rate  (lower = watermark present)")
@@ -408,7 +414,8 @@ def submarine(a):
     eta_c = thr.eta_series([b if b is not None else 0.5 for b in benign], "converged")
     tr = _fr_trace(r) or []
     act = {t["round"]: t.get("action") for t in tr}
-    tapb = {t["round"]: (t.get("tap_batches") or 0) for t in tr if t.get("action") == "tap"}
+    tapb = {t["round"]: (t.get("tap_batches") or 0) * ((r.get("config", {}) or {}).get("batch_size", 16))
+            for t in tr if t.get("action") == "tap"}
     warmr = [t["round"] for t in tr if t.get("action") in ("warmup", "embed")]
     tapr = [t["round"] for t in tr if t.get("action") == "tap"]
     fr_at = {x["round"]: x.get("wm_fr_ber") for x in h}
@@ -424,6 +431,7 @@ def submarine(a):
             lbl_used = True
     # the submarine line + the fair thresholds it hides under
     a1.plot(rounds, frb, color=ps.C_FR, lw=2.6, marker="o", ms=3, label="free-rider BER (the submarine)")
+    a1.plot(rounds, benign, color=ps.C_HONEST, lw=2.0, label="honest clients BER (reference)")
     a1.plot(rounds, eta_f, color=thr.STYLE["frozen"]["color"], lw=1.8, label="η frozen (fair ceiling)")
     a1.plot(rounds, eta_c, color=thr.STYLE["converged"]["color"], ls="-.", lw=1.4, label="η converged (fair)")
     if warmr:
@@ -439,8 +447,8 @@ def submarine(a):
     # per-round dive cost
     if tapb:
         a2.bar(list(tapb), list(tapb.values()), width=0.8, color=ps.OKABE["blue"],
-               label="mini-batches per tap (16 imgs each)")
-    a2.set_ylabel("mini-batches\nper tap")
+               label="training samples per tap (image-passes)")
+    a2.set_ylabel("samples\nper tap")
     a2.set_xlabel("communication round")
     a2.set_title(f"Cost of each dive  —  total attacker effort = {eff:.0%} of honest"
                  if eff is not None else "Cost of each dive")
@@ -518,10 +526,61 @@ def thresholds_demo(a):
     ps.finish(fig, a.out + ".png")
 
 
+
+def meters(a):
+    """Compare ALL compute meters so you can see which one best captures effort.
+    For each config, the free-rider's total is shown as a FRACTION of the honest
+    client's, for every meter: samples (image-passes), gpu_ms (wall GPU time),
+    fwd/bwd passes, opt steps. bwd_passes & gpu_ms reward scope attacks (block skips
+    most backprop); samples does not. Grouped bars, mean over seeds."""
+    runs = _load(a.inp)
+    METERS = ["samples", "gpu_ms", "fwd_passes", "bwd_passes", "opt_steps"]
+    groups = {}
+    for _, r in runs:
+        m = r.get("manifest", {}) or {}
+        if a.family and m.get("family") not in a.family:
+            continue
+        lab = (m.get("note") or r.get("attack") or "?").strip()
+        pc = r.get("compute", {}).get("per_client", {})
+        fr = [c for c in pc.values() if c.get("is_free_rider")]
+        ho = [c for c in pc.values() if not c.get("is_free_rider")]
+        if not fr or not ho:
+            continue
+        def total(clients, key):
+            tot = 0.0
+            for c in clients:
+                pr = c.get("per_round", {})
+                vals = pr.values() if isinstance(pr, dict) else pr
+                tot += sum((v.get(key, 0.0) or 0.0) for v in vals)
+            return tot
+        row = {}
+        for k in METERS:
+            fv = total(fr, k) / max(1, len(fr))
+            hv = total(ho, k) / max(1, len(ho))
+            row[k] = (fv / hv) if hv else 0.0
+        groups.setdefault(lab, []).append(row)
+    labs = list(groups.keys())
+    if not labs:
+        print("no matching runs"); return
+    import numpy as _np
+    x = _np.arange(len(labs)); w = 0.8 / len(METERS)
+    fig, ax = plt.subplots(figsize=(max(8, 1.6 * len(labs)), 5.6))
+    for i, k in enumerate(METERS):
+        means = [_np.mean([g[k] for g in groups[l]]) for l in labs]
+        ax.bar(x + (i - (len(METERS) - 1) / 2) * w, means, w, label=k)
+    ax.axhline(1.0, color="#999999", ls=":", lw=1)
+    ax.text(0, 1.01, "honest = 1.0", fontsize=8, color="#999999")
+    ax.set_xticks(x); ax.set_xticklabels(labs, rotation=25, ha="right", fontsize=9)
+    ax.set_ylabel("free-rider ÷ honest  (lower = cheaper)")
+    ax.set_title("Effort under every compute meter — which one best captures the attack?")
+    ax.legend(ncol=5, fontsize=8, loc="upper right")
+    ps.finish(fig, a.out + ".png")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("overlay", "worth", "evade_bars", "decay", "timeline", "knob", "submarine", "estimate", "thresholds_demo"):
+    for name in ("overlay", "worth", "evade_bars", "decay", "timeline", "knob", "submarine", "estimate", "thresholds_demo", "meters"):
         s = sub.add_parser(name)
         s.add_argument("--in", dest="inp", nargs="+", required=True)
         s.add_argument("--out", required=True)
@@ -530,4 +589,5 @@ if __name__ == "__main__":
     a = ap.parse_args()
     {"overlay": overlay, "worth": worth, "evade_bars": evade_bars,
      "decay": decay, "timeline": timeline, "knob": knob, "submarine": submarine,
-     "estimate": estimate, "thresholds_demo": thresholds_demo}[a.cmd](a)
+     "estimate": estimate, "thresholds_demo": thresholds_demo,
+     "meters": meters}[a.cmd](a)

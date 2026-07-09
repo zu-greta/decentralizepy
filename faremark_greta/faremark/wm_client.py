@@ -224,27 +224,6 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     mem_blend_global=getattr(cfg, "mem_blend_global", 0.2),
                     sub_coast_mode=getattr(cfg, "sub_coast_mode", "transplant"),
                     **wm_args, **common))
-            elif attack == "memory_exploit":
-                # train once (or `warmup_rounds`), then replay frozen mark forever
-                from .attacks_adaptive import make_memory_exploit_attack
-                cls = make_memory_exploit_attack(WatermarkClient)
-                clients.append(cls(
-                    warmup_rounds=getattr(cfg, "warmup_rounds", 5),
-                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.0),
-                    sub_common_samples=getattr(cfg, "sub_common_samples", 0),
-                    sub_probe_every=getattr(cfg, "sub_probe_every", 5),
-                    **wm_args, **common))
-            elif attack == "reembed":
-                from .attacks_adaptive import make_reembed_attack
-                cls = make_reembed_attack(WatermarkClient)
-                clients.append(cls(
-                    reembed_scope=getattr(cfg, "reembed_scope", "head"),
-                    reembed_steps=getattr(cfg, "reembed_steps", 40),
-                    reembed_floor=getattr(cfg, "reembed_floor", 0.05),
-                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
-                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
-                    **wm_args, **common))
-            # --------------------------------------- potential best attack ------------------------------------ #
             elif attack == "autopilot":
                 from .attacks_adaptive import make_autopilot_attack
                 cls = make_autopilot_attack(WatermarkClient)
@@ -257,6 +236,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
                     autop_protect_until=getattr(cfg, "autop_protect_until", 8),
                     autop_honest_until=getattr(cfg, "autop_honest_until", 0),
+                    autop_honest_extra=getattr(cfg, "autop_honest_extra", 3),
                     autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.02),
                     autop_oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0),
                     autop_common_per_class=getattr(cfg, "autop_common_per_class", -1),

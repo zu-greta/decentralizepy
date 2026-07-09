@@ -74,6 +74,7 @@ class ExpConfig:
                                         #   honest until its BER FLATTENS (auto-detected) or this cap. 0=off.
     autop_oracle_eta: float = 0.0       # autopilot DIAGNOSTIC: if >0, FR is GIVEN the true eta (~0.09) not estimated
     autop_common_per_class: int = -1    # autopilot DATA-ABLATION: -1=full shard; 0=triggers only; N=+N/common class
+    autop_honest_extra: int = 3         # autopilot: stay honest N rounds AFTER convergence (better frozen eta)
     autop_conv_eps: float = 0.02        # autopilot: convergence = honest BER improves < this for 2 rounds
     autop_enriched: bool = False        # autopilot: data source (False=full shard, True=trigger-heavy)
     # memory_exploit: train (embed) for warmup_rounds, then replay frozen memory.
