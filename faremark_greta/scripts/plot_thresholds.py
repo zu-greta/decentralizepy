@@ -37,6 +37,44 @@ def _fr_trace(r):
     return None
 
 
+# What the effort ratio is measured on, spelled out wherever it appears.
+EFFORT_CAP = ("effort ratio = free-rider image-passes \u00f7 honest image-passes\n"
+              "(image-passes = samples = \u03a3 batch_size over all trained batches; honest = 1.0)")
+
+
+def _cpc_label(v):
+    """Human-readable label for an autop_common_per_class level.
+      -1  -> 'full shard'      (train on the whole local shard, like honest)
+       0  -> 'triggers only'   (only trigger-class images; overfits, see paper Table V)
+       N  -> '+N/class'        (trigger imgs + N random images per common class)"""
+    try:
+        iv = int(float(v))
+    except (TypeError, ValueError):
+        return str(v)
+    if iv < 0:
+        return "full shard"
+    if iv == 0:
+        return "triggers\nonly"
+    return f"+{iv}/class"
+
+
+def _scope_of(groups, levels):
+    """The autop_scope (full|block2|...) shared by the runs in a knob sweep."""
+    for l in levels:
+        for g in groups.get(l, []):
+            if g.get("scope") and g["scope"] != "?":
+                return g["scope"]
+    return "?"
+
+
+def _knob_axis_label(sweep_var):
+    if sweep_var == "autop_common_per_class":
+        return "training data per tap  (triggers-only \u2192 +N/common-class \u2192 full shard)"
+    if sweep_var == "autop_max_batches":
+        return "tap budget (batches)  \u2014 samples/tap = batches \u00d7 16"
+    return sweep_var or "knob"
+
+
 def _pick(runs, family):
     """First run matching --family (so overlay/decay show the dataset you asked
     for, not just whatever glob returned first)."""
@@ -268,6 +306,30 @@ def worth(a):
     ps.finish(fig, a.out + ".png")
 
 
+def _phases(tr):
+    """From the FR trace: the FORCED rounds (honest warmup, where it trains like an
+    honest client to calibrate/seed the mark) and the first coast/tap round (where
+    the submarine phase begins). Returns (forced_rounds, phase_start_round)."""
+    if not tr:
+        return [], None
+    forced = [t["round"] for t in tr if t.get("action") in ("honest", "warmup", "embed")]
+    later = [t["round"] for t in tr if t.get("action") in ("coast", "tap")]
+    return forced, (min(later) if later else None)
+
+
+def _mark_phases(ax, tr, y=None):
+    """Shade the forced warmup region and draw the 'submarine begins' divider."""
+    forced, start = _phases(tr)
+    if forced:
+        ax.axvspan(min(forced) - 0.5, max(forced) + 0.5, color=ps.OKABE["yellow"],
+                   alpha=0.16, zorder=0, label="forced honest warmup (calibrates η)")
+    if start is not None:
+        ax.axvline(start - 0.5, color=ps.OKABE["grey"], ls=(0, (2, 2)), lw=1.4, zorder=1)
+        ymax = ax.get_ylim()[1] if y is None else y
+        ax.text(start - 0.3, ymax * 0.96, "coast/tap begins", rotation=90,
+                va="top", ha="left", fontsize=7.5, color=ps.OKABE["grey"])
+
+
 def _fr_id(r):
     for cid, c in r.get("compute", {}).get("per_client", {}).items():
         if c.get("is_free_rider"):
@@ -329,18 +391,20 @@ def timeline(a):
                     label=("oracle η (given true)" if is_oracle else "attacker's estimated η"))
         if warm: a1.scatter(*zip(*warm), s=50, marker="s", color=ps.C_FR, edgecolor="k", zorder=5, label="warmup embed")
         if taps: a1.scatter(*zip(*taps), s=68, marker="^", color=ps.C_FR, edgecolor="k", zorder=5, label="tap (re-embed)")
+    _mark_phases(a1, tr, y=0.7)
     a1.set_ylabel("bit-error-rate  (lower = watermark present)")
     a1.set_ylim(0, 0.7)
     a1.set_title("Free-rider vs honest BER, with every threshold, per round")
-    a1.legend(ncol=2, loc="upper right", fontsize=7.5)
+    a1.legend(ncol=2, loc="upper right", fontsize=7)
     rr, eff = _cum_effort(r)
-    a2.plot(rr, eff, color=ps.OKABE["blue"], lw=2.4, label="attacker effort ÷ honest (cumulative)")
+    a2.plot(rr, eff, color=ps.OKABE["blue"], lw=2.4, label="free-rider ÷ honest image-passes (cumulative)")
     a2.axhline(1.0, color=ps.OKABE["grey"], ls=":", lw=1)
     a2.text(rounds[0], 1.02, "honest = 1.0", fontsize=8, color=ps.OKABE["grey"])
-    a2.set_ylabel("effort ratio")
+    _mark_phases(a2, tr)
+    a2.set_ylabel("effort ratio\n(image-passes)")
     a2.set_xlabel("communication round")
-    a2.set_ylim(0, max(1.05, max(eff) * 1.15 if eff else 1.05))
-    a2.set_title("How cheap: cumulative attacker compute as a fraction of honest, per round")
+    a2.set_ylim(0, max(1.1, max(eff) * 1.15 if eff else 1.1))
+    a2.set_title("Cumulative cost: FR image-passes \u00f7 honest image-passes (samples), per round")
     a2.legend(loc="upper left", fontsize=8)
     ps.finish(fig, a.out + ".png")
 
@@ -363,14 +427,27 @@ def knob(a):
         eta = thr.eta_series([b or 0.5 for b in benign], "converged")[-1] if benign else None
         groups.setdefault(lvl, []).append(dict(
             ber=r.get("wm_fr_ber"), eff=r.get("compute", {}).get("summary", {}).get("effort_ratio_samples"),
-            acc=r.get("final_acc"), eta=eta))
+            acc=r.get("final_acc"), eta=eta,
+            scope=(r.get("config", {}) or {}).get("autop_scope", "?")))
     if not groups:
         print("no matching runs for", a.family, a.sweep_var); return
-    try:
-        levels = sorted(groups, key=lambda x: float(x))
-    except (TypeError, ValueError):
-        levels = sorted(groups, key=str)
-    xs = [str(l) for l in levels]
+    # order levels numerically; for the data knob put full-shard (-1) LAST so the
+    # x-axis reads triggers-only -> +N/class -> full shard (increasing data).
+    def _order(v):
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return (2, 0.0, str(v))
+        return (0, 1e9, "") if fv < 0 else (1, fv, "")   # -1 (full shard) to the far right
+    if a.sweep_var == "autop_common_per_class":
+        levels = sorted(groups, key=_order)
+        xs = [_cpc_label(l) for l in levels]
+    else:
+        try:
+            levels = sorted(groups, key=lambda x: float(x))
+        except (TypeError, ValueError):
+            levels = sorted(groups, key=str)
+        xs = [str(l) for l in levels]
     def ms(key):
         out = []
         for l in levels:
@@ -378,20 +455,28 @@ def knob(a):
             out.append((np.mean(vs) if vs else 0.0, np.std(vs) if len(vs) > 1 else 0.0))
         return out
     ber, eff, eta = ms("ber"), ms("eff"), ms("eta")
-    fig, (a1, a2) = ps.stacked_panels(2, figsize=(max(7, 1.3 * len(xs)), 6.6), height_ratios=[1, 1])
+    scope = _scope_of(groups, levels)
+    fig, (a1, a2) = ps.stacked_panels(2, figsize=(max(7.5, 1.5 * len(xs)), 6.9), height_ratios=[1, 1])
     xi = np.arange(len(xs))
-    a1.errorbar(xi, [v[0] for v in ber], yerr=[v[1] for v in ber], marker="o", lw=2, color=ps.C_FR, capsize=3, label="free-rider BER")
-    a1.plot(xi, [v[0] for v in eta], marker="D", ls="--", color=ps.C_ETA, lw=1.5, label="η converged (fair) — below = evades")
-    a1.set_ylabel("free-rider BER")
-    a1.set_title(f"Evasion vs {a.sweep_var}  (BER below the η line = evades)")
+    a1.errorbar(xi, [v[0] for v in ber], yerr=[v[1] for v in ber], marker="o", lw=2,
+                color=ps.C_FR, capsize=3, label="free-rider BER (server-measured)")
+    a1.plot(xi, [v[0] for v in eta], marker="D", ls="--", color=ps.C_ETA, lw=1.5,
+            label="η fair (converged) — BER below = stays under")
+    a1.fill_between(xi, 0, [v[0] for v in eta], color=ps.C_ACC, alpha=0.08)
+    a1.set_ylabel("bit-error-rate (BER)")
+    a1.set_title(f"Does it stay under the fair η?   (scope = {scope};  green band = SAFE, below η)")
     a1.legend(fontsize=8, loc="best")
-    a2.errorbar(xi, [v[0] for v in eff], yerr=[v[1] for v in eff], marker="s", lw=2, color=ps.OKABE["blue"], capsize=3, label="attacker effort ÷ honest")
-    a2.set_ylabel("effort ratio (samples)")
-    a2.set_xlabel(a.sweep_var)
-    a2.set_title("Cost vs the same knob (lower = cheaper)")
+    a2.errorbar(xi, [v[0] for v in eff], yerr=[v[1] for v in eff], marker="s", lw=2,
+                color=ps.OKABE["blue"], capsize=3, label="free-rider effort \u00f7 honest (image-passes)")
+    a2.axhline(1.0, color=ps.OKABE["grey"], ls=":", lw=1)
+    a2.text(0, 1.02, "honest = 1.0", fontsize=8, color=ps.OKABE["grey"])
+    a2.set_ylabel("effort ratio\n(image-passes)")
+    a2.set_xlabel(_knob_axis_label(a.sweep_var))
+    a2.set_ylim(0, max(1.1, max([v[0] for v in eff] + [0.0]) * 1.2))
+    a2.set_title("Cost (lower = cheaper).  " + EFFORT_CAP.split("\n")[0])
     a2.legend(fontsize=8, loc="best")
     for ax in (a1, a2):
-        ax.set_xticks(xi); ax.set_xticklabels(xs)
+        ax.set_xticks(xi); ax.set_xticklabels(xs, fontsize=9)
     ps.finish(fig, a.out + ".png")
 
 
@@ -440,18 +525,22 @@ def submarine(a):
     if tapr:
         a1.scatter(tapr, [fr_at.get(x) for x in tapr], s=80, marker="v",
                    color=ps.C_FR, edgecolor="k", zorder=6, label="tap = dive (re-embed)")
+    _mark_phases(a1, tr, y=a1.get_ylim()[1])
     a1.set_ylabel("bit-error-rate  (below η = hidden)")
     a1.set_ylim(0, max(0.7, (max([f for f in frb if f is not None] + [0.3])) * 1.1))
-    a1.set_title("The submarine: BER drifts up while coasting, dives (taps) just before crossing η")
-    a1.legend(ncol=2, loc="upper right", fontsize=8)
-    # per-round dive cost
+    a1.set_title("The submarine: coasting lets BER drift toward η; each tap (dive) re-embeds. "
+                 "Below η = hidden")
+    a1.legend(ncol=2, loc="upper right", fontsize=7.5)
+    # per-round dive cost. samples/tap = tap_batches x batch_size. In STAY-UNDER mode
+    # every post-warmup round is a fixed-size tap, so these bars are ~constant.
     if tapb:
         a2.bar(list(tapb), list(tapb.values()), width=0.8, color=ps.OKABE["blue"],
-               label="training samples per tap (image-passes)")
+               label="samples per tap = tap_batches \u00d7 16 (image-passes)")
     a2.set_ylabel("samples\nper tap")
     a2.set_xlabel("communication round")
-    a2.set_title(f"Cost of each dive  —  total attacker effort = {eff:.0%} of honest"
-                 if eff is not None else "Cost of each dive")
+    a2.set_title(("Cost per tap.  TOTAL free-rider effort = {:.0%} of an honest client "
+                  "(\u03a3 image-passes \u00f7 honest \u03a3)").format(eff)
+                 if eff is not None else "Cost per tap (image-passes)")
     a2.legend(loc="upper right", fontsize=8)
     ps.finish(fig, a.out + ".png")
 
@@ -571,8 +660,11 @@ def meters(a):
     ax.axhline(1.0, color="#999999", ls=":", lw=1)
     ax.text(0, 1.01, "honest = 1.0", fontsize=8, color="#999999")
     ax.set_xticks(x); ax.set_xticklabels(labs, rotation=25, ha="right", fontsize=9)
-    ax.set_ylabel("free-rider ÷ honest  (lower = cheaper)")
-    ax.set_title("Effort under every compute meter — which one best captures the attack?")
+    ax.set_ylabel("free-rider \u00f7 honest  (lower = cheaper)")
+    ax.set_title("Effort under every compute meter — which one best captures the attack?\n"
+                 "samples & fwd_passes are scope-BLIND (same forward work); "
+                 "gpu_ms / bwd_passes / opt_steps DROP when block2 skips backbone backprop",
+                 fontsize=11)
     ax.legend(ncol=5, fontsize=8, loc="upper right")
     ps.finish(fig, a.out + ".png")
 

@@ -712,3 +712,71 @@ SAMPLES (image-passes), not mini-batches.
 **Delta/margin (open TODO):** margin is `autop_margin0` (aims target = eta - margin),
 auto-relaxing when safe. Still to explore: set margin from the honest BER std (e.g.
 k*sigma) and find the optimal k. Not yet swept.
+---
+
+## 2026-07-10 — Oracle "defense" claim RETRACTED (probe confound); STAY-UNDER fix implemented
+
+### Why the earlier oracle result did NOT prove a defense
+Reading the controller end-to-end (`attacks_adaptive.py`): the autopilot's **tap
+trigger** (`must_tap`), **tap size** (`drift = ber_coast − floor`) and **tap early-stop**
+(`_embed_loop` returns as soon as the probe BER ≤ `autop_floor`=0.05) are ALL driven by
+the free-rider's own held-out **probe** BER. The probe reads ~0.00 (it overfits the FR's
+own shard) while the SERVER reads ~0.11 — confirmed in the traces (rep1: coast probe
+0.000 vs server 0.111) and predicted by the paper itself (Table V: training on few
+trigger samples overfits and won't generalise). Handing the FR the oracle η only rewrites
+the *target* it aims at; it does not fix the *ruler*. So the probe stays below the (lower)
+oracle target → it keeps coasting, taps stay tiny → server BER floats at ~0.13 > η. The
+oracle arm therefore measured the controller's thriftiness, **not** the detector's
+strength. `oracle_full` spent effort 0.33 at duty 0.63 — active most rounds but leaving
+~⅔ of honest effort unused. **Prior "generalisation gap / defense result" wording is
+retracted** pending the fix below.
+
+### The fix — STAY-UNDER mode (attacks_adaptive.py)
+New knob `autop_stay_under` (auto-ON whenever `autop_oracle_eta>0`). When active, after
+warmup the FR **re-embeds on the fresh global EVERY round** with a **fixed honest-style
+budget**: `local_epochs` passes over the selected shard, `early_stop=False` (probe cannot
+cut a tap short), no dynamic sizing. Priority = stay below η; cost then falls out of
+**scope** (`autop_scope`: full|block2) and **data** (`autop_common_per_class`). Taps are
+fixed-size, so "samples per tap" is constant (= `local_epochs × |shard|` image-passes =
+the honest per-round cost). For full scope this is honest training every round →
+server BER → honest (~0.04 < η) by construction: staying under is feasible at ≈ honest
+cost. `block2` (less backprop) and reduced data buy "a bit under honest".
+
+### The estimator was also wrong (est η ~0.18 vs fair ~0.09)
+`_eta_est` froze `μ+3σ` over the FR's converged honest-round probes, but a single
+pre-convergence straggler inflated σ. **Fix:** trim the worst sample before `μ+kσ`
+(`≥4` samples) and expose `autop_eta_k` (default 3.0). The honest-phase probe generalises
+(full training), so the trimmed estimate should land ON the fair η or just below.
+
+### New code / plumbing
+- `attacks_adaptive.py`: `_embed_loop(..., early_stop=True)`; `AutopilotFreeRider`
+  gains `autop_stay_under`, `autop_eta_k`; STAY-UNDER branch; robust `_eta_est`.
+- `config.py`, `wm_client.py`, `submit_experiment.sh`: plumb the two knobs.
+- `scripts/run_experiment.py`: **needs 2 lines added** (see `run_experiment_ADDITIONS.md`);
+  oracle arms work without it (auto-on), `est_*` arms need it.
+- `scripts/plot_thresholds.py`: knob x-axis now reads **triggers-only → +N/class → full
+  shard** (was −1/0/20); every effort axis is labelled **"FR image-passes ÷ honest
+  image-passes (samples)"**; timeline/submarine shade the **forced honest warmup** and
+  mark where **coast/tap begins**; meters subtitle says which meters capture the scope
+  attack (gpu_ms / bwd_passes / opt_steps drop for block2; samples / fwd_passes don't).
+
+### Naming (fixed the confusion)
+Arms are `<eta-source>_<scope>`: eta-source ∈ {oracle (given true η), est (estimates η)};
+scope ∈ {full (whole model), block2 (last two stages+head)}. The two tokens are
+eta-source and scope — NOT two scopes. (`data_*` arms add the `autop_common_per_class`
+sweep.) The old `full_full`/`block2_full` meant scope=×, shard=full — the doubled "full"
+was the source of confusion.
+
+### New sweep (`run_full_sweep.sh`, 3 seeds)
+`oracle_full`, `oracle_block2`, `est_full`, `est_block2` (full shard, stay-under) +
+`data_oracle_full`, `data_oracle_block2` (cpc ∈ {0,5,10,20,50,-1} = triggers-only →
++N/class → full shard). Expectation to test: oracle_full BER sits BELOW η the whole run
+(feasibility proven); triggers-only stays ABOVE η (overfits, Table V) while +N/class and
+full shard drop under; est η lands ~0.09 not ~0.18. Results pending.
+
+### Which meter captures effort best (answer to the standing question)
+`samples` and `fwd_passes` are **scope-blind** (same forward work per batch regardless of
+which params carry gradients) → they under-credit the block2 saving. `gpu_ms`,
+`bwd_passes`, `opt_steps` **drop when block2 freezes the backbone** → they capture the
+scope attack. Headline `samples` (machine-independent, conservative) for the "how cheap"
+claim; cite `gpu_ms` for the true wall-cost saving of block2.

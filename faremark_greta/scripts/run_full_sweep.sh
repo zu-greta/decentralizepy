@@ -1,84 +1,107 @@
 #!/usr/bin/env bash
-# run_full_sweep.sh — the clean experiment design from the meeting spec.
+# run_full_sweep.sh — STAY-UNDER test: given a threshold, CAN the free-rider stay
+# under it with taps, and how cheaply?  (replaces the effort-minimising sweep)
 #
-# Every run: the free-rider acts EXACTLY like an honest client (full model, full epoch)
-# until its honest BER FLATTENS (auto-detected) + AUTOP_HONEST_EXTRA rounds, so both the
-# server AND the free-rider get a clean, un-inflated eta estimate. The FR then FREEZES
-# that eta and coasts/taps to stay under it.
+# ─────────────────────────────────────────────────────────────────────────────
+# NAMING (read this — the old names confused us):
+#   Each arm is  <eta-source>_<scope>[_<data>]  where
+#     eta-source : oracle = FR is GIVEN the true fair η (~0.09);  est = FR ESTIMATES η.
+#     scope      : which PARAMETERS a tap re-trains — the compute lever:
+#                    full   = whole model (like honest; strongest, most backprop)
+#                    block2 = last two ResNet stages + head (backbone frozen; less GPU)
+#     data       : which IMAGES a tap trains on — the other compute lever
+#                    (only on the data-ablation arms; default = full shard).
+#   So `oracle_full` = given η, retrain the WHOLE model on the FULL shard each tap.
+#      `oracle_block2` = given η, retrain only the last two stages.
+#   (There is no "full_block2"/"block2_block2" — the two tokens are eta-source and
+#    scope, not two scopes. That earlier double-"full" naming was the bug.)
 #
-# TWO SCOPES (the only two kept — see attacks_adaptive.py):
-#   full   = taps re-train the whole model (like honest, but only until safe). Most
-#            effort of the three, but strongest/most-generalizing watermark.
-#   block2 = taps re-train only the LAST TWO blocks (less backprop -> less effort than
-#            full, still deep enough to embed).
+# THE FIX under test (attacks_adaptive.py, AUTOP_STAY_UNDER / auto-on under oracle):
+#   PRIORITISE STAYING UNDER η, THEN be cheap. Every post-warmup round the FR
+#   re-embeds on the FRESH global with a FIXED honest-style budget (local_epochs
+#   passes over the selected shard; NO probe early-stop; NO dynamic tap sizing).
+#   The probe (which overfits the FR's own shard and reads ~0 while the server reads
+#   ~0.1) is NOT allowed to gate training. Cost is then a clean function of SCOPE and
+#   DATA — not the probe. Taps are FIXED-size, so "samples per tap" is constant
+#   (= local_epochs × |shard| image-passes), which is the honest per-round cost.
 #
-# DATA ABLATION per scope (AUTOP_COMMON_PER_CLASS):
-#   0   = trigger samples ONLY
-#   20  = trigger + 20 random imgs per common class
-#   -1  = full shard (like an honest client)
+# WHY oracle arms need NO new flag: stay-under auto-enables whenever AUTOP_ORACLE_ETA>0.
+# The est_* arms DO pass AUTOP_STAY_UNDER=1 → they need the one-line run_experiment.py
+# addition (see run_experiment_ADDITIONS.md). Without it the est_* jobs error (the
+# oracle jobs still run fine, since WAIT=0 fire-and-forget).
 #
-# Plus an ORACLE arm (AUTOP_ORACLE_ETA=0.09): the FR is GIVEN the true eta — the
-# diagnostic upper bound ("is staying under even POSSIBLE cheaply?").
-#
-#   ./run_full_sweep.sh            # submit (SEEDS="0 1 2")
+#   ./run_full_sweep.sh              # submit (SEEDS="0 1 2")
 #   RES=/path ./run_full_sweep.sh PLOT
 set -uo pipefail
 SEEDS="${SEEDS:-0 1 2}"; RES="${RES:-/mnt/nfs/home/zu/results}"
 PT="python scripts/plot_thresholds.py"; SB="python scripts/seedband.py"; ORACLE=0.09
+# data-ablation hops on the x-axis: triggers-only(0) → +N/common-class → full shard(-1)
+CPC_HOPS="${CPC_HOPS:-0 5 10 20 50 -1}"
 
 if [ "${1:-}" = "PLOT" ]; then
   OUT="${OUT:-figs}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
 
-  # ============ OVERVIEW / COMPARISON (all arms together) ============
-  # go/no-go: do full / block2 / oracle clear the FAIR eta?  (mean +/- std)
-  run $PT evade_bars --in "'$ALL'" --family full_full block2_full oracle_full oracle_block2 --out "$OUT/final_evade"
-  # worth: effort + BER-vs-eta + accuracy, stacked, all arms
-  run $PT worth      --in "'$ALL'" --family full_full block2_full oracle_full oracle_block2 --out "$OUT/final_worth"
-  # compute-meter comparison: which cost metric best captures the scope attack
-  run $PT meters     --in "'$ALL'" --family full_full block2_full oracle_full oracle_block2 --out "$OUT/meters"
+  # ============ GO/NO-GO: does the FR stay UNDER the fair η now? (all arms) ============
+  ARMS="oracle_full oracle_block2 est_full est_block2"
+  run $PT evade_bars --in "'$ALL'" --family $ARMS --out "$OUT/final_evade"
+  run $PT worth      --in "'$ALL'" --family $ARMS --out "$OUT/final_worth"
+  run $PT meters     --in "'$ALL'" --family $ARMS --out "$OUT/meters"
 
-  # ============ PER-SCOPE: BER vs rounds + taps + effort + threshold refs ============
-  # timeline = FR BER + honest BER + fair eta + attacker's estimated/ORACLE eta,
-  #            warmup/tap markers, and cumulative effort (fraction of honest) at the bottom.
-  for FAM in full_full block2_full oracle_full oracle_block2; do
+  # ============ PER-ARM: BER vs rounds + forced/coast-tap markers + effort ============
+  for FAM in $ARMS; do
     run $PT timeline  --in "'$ALL'" --family $FAM --out "$OUT/timeline_$FAM"
-    run $PT submarine --in "'$ALL'" --family $FAM --out "$OUT/submarine_$FAM"   # coast/tap detail, cost in samples
+    run $PT submarine --in "'$ALL'" --family $FAM --out "$OUT/submarine_$FAM"
   done
-  # seed-bands (std shaded + honest BER + estimated eta) — headline scopes
-  run $SB --in "'$ALL'" --note "'full fullshard 3seed'"   --title "'full scope (3 seeds)'"   --out "$OUT/seedband_full"
-  run $SB --in "'$ALL'" --note "'block2 fullshard 3seed'" --title "'block2 scope (3 seeds)'" --out "$OUT/seedband_block2"
-  run $SB --in "'$ALL'" --note "'oracle full 3seed'"      --title "'oracle full (3 seeds)'"  --out "$OUT/seedband_oracle_full"
-  run $SB --in "'$ALL'" --note "'oracle block2 3seed'"    --title "'oracle block2 (3 seeds)'" --out "$OUT/seedband_oracle_block2"
+  # seed-bands (mean±std; shows FR BER vs the fair η and the attacker's η line)
+  run $SB --in "'$ALL'" --note "'oracle full stayunder 3seed'"   --title "'oracle · full scope · stay-under (3 seeds)'"   --out "$OUT/seedband_oracle_full"
+  run $SB --in "'$ALL'" --note "'oracle block2 stayunder 3seed'" --title "'oracle · block2 scope · stay-under (3 seeds)'" --out "$OUT/seedband_oracle_block2"
+  run $SB --in "'$ALL'" --note "'est full stayunder 3seed'"      --title "'estimated η · full scope · stay-under (3 seeds)'"   --out "$OUT/seedband_est_full"
+  run $SB --in "'$ALL'" --note "'est block2 stayunder 3seed'"    --title "'estimated η · block2 scope · stay-under (3 seeds)'" --out "$OUT/seedband_est_block2"
 
-  # ============ PER-SCOPE: DATA ABLATION (samples used vs BER & effort) ============
-  # knob = BER (top) and effort (bottom) vs autop_common_per_class
-  #        (0 = triggers only, 20 = +20/common class, -1 = full shard).
-  run $PT knob --in "'$ALL'" --family data_full   --sweep_var autop_common_per_class --out "$OUT/data_full"
-  run $PT knob --in "'$ALL'" --family data_block2 --sweep_var autop_common_per_class --out "$OUT/data_block2"
+  # ============ DATA ABLATION: triggers-only → +N/class → full shard (x-axis) ============
+  # BER (does it stay under η?) on top, effort (does more data cost more?) on the bottom.
+  run $PT knob --in "'$ALL'" --family data_oracle_full   --sweep_var autop_common_per_class --out "$OUT/data_oracle_full"
+  run $PT knob --in "'$ALL'" --family data_oracle_block2 --sweep_var autop_common_per_class --out "$OUT/data_oracle_block2"
 
   echo
   echo "READ ORDER:"
-  echo "  1) final_evade.png  — does ANY arm (incl. ORACLE) clear the FAIR eta? decides attack-vs-defense."
-  echo "  2) timeline_*.png   — per scope: BER vs rounds, fair eta + estimated/oracle eta, taps, effort at bottom."
-  echo "  3) data_*.png       — does it still work with less data (triggers only -> full shard)?"
-  echo "  4) meters.png / final_worth.png — cross-arm cost & health comparison."
+  echo "  1) final_evade.png — under the fair (frozen/converged) η, are the bars LOW now"
+  echo "                       (FR caught) or does stay-under push them under? decides the fix."
+  echo "  2) seedband_oracle_full.png — the money plot: FR BER band should sit BELOW the"
+  echo "                       green fair η the whole run (feasibility proven)."
+  echo "  3) data_oracle_full.png — how little data still stays under (triggers-only should"
+  echo "                       FAIL per paper Table V; +N/class and full shard should pass)."
+  echo "  4) final_worth.png / meters.png — how cheap: is it a bit under honest (block2/data)?"
+  echo "  5) seedband_est_*.png — is the ESTIMATED η now ON the fair η (~0.09), not ~0.18?"
   exit 0
 fi
 
-sub(){ local r="$1"; shift; env "$@" ROUNDS=50 CALIB_ON_ALL=0 AUTOP_HONEST_UNTIL=12 AUTOP_HONEST_EXTRA=3 \
-        AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 WAIT=0 ./submit_experiment.sh 17 "$r"; }
+# ---- submit helper. stay-under taps = local_epochs passes over the shard (fixed) ----
+# AUTOP_MAX_BATCHES only bounds the brief warmup transition; stay-under ignores it.
+sub(){ local r="$1"; shift; env "$@" ROUNDS=50 CALIB_ON_ALL=0 \
+        AUTOP_HONEST_UNTIL=12 AUTOP_HONEST_EXTRA=3 AUTOP_MARGIN0=0.06 AUTOP_MAX_BATCHES=250 \
+        WAIT=0 ./submit_experiment.sh 17 "$r"; }
+
 for R in $SEEDS; do
-  # headline: full shard, both scopes
-  sub $R ATTACK=autopilot AUTOP_SCOPE=full   FAMILY=full_full    SWEEP_VAR=none NOTE="full fullshard 3seed"
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block2 FAMILY=block2_full  SWEEP_VAR=none NOTE="block2 fullshard 3seed"
-  # ORACLE (given true eta) — is it even possible cheaply?
-  sub $R ATTACK=autopilot AUTOP_SCOPE=full   AUTOP_ORACLE_ETA=$ORACLE FAMILY=oracle_full   SWEEP_VAR=none NOTE="oracle full 3seed"
-  sub $R ATTACK=autopilot AUTOP_SCOPE=block2 AUTOP_ORACLE_ETA=$ORACLE FAMILY=oracle_block2 SWEEP_VAR=none NOTE="oracle block2 3seed"
-  # DATA ABLATION: trigger-only(0), trigger+common(20), full-shard(-1), each scope
-  for NC in 0 20 -1; do
-    sub $R ATTACK=autopilot AUTOP_SCOPE=full   AUTOP_COMMON_PER_CLASS=$NC FAMILY=data_full   SWEEP_VAR=autop_common_per_class NOTE="data full cpc=$NC"
-    sub $R ATTACK=autopilot AUTOP_SCOPE=block2 AUTOP_COMMON_PER_CLASS=$NC FAMILY=data_block2 SWEEP_VAR=autop_common_per_class NOTE="data block2 cpc=$NC"
+  # ── ORACLE (given true η): stay-under AUTO-ON. full shard, both scopes. ──
+  sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full   \
+        FAMILY=oracle_full   SWEEP_VAR=none NOTE="oracle full stayunder 3seed"
+  sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=block2 \
+        FAMILY=oracle_block2 SWEEP_VAR=none NOTE="oracle block2 stayunder 3seed"
+
+  # ── ESTIMATED η + stay-under (validates the estimator fix; needs the flag). ──
+  sub $R ATTACK=autopilot AUTOP_STAY_UNDER=1 AUTOP_SCOPE=full   \
+        FAMILY=est_full   SWEEP_VAR=none NOTE="est full stayunder 3seed"
+  sub $R ATTACK=autopilot AUTOP_STAY_UNDER=1 AUTOP_SCOPE=block2 \
+        FAMILY=est_block2 SWEEP_VAR=none NOTE="est block2 stayunder 3seed"
+
+  # ── DATA ABLATION (oracle, stay-under): triggers-only → +N/class → full shard. ──
+  for NC in $CPC_HOPS; do
+    sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full   AUTOP_COMMON_PER_CLASS=$NC \
+          FAMILY=data_oracle_full   SWEEP_VAR=autop_common_per_class SWEEP_LEVEL=$NC NOTE="data oracle full cpc=$NC"
+    sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=block2 AUTOP_COMMON_PER_CLASS=$NC \
+          FAMILY=data_oracle_block2 SWEEP_VAR=autop_common_per_class SWEEP_LEVEL=$NC NOTE="data oracle block2 cpc=$NC"
   done
 done
-echo "submitted. When done: RES=$RES ./run_final_sweep.sh PLOT"
+echo "submitted. When done: RES=$RES ./run_full_sweep.sh PLOT"

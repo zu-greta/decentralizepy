@@ -143,9 +143,16 @@ class _AdaptiveMixin:
         self.model.load_state_dict(state)
         return self._probe_ber_current_model()
 
-    def _embed_loop(self, global_state, max_batches, floor, enriched, scope=None):
+    def _embed_loop(self, global_state, max_batches, floor, enriched, scope=None,
+                    early_stop=True):
         """Load global, train until the held-out probe BER <= floor or the batch
         budget. Returns #batches.
+
+        `early_stop`: if False, the probe-BER<=floor check is DISABLED and the loop
+        runs the full budget (max_batches, or local_epochs passes when max_batches
+        is None). Used by STAY-UNDER mode, where the probe is an unreliable
+        (optimistic) proxy for the server BER and must NOT cut a tap short — we
+        spend the full honest-style budget instead.
 
         `scope` controls the parameter trained:
           None/"full" -> whole model (every batch backprops the
@@ -209,7 +216,7 @@ class _AdaptiveMixin:
                     if steps % self.sub_probe_every == 0:
                         b = self._probe_ber_current_model()
                         self.model.train()
-                        if b is not None and b <= floor:
+                        if early_stop and b is not None and b <= floor:
                             return steps
                     if max_batches is not None and steps >= max_batches:
                         return steps
@@ -429,6 +436,19 @@ def make_autopilot_attack(base_cls):
                      # ====================================================================
                      autop_scope: str = "full",       # which params to train: full | block | block2 | head
                      autop_enriched: bool = False,    # data source: False=full shard, True=trigger-heavy
+                     # === STAY-UNDER (feasibility / fixed-tap) mode ======================
+                     autop_stay_under: bool = False,  # PRIORITY = stay below eta, THEN cheap. Re-embed on the
+                                                      # fresh global EVERY post-warmup round with a FIXED,
+                                                      # honest-style budget (local_epochs passes over the
+                                                      # selected shard; NO probe early-stop; NO dynamic tap
+                                                      # sizing). The probe is an optimistic proxy for the
+                                                      # server BER, so it is NOT allowed to gate training here.
+                                                      # Auto-ON whenever autop_oracle_eta>0 (the diagnostic).
+                                                      # Cost is set by autop_scope (params) + autop_common_per_class
+                                                      # (data), not by the probe.
+                     autop_eta_k: float = 3.0,        # k in the frozen estimate μ + k·σ over converged honest
+                                                      # rounds. Lower (e.g. 2.0) => tighter/lower estimate.
+                     # ====================================================================
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
                      sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
             super().__init__(*a, **kw)
@@ -447,6 +467,8 @@ def make_autopilot_attack(base_cls):
             self._reduced_loader = None
             self.autop_scope = autop_scope
             self.autop_enriched = autop_enriched
+            self.autop_stay_under = autop_stay_under
+            self.autop_eta_k = autop_eta_k
             self.sub_eta_fixed = sub_eta_fixed
             self.sub_probe_every = sub_probe_every
             self.sub_common_samples = sub_common_samples
@@ -480,11 +502,16 @@ def make_autopilot_attack(base_cls):
             # The free-rider trained the full model like an honest client, so its BER
             # there samples the same distribution the server's fair eta uses ->
             # mu+3sigma ~= the true fair eta (~0.09).
-            hcal = self._honest_cal[-10:]
+            hcal = self._honest_cal[-12:]
             if len(hcal) >= 2:
-                mu = statistics.mean(hcal)
-                sd = statistics.pstdev(hcal) if len(hcal) > 1 else 0.0
-                return max(mu + 3.0 * sd, self.autop_floor + 0.02)
+                # ROBUST: drop the single worst sample (a pre-convergence straggler
+                # inflates σ and pushes μ+kσ well ABOVE the fair η — the "estimate
+                # way off" bug). With >=4 converged samples this trims it out so the
+                # frozen estimate lands ON the fair η (~0.09) or just below.
+                trimmed = sorted(hcal)[:-1] if len(hcal) >= 4 else hcal
+                mu = statistics.mean(trimmed)
+                sd = statistics.pstdev(trimmed) if len(trimmed) > 1 else 0.0
+                return max(mu + self.autop_eta_k * sd, self.autop_floor + 0.02)
             # FALLBACK (no honest rounds, autop_honest_until=0): use recent post-embed BERs, then the fixed guess.
             hist = self._clean_ber_hist[-10:]
             if len(hist) >= 3:
@@ -579,6 +606,41 @@ def make_autopilot_attack(base_cls):
                                    "action": "honest" if honest_phase else "warmup",
                                    "ber_after": None if ber is None else round(ber, 4),
                                    "eta_est": round(eta, 4)})
+                return submit, self.num_samples
+
+            # ---- STAY-UNDER mode (priority: stay below η first, then be cheap) ----
+            # Auto-ON under the oracle diagnostic, or set explicitly. We do NOT trust
+            # the optimistic probe to decide when/how much to train (it reads ~0.0 on
+            # the FR's own shard while the SERVER reads ~0.1). Instead: re-embed on the
+            # FRESH global EVERY round with a FIXED honest-style budget — local_epochs
+            # passes over the selected shard, NO probe early-stop, NO dynamic sizing.
+            # Effort is then a clean function of SCOPE (autop_scope: which params) and
+            # DATA (autop_common_per_class: how many images), never the probe. This is
+            # the feasibility test: "given η, CAN it stay under if it spends effort?"
+            stay = self.autop_stay_under or (self.autop_oracle_eta and self.autop_oracle_eta > 0)
+            if stay:
+                # coast (do-nothing) BER, probed only as a plot/trace reference
+                coast_ref = None
+                if hasattr(self, "_coast_state"):
+                    coast_ref = self._probe_ber_state(
+                        self._coast_state(global_state, prev_global_state))
+                nb = self._embed_loop(
+                    global_state, None,                       # None => local_epochs passes (fixed)
+                    floor=self.autop_floor, enriched=self.autop_enriched,
+                    scope=self.autop_scope, early_stop=False)  # spend the whole budget
+                w = _to_cpu_state(self.model)
+                submit = self._memory_update(global_state, w)
+                self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
+                ber_after = self._probe_ber_state(submit)
+                self._record_clean(ber_after)
+                self.meter.end_round(trained=True)
+                self.trace.append({
+                    "round": round_idx, "action": "tap", "forced": True, "stay_under": True,
+                    "ber_coast": None if coast_ref is None else round(coast_ref, 4),
+                    "eta_est": round(eta, 4), "target": round(target, 4),
+                    "predict_cross_in": 0.0, "tap_batches": nb,
+                    "ber_after": None if ber_after is None else round(ber_after, 4),
+                })
                 return submit, self.num_samples
 
             # coast with predictive, adaptive taps.

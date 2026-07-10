@@ -70,6 +70,12 @@ class ExpConfig:
                                         # calibrates its frozen eta on this no-free-rider window;
                                         # keep it >= honest convergence, ~8 on CIFAR-100)
     autop_scope: str = "full"           # autopilot: which params to re-train (full|block|block2|head) — the effort dial
+    autop_stay_under: bool = False      # autopilot STAY-UNDER: prioritise staying below eta over saving effort.
+                                        #   Re-embeds every post-warmup round with a fixed honest-style budget
+                                        #   (no probe early-stop, no dynamic tap sizing). Auto-ON when
+                                        #   autop_oracle_eta>0. Cost set by autop_scope + autop_common_per_class.
+    autop_eta_k: float = 3.0            # autopilot: k in the frozen estimate mu + k*sigma over converged honest
+                                        #   rounds (lower => tighter/lower estimate, closer to the fair eta).
     autop_honest_until: int = 0         # autopilot: SAFETY CAP on honest-client rounds; FR trains fully
                                         #   honest until its BER FLATTENS (auto-detected) or this cap. 0=off.
     autop_oracle_eta: float = 0.0       # autopilot DIAGNOSTIC: if >0, FR is GIVEN the true eta (~0.09) not estimated
