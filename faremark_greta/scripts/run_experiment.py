@@ -95,6 +95,7 @@ def parse_args():
     p.add_argument("--autop_scope", default=None, choices=["full","block","block2","head"])
     p.add_argument("--autop_stay_under", action="store_true", help="stay-under mode: re-embed every round at a fixed honest-style budget, prioritising BER<eta over cheapness (auto-on under oracle)")
     p.add_argument("--autop_eta_k", type=float, default=None, help="k in the frozen estimate mu+k*sigma (lower => tighter/lower eta)")
+    p.add_argument("--autop_honest_clone", action="store_true", help="DIAGNOSTIC: stay-under embeds via the exact honest path (tests if FR can reach honest BER)")
     p.add_argument("--sub_coast_mode", default=None, choices=["transplant","blend","replay","noise","global"])
     p.add_argument("--sub_warmup_batches", type=int, default=None)
     p.add_argument("--sub_common_samples", type=int, default=None)
@@ -142,7 +143,7 @@ _OVERRIDABLE = [
     "reembed_scope", "reembed_steps", "reembed_floor", "autop_max_batches", 
     "autop_min_batches", "autop_margin0", "autop_warmup_cap", "autop_protect_until", 
     "autop_honest_until", "autop_honest_extra", "autop_oracle_eta", "autop_common_per_class", 
-    "autop_lookahead", "autop_enriched", "autop_scope", "autop_stay_under", "autop_eta_k",
+    "autop_lookahead", "autop_enriched", "autop_scope", "autop_stay_under", "autop_eta_k", "autop_honest_clone",
     "sub_margin", "sub_floor", "sub_eta_mode",
     "sub_eta_fixed", "sub_max_burst_batches", "sub_probe_every", "warmup_rounds",
     "mem_blend_global",

@@ -37,6 +37,8 @@ SEEDS="${SEEDS:-0 1 2}"; RES="${RES:-/mnt/nfs/home/zu/results}"
 PT="python scripts/plot_thresholds.py"; SB="python scripts/seedband.py"; ORACLE=0.09
 # data-ablation hops on the x-axis: triggers-only(0) → +N/common-class → full shard(-1)
 CPC_HOPS="${CPC_HOPS:-0 5 10 20 50 -1}"
+# non-IID Dirichlet skews to test (smaller = more skew; >=100 ≈ IID)
+ALPHAS="${ALPHAS:-0.1 0.5 1.0}"
 
 if [ "${1:-}" = "PLOT" ]; then
   OUT="${OUT:-figs}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
@@ -63,6 +65,21 @@ if [ "${1:-}" = "PLOT" ]; then
   # BER (does it stay under η?) on top, effort (does more data cost more?) on the bottom.
   run $PT knob --in "'$ALL'" --family data_oracle_full   --sweep_var autop_common_per_class --out "$OUT/data_oracle_full"
   run $PT knob --in "'$ALL'" --family data_oracle_block2 --sweep_var autop_common_per_class --out "$OUT/data_oracle_block2"
+
+  # ============ DIAGNOSTIC: honest-clone vs the autopilot embedder ============
+  # If clone_full's FR band sits at the honest floor (~0.04) while oracle_full sits at
+  # ~0.11, the gap was the autopilot embedder (attack revivable). If clone_full ALSO
+  # plateaus ~0.11, the gap is fundamental (late-join / dynamics).
+  run $SB --in "'$ALL'" --note "'clone full stayunder 3seed'" --title "'DIAGNOSTIC: honest-clone embed · full scope (3 seeds)'" --out "$OUT/seedband_clone_full"
+  run $PT evade_bars --in "'$ALL'" --family oracle_full clone_full --out "$OUT/diag_clone_vs_autopilot"
+
+  # ============ NON-IID: one seedband per α, plus an IID-vs-α evasion comparison ============
+  for A in $ALPHAS; do
+    run $SB --in "'$ALL'" --note "'noniid full a=$A'" --title "'non-IID (Dirichlet α=$A) · full scope · stay-under'" --out "$OUT/seedband_noniid_a$A"
+  done
+  # IID (oracle_full) vs each non-IID α, side by side: does looser η let the FR under?
+  run $PT evade_bars --in "'$ALL'" --family oracle_full $(for A in $ALPHAS; do echo -n "noniid_full_a$A "; done) --out "$OUT/noniid_vs_iid_evade"
+  run $PT knob --in "'$ALL'" --family $(for A in $ALPHAS; do echo -n "noniid_full_a$A "; done) --sweep_var dirichlet_alpha --out "$OUT/noniid_alpha_sweep"
 
   echo
   echo "READ ORDER:"
@@ -102,6 +119,19 @@ for R in $SEEDS; do
           FAMILY=data_oracle_full   SWEEP_VAR=autop_common_per_class SWEEP_LEVEL=$NC NOTE="data oracle full cpc=$NC"
     sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=block2 AUTOP_COMMON_PER_CLASS=$NC \
           FAMILY=data_oracle_block2 SWEEP_VAR=autop_common_per_class SWEEP_LEVEL=$NC NOTE="data oracle block2 cpc=$NC"
+  done
+
+  # ── DIAGNOSTIC: honest-clone (embed via the EXACT honest path). Settles Q2:
+  #    does the FR reach the honest BER floor (~0.04) or plateau (~0.11)? ──
+  sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full AUTOP_HONEST_CLONE=1 \
+        FAMILY=clone_full SWEEP_VAR=none NOTE="clone full stayunder 3seed"
+
+  # ── NON-IID (Dirichlet): the promising angle. Higher honest-BER variance → looser
+  #    η → the FR's ~0.11 may slip under. One arm per α, plus IID (oracle_full above). ──
+  for A in $ALPHAS; do
+    sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full \
+          PARTITION=dirichlet DIRICHLET_ALPHA=$A \
+          FAMILY=noniid_full_a$A SWEEP_VAR=dirichlet_alpha SWEEP_LEVEL=$A NOTE="noniid full a=$A"
   done
 done
 echo "submitted. When done: RES=$RES ./run_full_sweep.sh PLOT"

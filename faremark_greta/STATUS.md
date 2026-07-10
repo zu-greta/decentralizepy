@@ -780,3 +780,122 @@ which params carry gradients) → they under-credit the block2 saving. `gpu_ms`,
 `bwd_passes`, `opt_steps` **drop when block2 freezes the backbone** → they capture the
 scope attack. Headline `samples` (machine-independent, conservative) for the "how cheap"
 claim; cite `gpu_ms` for the true wall-cost saving of block2.
+
+---
+
+## 2026-07-10 (PM) — STAY-UNDER RESULTS: attack is caught by a fair η. Honest verdict.
+
+**The sweep ran (3 seeds; oracle/est × full/block2 + data ablation). Result is a NEGATIVE
+for cheap evasion — and that is itself the finding.**
+
+### Numbers (read off the 3-seed bands; frozen fair η ≈ 0.09, honest BER ≈ 0.04)
+- **oracle_full / oracle_block2 (given the true η, re-embed every round):** FR BER plateaus
+  at **~0.10–0.13**, ABOVE the fair η, FLAT from round ~15 to 50 (not a lag — a floor).
+  Evades the fair line only **~30–37%** of rounds (evade_bars). Full and block2 identical.
+- **Effort:** samples **~1.45×** honest; GPU-ms ~1.05× (full) / **~0.80×** (block2); duty ~1.0.
+  It spends AS MUCH OR MORE than an honest client and still doesn't clear the bar.
+  → In stay-under, the "free-rider" has degenerated into "honest client, but worse and dearer."
+- **est_full / est_block2:** attacker's estimated η ≈ **0.18** (still ~2× the fair 0.09).
+  NOT a bug now — the FR calibrates η on its OWN watermark error (~0.10–0.15, worse than
+  honest's 0.04), so its "fair-for-me" bar is inflated. It sits at 0.11 < its own 0.18 and
+  feels safe while the server's real η (0.09) flags it. The estimator error and the BER
+  plateau are the SAME phenomenon.
+- **Data ablation (full scope):** triggers-only → BER **~0.50** (total failure = paper Table V,
+  overfits, won't generalize); +5/class ~0.10, +10 ~0.11, +20 ~0.14, +50 ~0.19, full shard
+  ~0.09. Effort scales 0.07 → 1.45. **No point is both cheap AND under η** — cheap data
+  overfits, safe data costs honest-level effort.
+- **Accuracy:** ~72–73% everywhere (healthy, not poisoned).
+- **Under cumulative η (paper-faithful) and fixed=0.25:** 100% evasion — artifacts of a bad
+  threshold, not a real break.
+
+### Interpretation (be honest)
+1. **The watermark holds under a fair frozen η.** Output-only re-embedding does not generalize
+   to the server's held-out triggers the way real training does. The free-rider cannot cheaply
+   forge honest-quality evidence of participation.
+2. **The real limitation is the THRESHOLD.** cumulative/naive μ+3σ → 100% evadable; robustness
+   exists ONLY under a frozen post-convergence calibration the paper underspecifies — and even
+   then the margin is THIN (0.11 vs 0.09).
+3. **Attacker's structural disadvantage:** it can only measure itself, and it is a weaker
+   embedder than honest, so it can't recover the true honest η. Built-in, not fixable by tuning.
+
+### Open diagnostic (decides attack-dead vs revivable)
+Is the FR-vs-honest BER floor (0.11 vs 0.04 at equal effort) **fundamental** or an **artifact of
+the autopilot's embedder being weaker than the honest path**? One control run: FR re-embeds via
+the EXACT honest training path every round. Reaches ~0.04 → embedder was the bottleneck (attack
+revivable, "defense" premature). Stays ~0.10 → fundamental (FareMark robust; pivot fully).
+
+### Direction
+- Reframe the thesis: **from "cheap evasion attack" (not working) → "limitation/robustness study
+  of FareMark's threshold" + a backbone-consistency defense.**
+- Most promising remaining ATTACK angle: **non-IID** federation → higher honest BER variance →
+  looser η → the FR's 0.11 may slip under. Untested.
+- Strongest current CONTRIBUTION: threshold-fragility (evasion vs η-policy) + the Table V
+  generalization asymmetry (evasion fails, but honest clients with sparse triggers risk FPR).
+
+### Deck
+Rebuilt clean (19 slides): goals + journey, research question, watermark→BER, threshold (frozen
+vs cumulative), algorithm pseudocode + schematic, setup table, metrics glossary, then the final
+results (evade_bars, seedband oracle, seedband est, worth, meters, data ablation, submarine),
+the structural-gap interpretation, honest conclusion, next steps. Every metric on every graph is
+explained (source / calculation / meaning / what it shows). Old single-seed and confounded-run
+slides removed.
+
+---
+
+## 2026-07-11 — Code audit + fixes (effort bug, holdout, honest-clone), threshold analysis, non-IID wired
+
+### Bugs found & fixed (attacks_adaptive.py)
+1. **Effort >100% was a probe-accounting artifact.** `_embed_loop` probed every
+   `sub_probe_every` batches and `_probe_ber_current_model` calls
+   `meter.record_forward_only()`, which counts probe forward-passes as `samples`.
+   In stay-under the probe is never used, yet ~500 probes/round × ~32 imgs ≈ 50–66%
+   sample overhead → the observed 1.45×. FIX: probe ONLY when `early_stop=True`;
+   stay-under taps now cost exactly an honest round (samples ≈ 1.0). block2 stays
+   cheaper on gpu_ms/bwd only.
+2. **Trigger holdout handicapped the enriched/data-ablation arms.** `_ensure_triggers`
+   held out up to half the trigger images for the probe and trained the mark on the
+   rest. Stay-under doesn't use the probe → FIX: in stay-under, train on ALL trigger
+   images (like honest). (Full-shard arms were already using self.loader = all
+   triggers, so this mainly fixes the +N/class arms.)
+3. **honest_clone diagnostic added** (`autop_honest_clone`): in stay-under, embed via
+   the EXACT honest `_local_train_wm` (full model, full shard, no probe/holdout).
+   Settles Q2: if FR reaches ~0.04 the earlier 0.11 plateau was the autopilot
+   embedder; if it still plateaus ~0.11 the gap is fundamental (late-join/dynamics).
+   NB: for FULL scope the stay-under path was already functionally identical to
+   honest, so with fixes 1–2 the full-scope FR BER should move toward honest; the
+   clone arm is the control that proves it. The 0.11 may also be partly 2-FR small-
+   sample noise (only 2 free-riders vs 8 honest → noisier mean).
+
+### Threshold analysis (which η is faithful; can it be challenged)
+- **Closest to the paper's INTENT: `frozen` / `converged`** — μ+3σ over the
+  *converged* honest BER ("the typical error rate for legitimate clients", Fig. 8).
+- **Literal reading = `cumulative`** (μ+3σ over ALL rounds) → balloons to 0.28–0.6
+  because it includes the high pre-convergence rounds → flags nothing → self-defeating.
+- The FR (BER ~0.11) is **UNDER every η except frozen/converged**, and even those are
+  borderline (frozen ≈ 0.09–0.10 vs FR 0.11 — a thin ~1–2σ margin). Demonstrated on a
+  real file with inspect_results.py: fr_ber 0.125 → cumulative η 0.279 (evades),
+  fixed 0.25 (evades), frozen 0.104 (caught, but 60% of rounds), windowed/converged
+  0.05 (caught).
+- **Challenges:** (a) underspecification — a naive μ+3σ-over-training implementation
+  is broken; (b) circularity — "calibrate on legitimate clients" assumes you can
+  already tell them apart (wm_verify `calib_on_all` shows FR BER 0.5 poisons η);
+  (c) small-sample σ instability (our data-ablation η line swings 0.06–0.40).
+  → Strongest contribution: FareMark's security = an unstated threshold-calibration
+  assumption.
+
+### Non-IID (Q4)
+- Code is **fully wired**: config.partition/dirichlet_alpha → run_experiment
+  `--partition/--dirichlet_alpha` → build_data → datasets.dirichlet_partition
+  (Hsu 2019). submit_experiment.sh forwards PARTITION/DIRICHLET_ALPHA.
+- **Hypothesis:** non-IID → some clients have few trigger-class images → weaker/ noisier
+  honest marks → honest BER μ AND σ rise → frozen η (μ+3σ) loosens → FR's ~0.11 slips
+  under. Most promising remaining attack angle.
+- **Added to run_full_sweep.sh:** `noniid_full_a{0.1,0.5,1.0}` arms (oracle_full,
+  stay-under) + IID baseline; PLOT makes one seedband per α, an IID-vs-α evade_bars,
+  and an α-sweep knob. Also added the `clone_full` diagnostic arm + its seedband and a
+  clone-vs-autopilot evade_bars.
+
+### New tool
+- `inspect_results.py`: `list` (find runs by family/cpc) and `show` (dump a file's
+  config + FR BER vs EVERY η variant with evade fractions). Use it to confirm the
+  +5/class point exactly.

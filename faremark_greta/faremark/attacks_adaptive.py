@@ -85,6 +85,9 @@ class _AdaptiveMixin:
         k = min(n_probe, max(1, len(allt) // 2))
         self._probe_x = allt[:k].clone()            # held-out for probing
         trig_train = allt[k:] if len(allt) > k else allt
+        # train the watermark on all of class exactly like an honest client. 
+        if getattr(self, "autop_stay_under", False) or (getattr(self, "autop_oracle_eta", 0) or 0) > 0:
+            trig_train = allt
         # enriched training set: trigger-class (label = trigger_class) + up to
         # sub_common_samples random common-class samples (their true labels)
         xs = [trig_train]
@@ -213,10 +216,12 @@ class _AdaptiveMixin:
                     opt.step()
                     self.meter.record_batch(len(x))
                     steps += 1
-                    if steps % self.sub_probe_every == 0:
+                    # Probe ONLY when early-stop is active. 
+                    # Skipping it here makes a stay-under tap cost exactly an honest round (samples ~1.0).
+                    if early_stop and steps % self.sub_probe_every == 0:
                         b = self._probe_ber_current_model()
                         self.model.train()
-                        if early_stop and b is not None and b <= floor:
+                        if b is not None and b <= floor:
                             return steps
                     if max_batches is not None and steps >= max_batches:
                         return steps
@@ -448,6 +453,9 @@ def make_autopilot_attack(base_cls):
                                                       # (data), not by the probe.
                      autop_eta_k: float = 3.0,        # k in the frozen estimate μ + k·σ over converged honest
                                                       # rounds. Lower (e.g. 2.0) => tighter/lower estimate.
+                     autop_honest_clone: bool = False,# DIAGNOSTIC: in stay-under, embed via the EXACT honest
+                                                      # path (full model, full shard, no probe/holdout). Tests
+                                                      # whether the FR CAN reach the honest BER floor.
                      # ====================================================================
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
                      sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
@@ -469,6 +477,7 @@ def make_autopilot_attack(base_cls):
             self.autop_enriched = autop_enriched
             self.autop_stay_under = autop_stay_under
             self.autop_eta_k = autop_eta_k
+            self.autop_honest_clone = autop_honest_clone
             self.sub_eta_fixed = sub_eta_fixed
             self.sub_probe_every = sub_probe_every
             self.sub_common_samples = sub_common_samples
@@ -624,10 +633,21 @@ def make_autopilot_attack(base_cls):
                 if hasattr(self, "_coast_state"):
                     coast_ref = self._probe_ber_state(
                         self._coast_state(global_state, prev_global_state))
-                nb = self._embed_loop(
-                    global_state, None,                       # None => local_epochs passes (fixed)
-                    floor=self.autop_floor, enriched=self.autop_enriched,
-                    scope=self.autop_scope, early_stop=False)  # spend the whole budget
+                if getattr(self, "autop_honest_clone", False):
+                    # DIAGNOSTIC: embed via the EXACT honest path (self._local_train_wm,
+                    # inherited from the honest client) — no probe, no holdout, no scope
+                    # freezing, full shard, full model. If the FR now reaches the honest
+                    # BER floor (~0.04) then any earlier gap was the autopilot embedder,
+                    # not a fundamental limit; if it still plateaus (~0.10) the gap is
+                    # structural (late join / dynamics). This isolates the cause of Q2.
+                    self.model.load_state_dict(global_state)
+                    self._local_train_wm()
+                    nb = None
+                else:
+                    nb = self._embed_loop(
+                        global_state, None,                       # None => local_epochs passes (fixed)
+                        floor=self.autop_floor, enriched=self.autop_enriched,
+                        scope=self.autop_scope, early_stop=False)  # spend the whole budget
                 w = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w)
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
