@@ -108,8 +108,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         #       (a cumulative mean stays poisoned forever);
         #   (2) cap eta at 0.25 — a balanced watermark has benign BER->0 and a
         #       random model ->0.5, so a threshold above 0.25 would flag nothing.
-        benign_now = [b for _, b, isfr in measured if not isfr]
-        calib_now = [b for _, b, _ in measured] if calib_on_all else benign_now
+        benign_now = [b for _, b, isfr, _ in measured if not isfr]
+        calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now
         if calib_now:
             benign_history.append(sum(calib_now) / len(calib_now))
         if paper_faithful:
