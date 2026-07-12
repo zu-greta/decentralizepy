@@ -75,6 +75,10 @@ class ExpConfig:
                                         #   (no probe early-stop, no dynamic tap sizing). Auto-ON when
                                         #   autop_oracle_eta>0. Cost set by autop_scope + autop_common_per_class.
     autop_eta_k: float = 3.0            # autopilot: k in the frozen estimate mu + k*sigma over converged honest
+    autop_honest_clone: bool = False   # autopilot DIAGNOSTIC: in stay-under, embed via the EXACT honest path
+    autop_stay_min: bool = False       # autopilot: stay-under MIN-EFFORT (coast when probe safely under target)
+    autop_holdout_ratio: float = 0.5   # autopilot: probe holdout fraction (dynamic attack; 0.25 keeps more for training)
+                                       #   (full model, full shard, no probe/holdout) to test if the FR can reach honest BER.
                                         #   rounds (lower => tighter/lower estimate, closer to the fair eta).
     autop_honest_until: int = 0         # autopilot: SAFETY CAP on honest-client rounds; FR trains fully
                                         #   honest until its BER FLATTENS (auto-detected) or this cap. 0=off.

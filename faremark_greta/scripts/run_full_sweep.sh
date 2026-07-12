@@ -81,6 +81,29 @@ if [ "${1:-}" = "PLOT" ]; then
   run $PT evade_bars --in "'$ALL'" --family oracle_full $(for A in $ALPHAS; do echo -n "noniid_full_a$A "; done) --out "$OUT/noniid_vs_iid_evade"
   run $PT knob --in "'$ALL'" --family $(for A in $ALPHAS; do echo -n "noniid_full_a$A "; done) --sweep_var dirichlet_alpha --out "$OUT/noniid_alpha_sweep"
 
+  # ============ FALSE-POSITIVE: per-client BER distribution vs eta ============
+  # KEY finding: is the FR's ~0.11 floor INSIDE the honest spread? If honest clients
+  # at hard trigger classes also exceed eta, the detector false-positives on honest.
+  run $PT fpr --in "'$ALL'" --family oracle_full clone_full --out "$OUT/fpr_iid_full"
+  for A in $ALPHAS; do
+    run $PT fpr --in "'$ALL'" --family noniid_full_a$A --out "$OUT/fpr_noniid_a$A"
+  done
+
+  # ============ KEEP-TRYING arms: min-effort + dynamic low-cost ============
+  run $SB --in "'$ALL'" --note "'oracle full min-effort 3seed'" --title "'oracle · full · MIN-EFFORT (coast when safe)'" --out "$OUT/seedband_oracle_full_min"
+  run $SB --in "'$ALL'" --note "'dynamic lowcost margin12 3seed'" --title "'dynamic low-cost (holdout .25, margin .12)'" --out "$OUT/seedband_dyn_lowcost"
+  for FAM in oracle_full_min dyn_lowcost; do
+    run $PT submarine --in "'$ALL'" --family $FAM --out "$OUT/submarine_$FAM"
+    run $PT timeline  --in "'$ALL'" --family $FAM --out "$OUT/timeline_$FAM"
+  done
+  run $PT worth --in "'$ALL'" --family oracle_full oracle_full_min dyn_lowcost clone_full --out "$OUT/keeptrying_worth"
+
+  # ============ CONTROLS: all-honest FPR + collusion/poisoning ============
+  run $PT fpr --in "'$ALL'" --family all_honest --out "$OUT/fpr_all_honest"
+  run $SB --in "'$ALL'" --note "'poison eta calibonall fr5'" --title "'η-poisoning (calib on all, 5 free-riders)'" --out "$OUT/seedband_poison_eta"
+  run $PT evade_bars --in "'$ALL'" --family oracle_full collude_fr3 collude_fr5 poison_eta --out "$OUT/collusion_evade"
+  run $PT fpr --in "'$ALL'" --family poison_eta --out "$OUT/fpr_poison_eta"
+
   echo
   echo "READ ORDER:"
   echo "  1) final_evade.png — under the fair (frozen/converged) η, are the bars LOW now"
@@ -126,6 +149,19 @@ for R in $SEEDS; do
   sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full AUTOP_HONEST_CLONE=1 \
         FAMILY=clone_full SWEEP_VAR=none NOTE="clone full stayunder 3seed"
 
+  # ── KEEP-TRYING #1: STAY-UNDER MIN-EFFORT (coast when safely under; tap only when
+  #    needed). Now that taps make a deep, reliable-probe mark, this should stay under
+  #    with effort < 1.0 — IF the floor is under eta. Conservative margin 0.02. ──
+  sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full AUTOP_STAY_MIN=1 AUTOP_MARGIN0=0.02 \
+        FAMILY=oracle_full_min SWEEP_VAR=none NOTE="oracle full min-effort 3seed"
+
+  # ── KEEP-TRYING #2: the suggestions.txt DYNAMIC low-cost attack (no stay_under):
+  #    smaller holdout (0.25) + wide margin (0.12) + bounded taps. Tests whether the
+  #    dynamic controller can ride under cheaply. (Expected to hit the same ~0.11 floor.) ──
+  sub $R ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full \
+        AUTOP_HOLDOUT_RATIO=0.25 AUTOP_MARGIN0=0.12 AUTOP_MIN_BATCHES=30 AUTOP_MAX_BATCHES=300 \
+        FAMILY=dyn_lowcost SWEEP_VAR=none NOTE="dynamic lowcost margin12 3seed"
+
   # ── NON-IID (Dirichlet): the promising angle. Higher honest-BER variance → looser
   #    η → the FR's ~0.11 may slip under. One arm per α, plus IID (oracle_full above). ──
   for A in $ALPHAS; do
@@ -133,5 +169,26 @@ for R in $SEEDS; do
           PARTITION=dirichlet DIRICHLET_ALPHA=$A \
           FAMILY=noniid_full_a$A SWEEP_VAR=dirichlet_alpha SWEEP_LEVEL=$A NOTE="noniid full a=$A"
   done
+
+  # ── CONTROL: ALL-HONEST (attack=none). The definitive "can honest sit under η?"
+  #    test — records every honest client's per-class BER with NO free-rider. If some
+  #    honest classes read ~0.11, the FR's floor is just a hard position (→ false
+  #    positive), not an attack weakness. ──
+  sub $R ATTACK=none FAMILY=all_honest SWEEP_VAR=none NOTE="all honest control"
+
+  # ── COLLUSION / RATIO: does the attack work with MORE free-riders? ──
+  for NF in 3 5; do
+    env NUM_FREE_RIDERS=$NF ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full \
+        ROUNDS=50 CALIB_ON_ALL=0 AUTOP_HONEST_UNTIL=12 AUTOP_HONEST_EXTRA=3 AUTOP_MARGIN0=0.06 \
+        AUTOP_MAX_BATCHES=250 WAIT=0 FAMILY=collude_fr$NF SWEEP_VAR=num_free_riders \
+        SWEEP_LEVEL=$NF NOTE="collude fr=$NF" ./submit_experiment.sh 17 $R
+  done
+  # ── η-POISONING: server calibrates η on ALL clients (can't tell honest from FR).
+  #    5 free-riders at BER~0.11+ inflate μ+3σ → η rises → they pass. Exploits the
+  #    paper's calibration circularity directly. ──
+  env NUM_FREE_RIDERS=5 CALIB_ON_ALL=1 ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_SCOPE=full \
+      ROUNDS=50 AUTOP_HONEST_UNTIL=12 AUTOP_HONEST_EXTRA=3 AUTOP_MARGIN0=0.06 \
+      AUTOP_MAX_BATCHES=250 WAIT=0 FAMILY=poison_eta SWEEP_VAR=none \
+      NOTE="poison eta calibonall fr5" ./submit_experiment.sh 17 $R
 done
 echo "submitted. When done: RES=$RES ./run_full_sweep.sh PLOT"

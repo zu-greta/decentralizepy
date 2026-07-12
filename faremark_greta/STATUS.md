@@ -899,3 +899,76 @@ slides removed.
 - `inspect_results.py`: `list` (find runs by family/cpc) and `show` (dump a file's
   config + FR BER vs EVERY η variant with evade fractions). Use it to confirm the
   +5/class point exactly.
+
+---
+
+## 2026-07-12 — Results in: effort FIXED, honest-clone settles the floor, non-IID WORKS
+
+### Confirmed fixed
+- **Effort now 103–105% of honest** (submarine plots), down from 148–151%. The
+  probe-forward-passes-counted-as-samples bug is gone. (suggestions.txt PATCH 4 was
+  already resolved by this; no double-count — honest-clone calls _local_train_wm only.)
+
+### The decisive diagnostic: honest-clone (Image 4)
+- honest-clone = FR embeds via the EXACT honest `_local_train_wm` every round.
+- It STILL plateaus at ~0.10–0.11, same as the autopilot embedder, while the 8 honest
+  clients reach ~0.04. → **the 0.11 floor is NOT the embedder, undertraining, or
+  early-stop.** It is structural to the free-rider's POSITION (its trigger class/shard).
+- Corollary (the real finding): an honest client at that position would ALSO read 0.11.
+  A frozen η=0.09 (μ+3σ over the lucky honest clients) therefore **flags honest clients
+  at hard trigger classes = FALSE POSITIVE.** The "attack failure" under IID is actually
+  the detector's FPR problem in disguise. → added per-client BER recording to wm_verify
+  + a new `fpr` plot to quantify it.
+
+### Why "so close but can't get under" (answer to the standing question)
+- The FR's BER floor (~0.10–0.11) for its class is ABOVE the fair η (0.09), and the floor
+  is set by position, NOT effort. +5/class already reaches it at ~14% effort; more data
+  or more taps cannot push below it. So the last 0.02 is unreachable by working harder.
+
+### Non-IID: the attack WORKS (Images 7–9)
+- α=0.5: honest BER variance rises → frozen η ≈ 0.23; FR ≈ 0.15–0.20 → **UNDER η**.
+- α=0.1: η ≈ 0.36, FR ≈ 0.27–0.30 → under (but everything is high/noisy).
+- α=1.0: η ≈ 0.18, FR ≈ 0.25 → above (FR's starved classes read high; noisy, 2 FRs).
+- Effort ~0.92–0.98. So under realistic heterogeneity the fair threshold loosens enough
+  that a re-embedding free-rider rides under it. This is the real evasion result.
+
+### suggestions.txt evaluation
+- PATCH 1 (configurable holdout) — reasonable; implemented as `autop_holdout_ratio`
+  (default 0.5; dynamic arm uses 0.25). Only affects the dynamic attack (stay-under
+  already trains on all triggers).
+- PATCH 2 (early_stop=False in dynamic tap) — implemented, gated on small holdout.
+- PATCH 3 (dynamic, wide margin 0.12, no stay_under) — added as the `dyn_lowcost` arm.
+- PATCH 4 (double-count) — already resolved by the probe fix; verified no double-count.
+- HONEST CAVEAT: these all target UNDERTRAINING, which honest-clone has RULED OUT as the
+  cause of the 0.11 floor. They will not push IID BER under 0.09. Included as
+  falsification tests + to trace the effort/BER frontier.
+
+### New knobs / tools
+- `autop_stay_min` (coast-when-safe min-effort stay-under), `autop_holdout_ratio`,
+  `autop_honest_clone`. wm_verify now records `wm_per_client` / `wm_*_ber_list`.
+- New plot `fpr` (per-client BER vs η, honest false-positive rate).
+- Sweep adds: oracle_full_min, dyn_lowcost, clone_full, non-IID α∈{0.1,0.5,1.0},
+  fpr plots, keeptrying_worth.
+
+### Direction
+- IID evasion is blocked by a STRUCTURAL floor that is really an FPR limitation.
+- Live positive results: non-IID evasion (α≈0.5) + the FPR/threshold-fragility limitations.
+- Next attacks to line up: collusion (multiple FRs share/average marks), trigger-class
+  choice (attacker picks an easy class), label-flip aggregation poisoning of η.
+
+---
+
+## 2026-07-12 (b) — controls added to settle the floor; collusion/poisoning arms; modularity audit
+
+- **honest_clone made a PURE honest bypass** (skips ALL autopilot machinery every round),
+  so the only remaining difference from an honest client is the cid/trigger-class.
+- **New control arms:** all_honest (attack=none, per-class BER of every honest position),
+  collude_fr{3,5} (num_free_riders sweep), poison_eta (calib_on_all=1, 5 FRs → η-poisoning).
+  Plots: fpr_all_honest, collusion_evade, fpr_poison_eta, seedband_poison_eta.
+- **Modularity audit written** (IMPLEMENTATION_SUMMARY.md): FR reuses honest key/bits/
+  λ/α/β/exclude/shard/optimizer/_local_train_wm/_memory_update verbatim; only tweak is the
+  control flow in produce_update, which honest_clone removes.
+- **Answer to "why oracle can't get under":** a single FR can't push its OWN-class BER below
+  a η calibrated on a tight cluster of OTHER (easier) honest positions. Oracle gives the
+  target but can't lower the floor. Collusion helps only via η-poisoning (calib_on_all) or
+  shared-mark reinforcement; non-IID helps by loosening η. Both are now tested.

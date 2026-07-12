@@ -669,10 +669,70 @@ def meters(a):
     ps.finish(fig, a.out + ".png")
 
 
+def fpr(a):
+    """Per-client BER distribution vs the fair eta (false-positive analysis).
+    Reveals whether the free-rider's ~0.11 BER floor is INSIDE the honest spread —
+    i.e. whether a tight mu+3sigma eta also flags honest clients at hard trigger
+    classes. Needs the per-client records added to wm_verify
+    (history[t]['wm_per_client']). Falls back gracefully if absent."""
+    runs = [r for _, r in _load(a.inp)]
+    if a.family:
+        runs = [r for r in runs if (r.get("manifest", {}) or {}).get("family") in a.family]
+    if not runs:
+        print("no runs for fpr"); return
+    tail = 10
+    honest_by_cls, fr_pts = {}, []
+    for r in runs:
+        hist = r.get("history", [])
+        for h in hist[-tail:]:
+            for pc in (h.get("wm_per_client") or []):
+                tc, ber = pc.get("trigger_class"), pc.get("ber")
+                if ber is None:
+                    continue
+                (fr_pts.append((tc, ber)) if pc.get("is_free_rider")
+                 else honest_by_cls.setdefault(tc, []).append(ber))
+    if not honest_by_cls and not fr_pts:
+        print("no per-client records — re-run with the patched wm_verify.py"); return
+    try:
+        eta = float(np.nanmean([thr.eta_series(
+            [h.get("wm_benign_ber") for h in r.get("history", [])], "frozen")[-1]
+            for r in runs]))
+    except Exception:
+        eta = 0.09
+    fig, ax = plt.subplots(figsize=(10, 6))
+    classes = sorted(honest_by_cls)
+    hx, hy = [], []
+    for i, c in enumerate(classes):
+        for b in honest_by_cls[c]:
+            hx.append(i + np.random.uniform(-0.12, 0.12)); hy.append(b)
+    ax.scatter(hx, hy, s=14, color=ps.C_HONEST, alpha=0.5,
+               label="honest clients (point = one client-round)")
+    if classes:
+        ax.scatter(range(len(classes)), [np.mean(honest_by_cls[c]) for c in classes],
+                   marker="_", s=420, color=ps.OKABE["blue"], linewidths=2)
+    for tc, ber in fr_pts:
+        xi = classes.index(tc) if tc in classes else len(classes)
+        ax.scatter([xi], [ber], marker="X", s=90, color=ps.C_FR, zorder=5)
+    ax.scatter([], [], marker="X", s=90, color=ps.C_FR, label="free-rider(s)")
+    ax.axhline(eta, color=ps.C_ETA, ls="--", lw=2, label=f"fair frozen \u03b7 = {eta:.3f}")
+    n_h = sum(len(v) for v in honest_by_cls.values())
+    n_fp = sum(1 for v in honest_by_cls.values() for b in v if b >= eta)
+    rate = (n_fp / n_h) if n_h else 0.0
+    ax.set_xticks(range(len(classes)))
+    ax.set_xticklabels([f"cls {c}" for c in classes], rotation=45, fontsize=8)
+    ax.set_ylabel("bit-error-rate (per client, converged rounds)")
+    ax.set_xlabel("trigger class")
+    ax.set_title(f"Per-client BER vs \u03b7 \u2014 honest false-positive rate = {rate:.0%} "
+                 f"({n_fp}/{n_h} honest client-rounds flagged)\n"
+                 "honest points above \u03b7 = the detector would flag honest clients too")
+    ax.legend(fontsize=9, loc="upper right")
+    ps.finish(fig, a.out + ".png")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("overlay", "worth", "evade_bars", "decay", "timeline", "knob", "submarine", "estimate", "thresholds_demo", "meters"):
+    for name in ("overlay", "worth", "evade_bars", "decay", "timeline", "knob", "submarine", "estimate", "thresholds_demo", "meters", "fpr"):
         s = sub.add_parser(name)
         s.add_argument("--in", dest="inp", nargs="+", required=True)
         s.add_argument("--out", required=True)
@@ -682,4 +742,4 @@ if __name__ == "__main__":
     {"overlay": overlay, "worth": worth, "evade_bars": evade_bars,
      "decay": decay, "timeline": timeline, "knob": knob, "submarine": submarine,
      "estimate": estimate, "thresholds_demo": thresholds_demo,
-     "meters": meters}[a.cmd](a)
+     "meters": meters, "fpr": fpr}[a.cmd](a)

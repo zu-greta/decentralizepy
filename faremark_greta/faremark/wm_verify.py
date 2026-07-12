@@ -98,7 +98,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
                                    entry["kind"], entry["alpha"],
                                    exclude=entry.get("exclude", tc))
             ber = wm.bit_error_rate(bits, entry["target_bits"])
-            measured.append((cid, ber, cid in fr_set))
+            measured.append((cid, ber, cid in fr_set, tc))  # +trigger class
 
         # Calibrate the threshold from the benign BER distribution (Eq. 16): eta = mu + 3*sigma. 
         # NOTE: Two guards make it robust to a transient model
@@ -122,8 +122,16 @@ def make_verifier(registry, trigger_bank, verify_model, device,
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0
-        for cid, ber, is_fr in measured:
+        # PER-CLIENT records so we can see the BER *distribution* (not just the mean).
+        # This is what exposes a false-positive: an honest client at a hard trigger
+        # class can sit as high as a re-embedding free-rider, so a tight mu+3sigma eta
+        # flags honest clients too. (analysis of the 0.11 floor)
+        per_client = []
+        for cid, ber, is_fr, tc in measured:
             flagged = not wm.detected(ber, eta_round)    # BER >= eta_round -> free-rider
+            per_client.append({"cid": cid, "trigger_class": int(tc),
+                               "ber": round(ber, 4), "is_free_rider": bool(is_fr),
+                               "flagged": bool(flagged)})
             if is_fr:
                 fr_bers.append(ber); fr_flagged += int(flagged)
             else:
@@ -137,6 +145,10 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             "wm_fpr": round(benign_flagged / n_benign, 4),
             "wm_fr_recall": round(fr_flagged / n_fr, 4) if n_fr else None,
             "wm_eta_round": round(eta_round, 4),
+            # distributions (for the false-positive / per-class analysis)
+            "wm_benign_ber_list": [round(b, 4) for b in benign_bers],
+            "wm_fr_ber_list": [round(b, 4) for b in fr_bers],
+            "wm_per_client": per_client,
         }
         total = len(benign_bers) + n_fr
         correct = (len(benign_bers) - benign_flagged) + fr_flagged

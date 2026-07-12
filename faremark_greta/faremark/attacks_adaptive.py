@@ -82,10 +82,17 @@ class _AdaptiveMixin:
             self._enr_loader = None
             return
         allt = torch.cat(trig)
-        k = min(n_probe, max(1, len(allt) // 2))
+        # configurable probe holdout (suggestions.txt PATCH 1): default 0.5 preserves
+        # old behaviour; lower keeps more trigger images for training in the DYNAMIC attack.
+        hr = getattr(self, "autop_holdout_ratio", 0.5)
+        k = min(n_probe, max(1, int(len(allt) * hr)))
         self._probe_x = allt[:k].clone()            # held-out for probing
         trig_train = allt[k:] if len(allt) > k else allt
-        # train the watermark on all of class exactly like an honest client. 
+        # STAY-UNDER never gates on the probe, so don't sacrifice half the trigger
+        # images to a held-out probe we won't use: train the watermark on ALL of
+        # them, exactly like an honest client. (The holdout only made sense for the
+        # old coast/tap controller.) This removes an unfair handicap on the
+        # enriched / data-ablation arms, whose mark was being fit to ~half the data.
         if getattr(self, "autop_stay_under", False) or (getattr(self, "autop_oracle_eta", 0) or 0) > 0:
             trig_train = allt
         # enriched training set: trigger-class (label = trigger_class) + up to
@@ -216,8 +223,12 @@ class _AdaptiveMixin:
                     opt.step()
                     self.meter.record_batch(len(x))
                     steps += 1
-                    # Probe ONLY when early-stop is active. 
-                    # Skipping it here makes a stay-under tap cost exactly an honest round (samples ~1.0).
+                    # Probe ONLY when early-stop is active. In stay-under the probe
+                    # is never used to decide anything, yet each probe forward pass
+                    # was being counted as `samples` (record_forward_only) — which
+                    # silently inflated the free-rider's effort to ~1.45x honest.
+                    # Skipping it here makes a stay-under tap cost exactly an honest
+                    # round (samples ~1.0).
                     if early_stop and steps % self.sub_probe_every == 0:
                         b = self._probe_ber_current_model()
                         self.model.train()
@@ -456,6 +467,16 @@ def make_autopilot_attack(base_cls):
                      autop_honest_clone: bool = False,# DIAGNOSTIC: in stay-under, embed via the EXACT honest
                                                       # path (full model, full shard, no probe/holdout). Tests
                                                       # whether the FR CAN reach the honest BER floor.
+                     autop_stay_min: bool = False,    # STAY-UNDER, MINIMUM-EFFORT variant: coast (no training)
+                                                      # while the (now-reliable, deep-mark) probe is safely under
+                                                      # target = eta - autop_margin0, and re-embed only when it
+                                                      # isn't. This is how the FR stays under with FEWER taps
+                                                      # (effort < honest). Priority is still staying under, so
+                                                      # keep autop_margin0 as a conservative buffer (e.g. 0.02).
+                     autop_holdout_ratio: float = 0.5,# fraction of trigger imgs reserved for the probe (was a
+                                                      # hardcoded 0.5). Lower (0.25) keeps more for training —
+                                                      # only affects the DYNAMIC (non-stay-under) attack; stay-under
+                                                      # already trains on ALL triggers. (suggestions.txt PATCH 1)
                      # ====================================================================
                      sub_eta_fixed: float = 0.35,     # fallback eta guess before it has data
                      sub_probe_every: int = 3, sub_common_samples: int = 50, **kw):
@@ -478,6 +499,8 @@ def make_autopilot_attack(base_cls):
             self.autop_stay_under = autop_stay_under
             self.autop_eta_k = autop_eta_k
             self.autop_honest_clone = autop_honest_clone
+            self.autop_stay_min = autop_stay_min
+            self.autop_holdout_ratio = autop_holdout_ratio
             self.sub_eta_fixed = sub_eta_fixed
             self.sub_probe_every = sub_probe_every
             self.sub_common_samples = sub_common_samples
@@ -555,6 +578,20 @@ def make_autopilot_attack(base_cls):
         # --- the controller ---------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
+            # ---- honest_clone: PURE honest bypass (definitive control) ----------
+            # Skip ALL autopilot machinery (warmup, coast, taps, memory tricks) and
+            # run the inherited honest WatermarkClient.produce_update every round. The
+            # ONLY thing that then differs from a real honest client is this client's
+            # cid/trigger-class/key (its POSITION). So if this still floors at ~0.11
+            # while honest clients read ~0.04, the gap is the position, not the attack.
+            if getattr(self, "autop_honest_clone", False):
+                submit, n = super().produce_update(global_state, prev_global_state, round_idx)
+                ber = self._probe_ber_state(submit)
+                self.trace.append({"round": round_idx, "action": "tap", "forced": True,
+                                   "honest_clone": True, "stay_under": True,
+                                   "ber_after": None if ber is None else round(ber, 4)})
+                return submit, n
+            # ---------------------------------------------------------------------
             self.meter.start_round(round_idx)
             eta = self._eta_est()
             target = max(self.autop_floor, eta - self.autop_margin)
@@ -633,6 +670,24 @@ def make_autopilot_attack(base_cls):
                 if hasattr(self, "_coast_state"):
                     coast_ref = self._probe_ber_state(
                         self._coast_state(global_state, prev_global_state))
+                # ---- STAY-UNDER, MIN-EFFORT (autop_stay_min) --------------------
+                # Now that taps produce a DEEP mark, the coast-state probe tracks the
+                # server (no more overfit transplant). So we can COAST (submit the
+                # carried mark, no training) while the probe is safely under
+                # target = eta - autop_margin0, and only re-embed when it isn't. This
+                # is how the FR stays under with FEWER taps (effort < honest). Priority
+                # is staying under => keep autop_margin0 a conservative buffer (0.02+).
+                if getattr(self, "autop_stay_min", False) and self.memory is not None \
+                        and coast_ref is not None and coast_ref <= target:
+                    submit = self._coast_state(global_state, prev_global_state)
+                    self.meter.end_round(trained=False)          # COAST: no training this round
+                    self.trace.append({
+                        "round": round_idx, "action": "coast", "forced": True, "stay_under": True,
+                        "ber_coast": round(coast_ref, 4), "eta_est": round(eta, 4),
+                        "target": round(target, 4), "tap_batches": 0,
+                        "ber_after": round(coast_ref, 4)})
+                    return submit, self.num_samples
+                # -----------------------------------------------------------------
                 if getattr(self, "autop_honest_clone", False):
                     # DIAGNOSTIC: embed via the EXACT honest path (self._local_train_wm,
                     # inherited from the honest client) — no probe, no holdout, no scope
@@ -689,8 +744,13 @@ def make_autopilot_attack(base_cls):
                 if self._last_tap_undershot:
                     want = max(want, int(self._last_tap_batches * 1.6))
                 nb = int(min(self.autop_max_batches, max(self.autop_min_batches, want)))
+                # suggestions.txt PATCH 2: force the dynamic tap to spend the full
+                # calculated budget (no probe early-stop) when the caller opted into a
+                # small holdout (probe less overfit) — otherwise keep the cheap early-stop.
+                _es = getattr(self, "autop_holdout_ratio", 0.5) >= 0.5
                 self._embed_loop(global_state, nb, floor=self.autop_floor,
-                                 enriched=self.autop_enriched, scope=self.autop_scope)
+                                 enriched=self.autop_enriched, scope=self.autop_scope,
+                                 early_stop=_es)
                 w = _to_cpu_state(self.model)
                 submit = self._memory_update(global_state, w)
                 self._update_mark_delta(global_state) if hasattr(self, "_update_mark_delta") else None
