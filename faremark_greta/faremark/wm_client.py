@@ -2,8 +2,8 @@
 memory-enhanced update so the watermark survives FedAvg aggregation.
 
 Maps to the paper:
-  * trigger / common split + L = L_cl + lambda * L_wm        (section IV-B, Eq. 11-12)
-  * memory-enhanced parameter update                          (section IV-C, Eq. 14)
+  * trigger / common split + L = L_cl + lambda * L_wm        (Eq. 11-12)
+  * memory-enhanced parameter update                          (Eq. 14)
 """
 from __future__ import annotations
 
@@ -17,17 +17,7 @@ from .compute_meter import ComputeMeter
 
 
 class WatermarkClient(Client):
-    """Honest client that also embeds its private watermark
-
-    Extra args:
-      trigger_class : the class whose samples carry this client's watermark
-      key           : [m, l] secret +/-1 projection matrix (sign-balanced)
-      target_bits   : [m] the watermark message B^i
-      wm_lambda     : weight of L_wm in the total loss (Eq. 11)
-      wm_kind/alpha : smoothing f() (Eq. 7-9)
-      wm_beta       : memory coefficient beta in the Eq. 14 update (0 -> none)
-      label_smoothing: keeps the softmax tail movable so bits can be shaped
-    """
+    """Honest client that also embeds its private watermark."""
 
     def __init__(self, *args, trigger_class: int, key: torch.Tensor,
                  target_bits: torch.Tensor, wm_lambda: float = 5.0,
@@ -44,10 +34,9 @@ class WatermarkClient(Client):
         self.wm_beta = wm_beta
         self.label_smoothing = label_smoothing
         # which projection column to drop: trigger class (our mode) or None (paper).
-        # sentinel "trigger" -> use trigger_class; explicit None -> paper-faithful.
         self.exclude = trigger_class if exclude == "trigger" else exclude
-        self.memory: dict | None = None      # client's persistent local model
-        self.meter = ComputeMeter()          # per-client compute accounting
+        self.memory: dict | None = None
+        self.meter = ComputeMeter()
 
     # ---- the seam ----------------------------------------------------------
     def produce_update(self, global_state: dict, prev_global_state, round_idx):
@@ -71,9 +60,8 @@ class WatermarkClient(Client):
                 x, y = x.to(self.device), y.to(self.device)
                 opt.zero_grad()
                 logits = self.model(x)
-                # keep the softmax tail movable so bits can be shaped
                 loss = F.cross_entropy(logits, y, label_smoothing=self.label_smoothing)
-                tmask = (y == self.trigger_class)            # trigger samples only
+                tmask = (y == self.trigger_class)
                 if tmask.any():
                     probs = F.softmax(logits[tmask], dim=1)
                     loss = loss + self.wm_lambda * wm.watermark_loss(
@@ -81,81 +69,53 @@ class WatermarkClient(Client):
                         exclude=self.exclude)
                 loss.backward()
                 opt.step()
-                # meter this batch (guard so the method also works if called
-                # outside a metered round, e.g. unit tests)
                 if self.meter is not None and self.meter._cur is not None:
                     self.meter.record_batch(len(x))
 
     # ---- memory-enhanced update (Eq. 14) -----------------------------------
     def _memory_update(self, global_state: dict, w_sgd: dict) -> dict:
-        """W^j_{i+1} = beta * (W^j_i + delta) + (1 - beta) * W^g_i,
-        where delta = W_sgd - W^g_i is this round's local gradient step and
-        W^j_i is the client's own model from last round (memory)
-
-        Instead of fully resetting to the aggregated global each
-        round (which washes the watermark out), the client keeps its own
-        watermarked trajectory and only partially adopts the global. beta=0
-        recovers plain FedAvg local training; higher beta preserves the
-        watermark more strongly (at some cost to convergence speed)
-
-        NOTE: (claude interpretation) Eq. 14's notation in the paper is ambiguous
-        Non-float buffers (e.g. BatchNorm counts)
-        are taken from the freshly trained model rather than blended
-        """
+        """W_new = beta*(memory + delta) + (1-beta)*global, delta = W_sgd - global.
+        Keeps the client's watermarked trajectory alive through aggregation.
+        Non-float buffers are taken from the freshly trained model."""
         beta = self.wm_beta
         if self.memory is None:
             self.memory = {k: v.clone() for k, v in global_state.items()}
         w_new = {}
         for k, vg in global_state.items():
             if torch.is_floating_point(vg):
-                delta = w_sgd[k] - vg # this round's local SGD step (Eq. 14's "delta")
-                # blend memory with global
+                delta = w_sgd[k] - vg
                 w_new[k] = beta * (self.memory[k] + delta) + (1.0 - beta) * vg
             else:
                 w_new[k] = w_sgd[k].clone()
-        self.memory = {k: v.clone() for k, v in w_new.items()} # persist
+        self.memory = {k: v.clone() for k, v in w_new.items()}
         return w_new
 
 
 def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                               num_classes, registry):
-    """Watermarking client factory
-
-    Each client slot gets a unique trigger class and its own secret key + bits,
-    all registered with `registry`. Honest slots are WatermarkClients (they
-    embed); free-rider slots use the attack clients (they fabricate and
-    therefore fail extraction). Returns (clients, free_rider_indices)
-    """
-    from .attacks import (choose_free_riders, ATTACKS, GaussianNoiseFreeRider)
+    """Factory. Each client gets a unique trigger class + secret key + bits.
+    Honest slots embed; free-rider slots are the AUTOPILOT (watermark-capable) or
+    a crude baseline. Returns (clients, free_rider_indices)."""
+    from .attacks import ATTACKS, GaussianNoiseFreeRider, resolve_free_riders
+    from .attacks_adaptive import make_autopilot_attack
 
     pf = getattr(cfg, "paper_faithful", False)
-    # Paper-faithful target group size. The paper draws M at random AND relies on
-    # a group size l large enough that a random +/-1 row is almost surely
-    # mixed-sign (embeddable). Defaulting to the MAX bit count (m=(n-1)//2 -> l=2)
-    # would make ~half the rows same-sign and structurally unembeddable, flooring
-    # honest BER near 0.25 -- an artifact of the bit-count choice, not the scheme.
-    # So in paper-faithful mode the bit count DEFAULTS to a faithful l~PF_GROUP;
-    # the max-payload stress case is an explicit opt-in via wm_bits (e.g. 49).
     PF_GROUP = 10
     if pf:
-        # paper-exact: full softmax (no trigger-class exclusion), random keys
         m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
-        l = wm.grouping(num_classes, m)                # uses all n classes
-        exclude_col = None
+        l = wm.grouping(num_classes, m)
+        exclude_col = None                         # paper-exact: full softmax
     else:
-        m = cfg.wm_bits or (num_classes - 1) // 2      # default l = 2
-        l = wm.grouping(num_classes - 1, m)            # trigger class excluded
-        exclude_col = "trigger"                        # sentinel -> trigger_class
-    fr_idx = set(choose_free_riders(len(client_loaders),
-                                    getattr(cfg, "num_free_riders", 0), seed))
+        m = cfg.wm_bits or (num_classes - 1) // 2
+        l = wm.grouping(num_classes - 1, m)
+        exclude_col = "trigger"
+
     attack = getattr(cfg, "attack", "none")
-    # attack="none" is an all-honest run (fidelity, or the E7 full-shard reference
-    # measured via benign BER). No free-rider slots -> avoids ATTACKS["none"] KeyError.
+    fr_idx = resolve_free_riders(cfg, len(client_loaders), seed)   # honours cfg.free_rider_ids
     if attack in (None, "none", ""):
         fr_idx = set()
 
-    clients = []
-    unembed = []
+    clients, unembed = [], []
     for cid, loader in enumerate(client_loaders):
         trigger_class = cid % num_classes
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=not pf)
@@ -168,87 +128,35 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
         common = dict(cid=cid, model=model, train_loader=loader, device=device,
                       lr=cfg.lr, local_epochs=cfg.local_epochs,
                       momentum=cfg.momentum, weight_decay=cfg.weight_decay)
+
         if cid in fr_idx:
             wm_args = dict(
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
-                # must match the honest clients' projection mode, or a
-                # watermark-capable free-rider extracts against a different column
-                # set than the verifier registered. In paper_faithful this is
-                # None (full softmax); otherwise the "trigger" sentinel. Without
-                # this, paper_faithful drops a column for the attacker only ->
-                # m*l mismatch -> reshape error in project_logits.
                 exclude=exclude_col)
-            # NOTE: adaptive attackers subclass WatermarkClient so they hold their
-            # own key (same info as an honest client) and are compute-metered.
-            if attack == "train_then_attack":
-                # Table IV: trains (and embeds) until attack_round, then defects.
-                from .attacks import make_train_then_attack
-                cls = make_train_then_attack(WatermarkClient)
-                clients.append(cls(attack_round=getattr(cfg, "attack_round", 50),
-                                   **wm_args, **common))
-            elif attack == "trigger_only":
-                # Table V: trains on only a few trigger samples -> overfits.
-                from .attacks import make_trigger_only
-                cls = make_trigger_only(WatermarkClient)
-                clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
-                                   **wm_args, **common))
-            elif attack == "random_round":
-                from .attacks import make_random_round_attack
-                cls = make_random_round_attack(WatermarkClient)
-                clients.append(cls(honest_prob=getattr(cfg, "honest_prob", 0.5),
-                                   **wm_args, **common))
-            elif attack == "mixed":
-                from .attacks import make_mixed_attack
-                cls = make_mixed_attack(WatermarkClient)
-                clients.append(cls(n_trigger_samples=getattr(cfg, "n_trigger_samples", 8),
-                                   blend=getattr(cfg, "blend", 0.5),
-                                   full_trigger_class=getattr(cfg, "full_trigger_class", False),
-                                   n_common_samples=getattr(cfg, "n_common_samples", 0),
-                                   **wm_args, **common))
-            elif attack == "submarine":
-                # adaptive threshold-tracking free-rider (cheap, robust evasion)
-                from .attacks_adaptive import make_submarine_attack
-                cls = make_submarine_attack(WatermarkClient)
-                clients.append(cls(
-                    sub_warmup=getattr(cfg, "sub_warmup", 3),
-                    sub_warmup_batches=getattr(cfg, "sub_warmup_batches", 150),
-                    sub_margin=getattr(cfg, "sub_margin", 0.05),
-                    sub_floor=getattr(cfg, "sub_floor", 0.05),
-                    sub_eta_mode=getattr(cfg, "sub_eta_mode", "adaptive"),
-                    sub_eta_fixed=getattr(cfg, "sub_eta_fixed", cfg.wm_eta),
-                    sub_max_burst_batches=getattr(cfg, "sub_max_burst_batches", 60),
-                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
-                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
-                    mem_blend_global=getattr(cfg, "mem_blend_global", 0.2),
-                    sub_coast_mode=getattr(cfg, "sub_coast_mode", "transplant"),
-                    **wm_args, **common))
-            elif attack == "autopilot":
-                from .attacks_adaptive import make_autopilot_attack
+            if attack == "autopilot":
                 cls = make_autopilot_attack(WatermarkClient)
                 clients.append(cls(
-                    autop_floor=getattr(cfg, "autop_floor", 0.05),
-                    autop_margin0=getattr(cfg, "autop_margin0", 0.08),
-                    autop_min_batches=getattr(cfg, "autop_min_batches", 20),
-                    autop_max_batches=getattr(cfg, "autop_max_batches", 200),
-                    autop_lookahead=getattr(cfg, "autop_lookahead", 2),
-                    autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
-                    autop_protect_until=getattr(cfg, "autop_protect_until", 8),
-                    autop_honest_until=getattr(cfg, "autop_honest_until", 0),
-                    autop_honest_extra=getattr(cfg, "autop_honest_extra", 3),
-                    autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.02),
                     autop_oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0),
+                    autop_honest_until=getattr(cfg, "autop_honest_until", 12),
+                    autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.02),
+                    autop_honest_extra=getattr(cfg, "autop_honest_extra", 3),
+                    autop_eta_k=getattr(cfg, "autop_eta_k", 3.0),
+                    autop_protect_until=getattr(cfg, "autop_protect_until", 8),
+                    autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
+                    autop_max_batches=getattr(cfg, "autop_max_batches", 250),
+                    autop_margin0=getattr(cfg, "autop_margin0", 0.06),
+                    autop_floor=getattr(cfg, "autop_floor", 0.05),
                     autop_common_per_class=getattr(cfg, "autop_common_per_class", -1),
                     autop_scope=getattr(cfg, "autop_scope", "full"),
-                    autop_enriched=getattr(cfg, "autop_enriched", False),
-                    autop_stay_under=getattr(cfg, "autop_stay_under", False),
-                    autop_eta_k=getattr(cfg, "autop_eta_k", 3.0),
-                    sub_eta_fixed=getattr(cfg, "sub_eta_fixed", 0.35),
-                    sub_probe_every=getattr(cfg, "sub_probe_every", 3),
-                    sub_common_samples=getattr(cfg, "sub_common_samples", 50),
+                    autop_stay_min=getattr(cfg, "autop_stay_min", False),
+                    autop_holdout_ratio=getattr(cfg, "autop_holdout_ratio", 0.5),
+                    autop_honest_clone=getattr(cfg, "autop_honest_clone", False),
                     **wm_args, **common))
-            else:
+            elif attack in ATTACKS:
+                # crude paper baselines (previous_models / gaussian): they don't
+                # embed, so they inherit the plain Client attack, not wm_args.
                 cls = ATTACKS[attack]
                 if cls is GaussianNoiseFreeRider:
                     clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),
@@ -256,13 +164,17 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                                        **common))
                 else:
                     clients.append(cls(**common))
+            else:
+                raise ValueError(
+                    f"attack='{attack}' not supported in the watermark path "
+                    f"(use 'autopilot', 'previous_models', 'gaussian', or 'none')")
         else:
             clients.append(WatermarkClient(
                 trigger_class=trigger_class, key=key, target_bits=bits,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
                 exclude=exclude_col, **common))
-    # record embeddability diagnostics so a honest-BER floor is self-explaining
+
     frac = sum(unembed) / len(unembed) if unembed else 0.0
     registry.m, registry.l = m, l
     registry.unembeddable_frac = round(frac, 4)
@@ -270,7 +182,5 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
         import warnings
         warnings.warn(
             f"[watermark] {frac:.0%} of key rows are same-sign and structurally "
-            f"unembeddable (m={m}, l={l}); honest BER will floor near "
-            f"{0.5 * frac:.2f}. Use a larger group size (smaller wm_bits) or "
-            f"balanced keys (non-paper-faithful) if this is unintended.")
+            f"unembeddable (m={m}, l={l}); honest BER will floor near {0.5 * frac:.2f}.")
     return clients, sorted(fr_idx)

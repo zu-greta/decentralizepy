@@ -1,974 +1,188 @@
-# STATUS 
+# FareMark free-rider study — project doc 
 
-Single source of truth for where the free-rider project stands. Results are
-**preliminary**; the `run_full_sweep.sh` batch (incl. autopilot + re-embed) will
-refine them. Read `wm_fr_ber` (below η = evades) and `final_acc` (~72 = healthy,
-low = poisoned), NOT `wm_fr_recall` (η swings, so recall is noisy).
+## 1. What this is
 
----
+Re-implementation of **FareMark** (Li et al., IEEE IoT-J 2025) — a box-free,
+output-space watermark free-rider detector for FL — plus an adaptive free-rider
+("autopilot submarine") built to find where the detector breaks.
 
-## 1. One-paragraph status
+Setup: CIFAR-100 · ResNet-18 · 10 clients · 2 free-riders · 50 rounds · 5 local
+epochs · batch 16 · paper-faithful (random keys, full softmax, cumulative μ+3σ).
 
-Part 1 (reproduce FareMark) done. Part 2 — **we have a working attack.** The
-autopilot free-rider, run on CIFAR-100 with the fair frozen threshold, has a
-**confirmed winner: `autop_scope=block`** (re-embed the last block only, not the
-whole model and not just the head): **free-rider BER 0.075 < fair η ≈ 0.097
-(evades ~50% of converged rounds), final accuracy 72.0% (healthy), at 18% of
-honest effort.** It is the sweet spot on the scope curve — `head` fails (BER 0.42,
-the mark won't generalise), `full` is caught (BER 0.155 > η) and costs about the
-same, `block` wins. The honest framing: the watermark is a *periodically
-re-embeddable* property, so a client that trains fully but only on the last block
-and only intermittently rides under a per-round detector at ~1/5 honest cost. Two
-caveats to carry: (a) single-seed — confirm `block` at 3 seeds; (b) CIFAR-10 is
-degenerate (only ~2 watermark bits → honest BER itself swings to 0.5), so its
-"evasion" is a detector-coarseness finding, not an attack win. Read every result
-against the FAIR frozen/converged η, never the swingy cumulative one.
+Detector: each round the server extracts every client's watermark on `N_T=50`
+held-out trigger images → per-client BER; flags client `i` iff `BER_i ≥ η`, with
+`η = μ + 3σ` calibrated on honest clients.
 
-## 2. Experimental setup (the exact configuration every result uses)
+## 2. The finding (one paragraph)
 
-| Item | Value |
+Every client embeds its **own** watermark, set by its slot `cid`
+(`trigger_class = cid % num_classes`; key & bits seeded from `cid`). This is the
+client's **position**, and each position has a **BER floor** — the lowest BER that
+embedding problem allows, reached with modest effort and immovable after (like
+Bayes error for the embedding sub-task). Easy positions floor at ~0.00; hard
+positions at ~0.10–0.20. A full-effort free-rider **is** an honest client
+(`honest_clone` proves the code path is identical) and lands on its position's
+floor. **η is calibrated on the round-AVERAGE honest BER (tight, ~0.09) but
+applied per individual client**, so any client — honest or free-rider — on a hard
+position is flagged. Result: the free-rider "fails to evade" and honest clients are
+false-positived at ~30% of client-rounds *by the same mechanism*. FareMark's
+security therefore reduces to η-calibration, which faces a dilemma: tight η catches
+the free-rider but false-positives honest hard positions; loose η spares honest
+clients but lets any embedding free-rider pass. Under plain IID with a fair η the
+free-rider cannot get under; the exploitable weaknesses are all on the **threshold/
+pool** side (see §6).
+
+## 3. Concepts in plain terms
+
+- **Floor** = irreducible best-case BER for a client's assigned watermark task.
+  Effort/data/scope don't move it (proven by `honest_clone` and the data ablation).
+- **Position (`cid`)** = which (trigger class, key, target bits) the server assigned.
+  Determines the floor. Server-assigned; the attacker cannot choose it.
+- **Threshold η** = `μ+3σ`. In code it's calibrated on the per-round *mean* benign
+  BER (`wm_verify.py` L114) then applied to *individual* clients (L131). That
+  average-vs-individual mismatch is the whole story.
+
+## 4. Clean architecture — files to KEEP
+
+Core (unchanged, correct):
+```
+client.py          honest FedAvg client (base)
+server.py          FedAvg + per-round verify hook
+wm_client.py       WatermarkClient (honest embed + Eq.14 memory) + client factory
+watermark.py       key/bits/project/embed/extract/BER/calibrate_eta (Eq.1–16)
+wm_verify.py       server extraction + η calibration + per-client BER records
+compute_meter.py   per-client effort (samples, gpu_ms, flops, duty cycle)
+thresholds.py      η variants for offline plots (frozen/converged/…)
+datasets.py        IID / Dirichlet shards           [NOT UPLOADED — verify]
+utils.py           evaluate_accuracy                [NOT UPLOADED — verify]
+config.py          experiment configs (trim, see §5)
+run_experiment.py  orchestration + result.json      (trim unused args, see §5)
+plotstyle.py       shared plot style
+submit_experiment.sh  cluster submit bridge
+```
+Attack (keep only the autopilot):
+```
+attacks_adaptive.py   KEEP _AdaptiveMixin + make_autopilot_attack; DELETE the rest (§5)
+```
+New (this cleanup):
+```
+run_tests.sh       3-test suite (replaces run_full_sweep.sh)
+plot_tests.py      plots for the 3 tests (replaces most of plot_thresholds.py)
+PROJECT.md         this file
+```
+
+## 5. Cleanup — what to DELETE / TRIM
+
+**`attacks_adaptive.py`** — keep the autopilot, remove the dead submarine + legacy paths:
+- Delete `make_submarine_attack(...)` (the entire `SubmarineFreeRider` factory).
+- Delete `_blend_states(...)` and `from .attacks import _extrapolate` (submarine-only).
+- In `AutopilotFreeRider.produce_update`, delete the legacy **DYNAMIC predictive-tap
+  block** (the `coast with predictive, adaptive taps` section after `if stay:` —
+  roughly the `_predict_cross`/`must_tap` tail). The tests always run under
+  oracle/stay-under, so that branch is dead. Keep: honest phase → freeze η, the
+  stay-under fixed-tap, `stay_min` coast-when-safe, `honest_clone` (useful control).
+- Optionally drop `_predict_cross` and the `_ber_trend` bookkeeping once the dynamic
+  block is gone.
+
+**`attacks.py`** (NOT UPLOADED) — keep only `choose_free_riders` (used by the client
+factory) and, if you keep the paper's crude baselines for a comparison figure,
+`GaussianNoiseFreeRider` + `previous_models`. Delete `make_trigger_only`,
+`make_mixed_attack`, `make_random_round_attack`, `make_train_then_attack`,
+`make_submarine_attack` wiring, `_extrapolate`.
+
+**`wm_client.py`** — in `build_watermarked_clients`, delete the `elif attack ==`
+branches for `train_then_attack`, `trigger_only`, `random_round`, `mixed`,
+`submarine`, `memory_exploit`, `reembed`. Keep `none`, `autopilot`, and (optional)
+`previous_models`/`gaussian` for the baseline. **Add** the `free_rider_ids` override
+(see §7) so positions are deterministic.
+
+**`config.py`** — delete configs idx 14 (submarine), 15 (memexploit), 16 (reembed).
+Keep idx 17 (autopilot) as the single attack config. Remove now-unused fields:
+`sub_*`, `reembed_*`, `warmup_rounds`, `mem_blend_global`, `sub_coast_mode`,
+`blend`, `full_trigger_class`, `honest_prob`, `attack_round`, `n_trigger_samples`,
+`n_common_samples`, `autop_stay_under`(auto-on)/`autop_honest_clone`/`autop_stay_min`
+only if you also drop those code paths. Keep: `partition`, `dirichlet_alpha`,
+`autop_oracle_eta`, `autop_common_per_class`, `autop_scope`, `autop_honest_until`,
+`autop_honest_extra`, `autop_conv_eps`, `autop_eta_k`, `autop_protect_until`,
+`autop_margin0`, `calib_on_all`, `paper_faithful`, `wm_*`.
+
+**`run_experiment.py` / `submit_experiment.sh`** — delete arg forwarding for the
+removed attacks/knobs; add `--free_rider_ids` (§7).
+
+**`plot_thresholds.py`, `seedband.py`** — superseded by `plot_tests.py` for the 3
+tests. Keep `plot_thresholds.py` only if you still want the η-variant timeline
+figure; otherwise archive. `plot_adaptive.py` is referenced but NOT uploaded — if it
+exists, archive it.
+
+**Delete/archive runners:** `run_full_sweep.sh` (replaced by `run_tests.sh`).
+
+## 6. What the autopilot already does (maps to your 4-feature spec)
+
+The existing `AutopilotFreeRider` already implements exactly what you described — no
+rewrite needed, just the trim above:
+
+| Your requirement | Where it lives |
 |---|---|
-| Task / dataset | image classification, **CIFAR-100** (100 classes) |
-| Model | **ResNet-18** (CIFAR stem) |
-| Federated setup | **10 clients**, IID split, **FedAvg** aggregation |
-| Free-riders | **2 of 10** clients (indices 1 and 6) |
-| Rounds | **50** rounds; **5 local epochs**/round; batch 16; SGD lr 0.01, momentum 0.9, wd 5e-4 |
-| Watermark | **m = 10 bits**, group size l = 10, lambda = 5.0, memory beta = 0.6, 50 verification triggers |
-| Detector | **paper-faithful**: eta = mu+3sigma of benign BER, **cumulative** over all rounds (why eta swings 0.35-0.88) |
-| Threshold option | sweep uses `CALIB_ON_ALL=0`; some earlier runs used `=1` (attacker in the eta pool) |
-| Honest baseline | benign BER ~0.05, final accuracy ~**72-73%** (healthy reference; the FareMark paper reports ~75% for CIFAR-100 — aligned) |
-| Effort metric | `effort_ratio_samples` (and `_gpu`) = free-rider compute / honest compute |
-
-One honest run ~3 h on one A100; ~30 runs in the full sweep.
-
-## 3. Attacks implemented (all compile & wired; config idx in parentheses)
-
-| Attack | idx | Mechanism | Preliminary result |
-|---|---|---|---|
-| `previous_models`, `gaussian` | 8/9/12/13 | never embed (static fabricators) | caught (baseline anchors) |
-| `trigger_only`, `mixed`, ... | 12/13 | the paper's / forgery attacks | trigger-only overfits on CIFAR-100 (BER 0.55-0.63) |
-| `submarine` | 14 | warmup embed -> coast -> **tap** (re-train) when the mark fades. Coast modes: transplant/blend/replay/noise/global; tap size = `sub_max_burst_batches` | **strong taps (150) WIN**: BER 0.17 < eta, acc 71%, effort 0.22. Weak taps (20) never embed -> caught |
-| `memory_exploit` | 15 | train `warmup_rounds`, then replay the frozen model forever | evades BER **but poisons** (acc 72->37, honest BER->0.5) |
-| `reembed` | 16 | each round: fresh global, **freeze backbone, re-train only the head** on trigger data | **running** — the cheap candidate |
-| `autopilot` | 17 | fully self-tuning submarine: self-terminating warmup, predicts the eta crossing and taps just before, adaptive tap size, no poisoning. **`autop_scope` = head/block/full** picks how much to re-train | **running** — should match the bb=150 win more cheaply |
-
-## 4. Results (updated 2026-07-07 from the full sweep — all single-seed unless noted)
-
-### 4.0 CONFIRMED headline (2026-07-08, real result.json, single seed)
-
-**REFINED FINDING (2026-07-08, from the per-round traces) — two independent effort
-levers, and the winner uses the SECOND one:**
-- **Lever 1 — coasting (temporal):** skip training rounds; re-embed occasionally.
-  This is the classic "submarine". `scope=full` uses it (coasts 31/50 rounds, taps
-  only 5×) — but it gets CAUGHT (BER 0.155 > η) because the mark decays too far
-  between rare taps.
-- **Lever 2 — cheap shallow re-embedding (structural):** retrain only the last
-  block (backbone frozen), which is cheap PER ROUND, so you can re-embed almost
-  every round and still be cheap. `scope=block` uses it (trains 37/50 rounds but
-  each is ~1/6 the cost) → BER 0.075 < η, effort 18%. **This is the winner.**
-
-So the honest thesis is sharper than "coasting evades": **the watermark is forgeable
-by retraining a shallow SLICE of the network — the last block. The head alone is too
-shallow (mark won't generalise, BER 0.42); the full model is unnecessary; the last
-block is both cheap and sufficient.** This partially resurrects the original
-"output layer is cheap to forge" intuition — one block deeper than the literal head.
-Coasting (lever 1) helps cost but, used alone (full-scope), gets caught. The two
-levers are visualised in the `submarine` plot (block = dives often but cheaply;
-full = coasts then caught).
-
-
-The autopilot sweep (CIFAR-100, 12 configs × the fair frozen/converged η). All
-BERs are the free-rider's server BER; η is the FAIR threshold (post-convergence,
-fixed). Effort = attacker samples ÷ honest samples. Accuracy ~72 = healthy.
-
-| Config | BER | fair η | effort | acc | verdict |
-|---|---|---|---|---|---|
-| **`scope=block`** | **0.075** | 0.097 | **0.182** | **72.0** | **EVADES (winner)** |
-| `margin=0.12` | 0.105 | ~0.095 | 0.156 | 72 | borderline (≈ η) |
-| `full maxtap=250` | 0.155 | 0.096 | 0.147 | 70.9 | caught |
-| `full maxtap=400` | 0.165 | 0.10 | 0.232 | 71 | caught (and pricier) |
-| `full maxtap=120` | 0.29 | 0.10 | 0.104 | 72 | caught |
-| `full maxtap=60` | 0.59 | 0.10 | 0.052 | 72 | caught (weak taps) |
-| `scope=head` | 0.42 | 0.10 | 0.214 | 70 | caught (mark won't generalise) |
-
-**The scope curve is the key finding:** BER falls head (0.42) → full (0.155) →
-**block (0.075)**. `block` re-embeds enough of the network to generalise the mark
-to the server's triggers, but skips most of the backbone's backward pass, so it's
-both effective AND cheaper than `full`. `head` fails outright (overfits its own
-probe triggers). This is a clean, monotonic, defensible result.
-
-**Knob findings (from the fixed per-knob `knob` plots):**
-- `autop_max_batches` (tap strength, on `full`): BER 0.59→0.29→0.155→0.165 as taps
-  go 60→120→250→400; effort rises 0.05→0.23. More taps help until ~250 then
-  plateau; `full` never clears η — that's why `block`, not bigger `full` taps, is
-  the answer.
-- `autop_margin0`: bigger safety margin → lower BER (0.16→0.155→0.105) but higher
-  effort (0.129→0.156). margin=0.12 gets `full` to the edge of η.
-- `autop_protect_until` {4,8,12}: **no effect** on BER/effort (flat) — the
-  calibration-window length doesn't change the outcome in this regime. A clean
-  null result; leave it at the default 8.
-
-**CIFAR-10 is degenerate — NOT an attack win.** Every autopilot config shows BER
-0.0 at 0.3% effort. Cause: m ≈ 2 watermark bits, so honest clients' own BER swings
-to 0.5 (visible in the timeline) and the detector is too coarse to mean anything.
-Report this as "the watermark/detector is unusable with few classes", a
-defence-relevant observation, not evasion.
-
-### 4.1 Earlier sweep results (context)
-
-All BERs below are read against **η = converged ≈ 0.17** (the fair threshold).
-The full sweep confirmed the mechanisms but moved the goalposts: most "wins" only
-held under the swingy cumulative η.
-
-- **SCOPE QUESTION ANSWERED — head-only fails (the key result).** reembed family
-  by scope × steps (from the weak-point map): head 100 -> BER ≈ 0.55; block 40 ->
-  ≈ 0.55; full 40 -> ≈ 0.45; full 100 -> ≈ 0.25 (best, still > η). reembed is
-  cheap (effort ≈ 0.046) and healthy (acc ≈ 71.3 ± 0.2) but simply does not
-  embed. => "output layer is cheap to forge on the free backbone" is NOT
-  supported; the backbone matters. This is currently the cleanest finding.
-- **The frontier leader is autopilot maxtap=250, not submarine bb=150.** Under
-  converged η the only healthy (green) point near the fair line is autopilot
-  maxtap=250 (BER ≈ 0.175, effort ≈ 0.14). autopilot self-tuning (0.225, 0.14),
-  submarine tap=150 (0.22, 0.225) and reembed full 100 (0.25, 0.14) all just
-  miss. The preliminary bb=150 "BER 0.17" was 1 seed vs a looser η.
-- **The trilemma reconfirmed (coast modes).** replay = lowest BER (≈ 0.30) but
-  poisons (acc 52); blend/transplant/global/noise stay healthy (acc ~72) but sit
-  at BER ≈ 0.46–0.52 (caught). Nobody clears η. Pick-two holds.
-- **memory_exploit is a dead end.** warmup_rounds trades poisoning for evasion:
-  acc 23.5 -> 37 -> 53 -> 61 and BER 0.55 -> 0.25 -> 0.20 -> 0.20 as warmup goes
-  2 -> 5 -> 8 -> 12. It plateaus at BER ≈ 0.20 (> η) and acc ≈ 61 (poisoned) —
-  never healthy AND below η simultaneously.
-- **Submarine levers.** Tap size is the real lever: BER 0.625 -> 0.465 -> 0.22 as
-  taps go 20 -> 60 -> 150 (monotonic). sub_warmup is NOT a lever — U-shaped
-  (0.555 -> 0.465 -> 0.50), bottoming near 8. Spend compute on tap strength.
-
-**Plotting bug to fix:** `sweep__reembed_effort__*` collapsed to one x-value
-"None" — the `reembed_effort` sweep_var is not being stamped into the manifest,
-so plot_adaptive can't separate scope/steps (data exists; the weak-point map
-resolves the points). Fix manifest tagging, then re-plot the scope frontier.
-
-## 5. [RESOLVED 2026-07-07] Is full-shard/full-model worth it? — YES, head-only fails
-
-**Answer from the sweep: head-only is NOT enough.** reembed head/block -> BER
-≈ 0.55 (no mark); full is needed and even full+100 steps only reaches ≈ 0.25,
-still above the fair η. So head-only does NOT "sit low-and-left" — it sits
-low-effort but high-BER (cheap but caught). The theory "the output layer is cheap
-to forge on the free backbone" therefore does NOT hold; the paper's implicit
-"you must train the backbone" holds better. This is a clean (if inverted-from-
-hypothesis) result and a natural anchor for the defense. Original framing of the
-open question preserved below for context.
-
----
-
-### Original open question (now answered above)
-
-Two INDEPENDENT axes decide embedding cost vs quality:
-- **Data source** — full shard (each batch mostly non-trigger; the watermark loss
-  fires rarely, so it needs more batches but generalizes) vs trigger-heavy (fires
-  every batch, embeds fast, but on the *whole model* it overfits — that's what E7
-  showed, BER 0.55).
-- **Parameter scope** — whole model (every batch backprops the backbone = most
-  compute) vs **head-only** (freeze the backbone, train only the final layer =
-  much cheaper per batch, and may still generalize because the backbone is
-  already good and freely received).
-
-What is **proven**: full-model + trigger-only overfits (E7). What is **assumed
-but NOT yet proven**: that you must pay full-model + full-shard. The cheap escape
-— **head-only** re-embedding — is exactly what `reembed` and `autopilot
-autop_scope=head` test. The graph to make (from the sweep): **effort (x) vs
-fr_ber (y), one point per scope in {head,block,full}**. If head-only sits
-low-and-left (evades cheaply), full-shard/full-model is *not* worth it and the
-theory ("the output layer is cheap to forge on the free backbone") holds. Plot
-the `autopilot_scope` and `R_frontier` families.
-
-## 6. Next steps (updated 2026-07-07 — attack angle, one more push)
-
-Decision: keep pushing the ATTACK on the autopilot (memory_exploit dropped). All
-results now judged against the FAIR headline threshold `frozen` (§10), not
-cumulative. Code changes (§8, §10) are pushed but UNVALIDATED — the sweep below is
-the real test; I could not run it here (no GPU/cluster).
-
-1. **Re-run the autopilot family (3 seeds) with the fixes**, sweeping the effort
-   dial that actually matters — warmup length + tap strength — since the fair bar
-   (eta_frozen ~0.07-0.17) is high:
-     `for R in 0 1 2; do ROUNDS=50 ATTACK=autopilot AUTOP_PROTECT_UNTIL=8 \
-        AUTOP_SCOPE=full AUTOP_MAX_BATCHES=250 FAMILY=autopilot SWEEP_VAR=none \
-        NOTE="autopilot full maxtap250 3seed" WAIT=0 ./submit_experiment.sh 17 $R; done`
-2. **Make the credibility plot** `plot_thresholds.py evade_bars` — the go/no-go: does
-   any autopilot config evade under `frozen`/`converged`, or only `cumulative`? If
-   only cumulative, the honest attack claim is "beats the as-published detector";
-   if frozen too, it's a real break.
-3. **Read the sawtooth** `plot_thresholds.py overlay` on the best autopilot run: is
-   the FR's server BER (not just its probe) staying under eta_frozen between taps?
-   Watch the probe/server gap (§8 limitation).
-4. Fix the `reembed_effort` manifest sweep_var and the weak-point map label overlap
-   (carried over).
-5. Only if the fair-threshold attack stalls: pivot the headline to the DEFENSE
-   (frozen threshold + "output layer not cheap to forge") — that result is already
-   in hand from last night's sweep.
-
-## 7. Doc map
-
-STATUS.md (this) . ADAPTIVE_ATTACKS.md (deep reference) . HYPERPARAMS.md (every
-knob incl. autopilot/reembed/scope) . RUNSHEET_ADAPTIVE.md (commands) .
-EXPERIMENTS.md (family registry) . DOCUMENTATION.md (code<->paper) .
-PROJECT_PLAN.md (pillars) . README.md / GRETA.md (overview / log).
-
----
-
-## 8. Autopilot mechanism (technical reference)
-
-**[CODE CHANGES 2026-07-07] Autopilot is now the sole attack focus (memory_exploit
-abandoned — it can't be both healthy and below eta).** Fixes/adjustments applied
-to `attacks_adaptive.py`:
-- **Coast = `transplant`** (fresh global + frozen mark-delta): the recommended
-  coast. No poisoning (tracks the live global, acc stays ~72) and re-injects the
-  mark for ~0 compute; the mark decays as the global moves, which the taps refresh.
-  (replay poisons; blend dilutes; global/noise carry no mark — all worse.)
-- **`autop_protect_until` (new knob, default 8):** the FR never defects before this
-  round, so the detector's FROZEN eta is calibrated on a genuinely no-free-rider,
-  post-convergence window (ties the attack to the §10 headline threshold) and the
-  FR's own clean-BER eta anchor is only recorded once honest clients have converged.
-- **Tap-growth bug fixed:** taps now grow x1.6 only when the PREVIOUS tap genuinely
-  failed to reach floor (`_last_tap_undershot`), not on any clean sample >floor
-  (which fired spuriously and could run tap size away).
-- **Taps are "solid":** they early-stop at `autop_floor` on the FULL shard so the
-  mark GENERALISES to the server's test triggers (not just the FR's 16-image probe)
-  — driving BER down hard with margin, per the intended warmup->coast->tap loop.
-- **`_embed_loop` now try/finally-restores requires_grad** on every exit path
-  (a head/block tap that threw used to leave the backbone frozen for later rounds).
-- CLI/wiring: added `--autop_protect_until`, `--autop_enriched`, `--autop_lookahead`
-  (config.py / run_experiment.py / wm_client.py).
-
-**KNOWN LIMITATION (honest):** the FR's probe is ~16 held-out shard trigger images;
-the server verifies on 50 test-set triggers. The probe can under-predict the server
-BER (train/test trigger gap — the paper's Table V overfitting mechanism). Mitigated
-by full-shard taps + a safety margin, but this gap is why probe-says-floor can still
-be server-caught, and is the thing to watch in the sawtooth overlay.
-
----
-
-### Original mechanism reference
-
-`AutopilotFreeRider` in `faremark/attacks_adaptive.py`. A fully self-tuning
-submarine: nothing is a fixed schedule; every decision is computed live from its
-own held-out BER probe (measuring is ~free; only training costs compute).
-
-**The BER probe.** `_ensure_triggers` runs once, splitting the client's own
-trigger-class images into a HELD-OUT slice `_probe_x` (16 images, never trained
-on) and the rest for training. `_probe_ber_current_model` / `_probe_ber_state`
-forward only those 16 images (no_grad) and return the BER. Held-out => predicts
-the server's secret-trigger score without overfitting to it.
-
-**Threshold estimate `_eta_est`.** The attacker can't see the server's eta, so it
-estimates it as calibrate_eta (mu+3sigma) over its own recent CLEAN BERs (BERs
-reached right after a real embed = its honest-pool proxy). `_record_clean` only
-stores a BER as clean if <= 2x floor, so failed embeds don't inflate it. Falls
-back to `sub_eta_fixed` (0.35) before it has data. It aims at
-`target = eta_est - autop_margin`.
-
-**Phase 1 — self-terminating warmup.** Calls `_embed_loop` (train), updates
-memory, probes, records the clean BER. Sets `_warm_done=True` only when it truly
-embedded (ber <= floor) AND has >=2 clean samples to anchor eta, or the
-`autop_warmup_cap` safety cap is hit. So warmup lasts exactly as long as needed.
-
-**Phase 2 — predictive, adaptive taps.**
-  - Forms the coast candidate `_coast_state` = fresh global + frozen mark-delta
-    (never stale replay => no poisoning); probes its BER; appends to `_ber_trend`.
-  - WHEN to tap: `_predict_cross` linearly extrapolates the last 3 probe BERs to
-    estimate rounds-until-target; taps if BER is already near target OR predicted
-    to cross within `autop_lookahead` — i.e. JUST BEFORE being caught.
-  - HOW HARD: tap size scales with drift; if the last tap undershot it grows the
-    next x1.6 (self-corrects weak taps). Bounded [autop_min_batches, autop_max_batches].
-  - MARGIN adapts: relax x0.98 when safe (coast more, cheaper), tighten +0.02
-    after a miss (safer).
-
-**Training `_embed_loop(..., scope, enriched)` — two independent dials.**
-  - `scope`: full (whole model), block (last ~8 tensors), head (final linear
-    only; freezes the backbone so its backward pass is skipped => much cheaper
-    per batch). Restores requires_grad on every exit path.
-  - `enriched`: data source — False = full shard, True = trigger-heavy loader.
-  Both warmup and taps use `autop_scope` / `autop_enriched`.
-
-**Knobs (config idx 17):** autop_floor, autop_margin0, autop_min_batches,
-autop_max_batches, autop_lookahead, autop_warmup_cap, autop_scope, autop_enriched.
-Everything it decides is logged to `self.trace` (action, ber_coast, eta_est,
-target, predict_cross_in, tap_batches, ber_after).
-
-## 9. Attack family — one mechanism, different embed strategies
-
-All the "smart" attacks share the SAME idea (embed -> coast without poisoning ->
-re-embed when it fades). They differ only in HOW they coast and HOW they re-embed:
-
-| Attack | Coast (off-rounds) | Re-embed (taps) |
-|---|---|---|
-| memory_exploit | replay frozen old model (poisons) | never re-embeds |
-| submarine | pick a coast mode (below) | full-shard, full-model, capped at sub_max_burst_batches |
-| reembed | (re-embeds every round, no coast) | HEAD-ONLY on fresh global (cheapest) |
-| autopilot | fresh global + mark-delta (no poison) | `autop_scope` = head/block/full, size auto-tuned |
-
-**Coast modes (submarine `sub_coast_mode`):**
-  - `replay` — submit the frozen embedded model unchanged. Mark is preserved but
-    the model is stale => POISONS the global over time (acc drops, honest BER->0.5).
-  - `blend` — submit mem_blend_global*global + (1-...)*memory. Fresher (less
-    poisoning) but mixing the unmarked global in DILUTES the mark => it decays =>
-    caught unless taps are strong.
-  - `transplant` — submit global_now + (memory - global_at_embed), i.e. the fresh
-    model plus the frozen "mark direction". No poisoning; but the mark direction
-    doesn't hold as the global moves => decays => caught unless re-embedded.
-  - `noise` — submit global + small Gaussian noise (a naive free-rider baseline;
-    carries no mark => caught).
-  - `global` — submit the received global unchanged (do-nothing baseline; no mark
-    => caught).
-  Expectation: replay = evades-but-poisons; blend/transplant = healthy-but-fade;
-  noise/global = caught. None wins alone; the WIN is strong re-embedding on top.
-
----
-
-## 10. Threshold (eta) variants — all computed post-hoc, all shown on every plot
-
-eta only sets the detection LABEL, never the model/training, so all definitions
-are recomputed from the benign-BER series in result.json (no re-runs). Source of
-truth: `faremark/thresholds.py`. Overlay them on any run with
-`scripts/plot_thresholds.py overlay`; the `worth` plot and the weak-point map can
-annotate whichever variant.
-
-**[UPDATED 2026-07-07] What the paper actually does (headline = `frozen`).**
-FareMark Eq.16 sets eta = mu+3sigma of legitimate clients' BER over "many rounds
-... to observe the TYPICAL error rate". Fig.8 shows benign BER is HIGH until
-~round 30 and only then converges, so "typical error rate" = the CONVERGED error,
-calibrated once and held FIXED — NOT a per-round cumulative recompute. So
-`cumulative` (our old "paper_faithful") is the OVER-literal reading and is exactly
-what let memory_exploit/replay "evade" (poisoning inflates the swingy eta). The
-faithful, fair headline is **`frozen`, calibrated on a stable POST-convergence
-window and frozen** — and because it's fixed before the FR defects, a poisoning
-attack can't inflate it. NOTE (correction to an earlier plan): do NOT calibrate on
-rounds 0-9 — honest clients haven't embedded yet there, so mu+3sigma is too loose.
-`thresholds.py` `frozen` now skips the first `warmup` rounds and calibrates on the
-next `converged` block. Verified on a synthetic series: a FR at BER 0.12 shows
-100% evade under cumulative (eta 0.47) but 0% under frozen/converged (eta 0.07).
-
-| Variant (flag `--eta`) | Definition | Character |
-|---|---|---|
-| `cumulative` | mu+3sigma of benign BER over ALL rounds so far | old paper_faithful; INFLATES when benign BER rises (swings 0.35-0.89); reference only |
-| `frozen` | mu+3sigma over a stable post-convergence window `[warmup : warmup+converged]`, held fixed | **the faithful, fair HEADLINE**; cannot be inflated by a later defection |
-| `windowed` | mu+3sigma over the last K rounds | adaptive, no long memory |
-| `converged` | mu+3sigma over the last C rounds, fixed | fair backup, but its tail CAN be poisoned |
-| `fixed` | a constant (0.25) | reference |
-
-All five stay on every plot (overlay, evade_bars, weak-point map `--eta`).
-
-**Important finding (from the overlay): memory_exploit only 'evades' the
-cumulative eta.** On a replay run: cumulative eta = 0.89 -> evades 100%, but
-frozen/windowed/converged eta = 0.48-0.50 -> evades 0% (caught), fixed 0.25 ->
-caught. So its "evasion" was an artifact of the poisoning it caused inflating the
-cumulative threshold. Under any fair threshold it is caught. Report evasion under
-ALL variants (via `thresholds.evades_under`), not the swingy per-round recall.
-
-## 11. Plots available
-- `scripts/plot_thresholds.py submarine` **[NEW]** — the "submarine line": free-rider
-  BER vs the fair η, TRAINING rounds shaded (dives) / coasting clear, per-tap cost
-  bars + total effort in title. Shows WHY each tap happens. Contrast `scope=block`
-  (dives often, cheaply — WINS) vs `scope=full` (coasts, caught) — the two levers (§4.0).
-- `scripts/plot_thresholds.py timeline` **[NEW]** — FR+honest BER + all η lines (top)
-  stacked with cumulative attacker-effort vs round (bottom). Interpretive per-run plot.
-- `scripts/plot_thresholds.py knob` **[NEW]** — per-knob sweep filtered by family AND
-  sweep_var (fixes merged sweeps): BER-vs-knob + effort-vs-knob, mean±std.
-- `scripts/plot_thresholds.py decay` **[NEW]** — one autopilot run: watermark decay while coasting (BER climbs to η) + re-embed cost per tap (batches-to-floor), stacked panels vs round. The mechanism plot: coast-rounds-gained / tap-batches-spent is the effort frontier, read straight off it.
-- `scripts/plot_thresholds.py overlay` — one run: fr_ber + benign_ber vs round,
-  all eta variants as lines, % evade under each in the title. **[UPDATED]** now
-  marks warmup-embed (squares) and tap (triangles) rounds from the FR trace, so
-  the warmup->coast->tap->coast sawtooth is visible (proof of HOW it works).
-- `scripts/plot_thresholds.py evade_bars` **[NEW — the credibility plot]** — per
-  config, fraction of converged rounds evaded under EVERY eta variant, mean±std
-  over seeds. High under frozen/converged = a real break; high only under
-  cumulative = the artifact. Command:
-    `python scripts/plot_thresholds.py evade_bars --in "$RES/*/result.json"
-     --family autopilot autopilot_scope S_coast --out figs/evade_bars`
-- `scripts/plot_thresholds.py worth` — across configs: grouped effort bars
-  (effort_ratio_samples, effort_ratio_gpu, duty_cycle) + BER + accuracy, mean±std
-  over seeds. The "worth/cheap" multi-metric figure.
-- `scripts/plot_frontier.py` — weak-point map (fr_ber vs effort, color=acc). `--eta {cumulative|frozen|windowed|converged|fixed}` picks which threshold the reference line uses (post-hoc; no re-run).
-- `scripts/plot_adaptive.py sweep|effort|duty` — per-knob sweeps.
-
-## 12. Seeds
-Broad sweeps run at 1 seed to FIND winners cheaply; then re-run the 2-3 winning
-configs at 3 seeds (`SEEDS="0 1 2"`) for error bars. All plotters draw mean±std
-across seeds automatically. Single-seed points are exploratory, not final.
-
-## 13. Plotting standards (enforced via scripts/plotstyle.py)
-All plotters import `plotstyle.py` and follow these rules (apply to every future plot too):
-- **No dual / twin y-axes** — different-unit quantities go in **stacked panels**
-  sharing the x-axis (e.g. the `worth` plot: effort / BER / accuracy = 3 panels).
-- **Colour-blind-safe** Okabe-Ito categorical palette; sequential colormap =
-  **viridis** (not RdYlGn/jet). Series also vary linestyle + marker for greyscale.
-- Descriptive titles, axis labels with units, legends, light grid, despined axes.
-- Semantic colours are consistent everywhere: honest=blue, free-rider=red,
-  accuracy=green, eta=black.
----
-
-## 14. HOW IT ALL WORKS — from scratch (documentation, read if new to the project)
-
-This section assumes no background. It explains the model, training, the watermark,
-and the three attack mechanisms in plain terms.
-
-### 14.1 The model: backbone + head, and what "training" costs
-
-A ResNet-18 image classifier is a stack of ~18 layers. Think of it in two parts:
-- **Backbone** (the first ~17 layers): turns a raw 32×32 image into a compact
-  "feature vector" — a list of numbers describing edges, textures, shapes, objects.
-  This is where almost all the model's knowledge lives and it is expensive to learn.
-- **Head** (the final single layer, a.k.a. the classifier / output layer): a simple
-  linear map from the feature vector to 100 class scores (for CIFAR-100), turned into
-  probabilities by softmax. Cheap; it only draws boundaries in the space the backbone
-  already built.
-
-**A training step has two halves.** (1) *Forward pass*: push a batch of images
-through every layer to get predictions. (2) *Backward pass* (backpropagation):
-compute how wrong the prediction was (the "loss") and push the error backwards
-through every layer to nudge each layer's weights. The backward pass through the
-backbone is the expensive part. **If you "freeze" the backbone (mark it
-`requires_grad=False`), you skip its backward pass entirely** — you still forward
-through it (cheap) but only update the head/last block. That is the whole trick
-behind the cheap attack: freezing saves most of the compute.
-
-**Cost units in this project.** "Effort ratio" = attacker samples ÷ honest samples.
-An honest client trains on its full shard every round (~25,000 sample-passes/round).
-A frozen-backbone tap of 250 mini-batches of 16 = 4,000 sample-passes and skips the
-backbone backward, so it is far cheaper per round.
-
-### 14.2 The watermark and BER (how FareMark detects free-riders)
-
-FareMark forces honest training to leave a hidden mark. The server picks, per client,
-a secret **trigger class** (a category of images) and a secret key. During training,
-honest clients add a **watermark loss** on trigger-class images: it pushes the model's
-softmax output on those images into a specific pattern that encodes `m` secret bits
-(for CIFAR-100, m ≈ 49 bits; for CIFAR-10 only ≈ 2 — which is why CIFAR-10 is
-degenerate). Total loss = classification loss + λ·watermark loss (λ=5).
-
-Each round the server reads the bits back from every client's model using held-out
-trigger images and computes the **Bit-Error-Rate (BER)** = fraction of the `m` bits
-that come out wrong. **Low BER = the mark is present = the client did real training.**
-If BER ≥ threshold **η**, the client is flagged as a free-rider. η is set to μ+3σ of
-honest clients' BER — see §10 for why the FAIR reading (frozen/converged) is the one
-to use, not the swingy cumulative one.
-
-Key subtlety the whole attack rests on: a mark only reads back correctly if it
-**generalises** — i.e. training on some trigger images makes the pattern appear on
-*other* (the server's) trigger images too. Training on too few triggers, or with too
-little of the network, **overfits**: the mark shows on the images you trained on but
-not the server's → high BER → caught. (This is the paper's own Table V effect.)
-
-### 14.3 The attack loop (autopilot) — warmup, coast, tap
-
-The working attack is a self-tuning free-rider ("autopilot"). It measures its own BER
-every round for free (forward-only on 16 held-out trigger images — no training cost)
-and acts on it. Three phases:
-
-1. **Warmup (embed honestly).** For the first rounds it trains like an honest client
-   until the mark is solidly embedded (probed BER ≤ floor 0.05) AND past the protected
-   calibration window (`autop_protect_until`, so the detector gets clean rounds to set
-   η). This is the attacker's one unavoidable honest investment.
-2. **Coast (free-ride).** It stops training and submits the fresh global model plus the
-   frozen "watermark direction" (transplant coast — keeps the model healthy, no
-   poisoning). With no training, the mark slowly **decays** as aggregation moves the
-   global model, so BER drifts upward toward η.
-3. **Tap (re-embed just in time).** It predicts (from its recent BER trend) when BER
-   will cross η and, just before, does a short burst of real training to drive BER back
-   down. Tap size self-adjusts (grows if the last tap undershot). Then it coasts again.
-
-The controller's numbers: it estimates η from its own recent clean BERs (μ+3σ), aims
-at `target = η_est − margin` so it acts before being caught, and predicts the crossing
-`autop_lookahead` rounds ahead. All decisions are logged to the per-client `trace`.
-
-### 14.4 The THREE re-embed mechanisms (the scope lever) — the core result
-
-When the attacker taps, HOW MUCH of the network it retrains is `autop_scope`. This is
-the decisive knob. The three mechanisms:
-
-- **`head` — retrain only the final linear layer (backbone frozen).** Cheapest. But
-  the head can only use the features the frozen backbone already provides; it cannot
-  reshape them. It overfits its own trigger images and the mark does NOT generalise to
-  the server's → **BER ≈ 0.42, caught.** *Mechanism of failure: too few degrees of
-  freedom.* (This falsifies the naive "the output layer is cheap to forge" claim.)
-- **`full` — retrain the whole network (backbone + head).** Most capacity, mark
-  generalises → low BER *when freshly embedded*. But every batch backprops the whole
-  backbone = expensive, so the attacker can only afford a few taps and must coast a lot;
-  between rare taps the mark decays too far → **BER ≈ 0.155, caught under the fair η.**
-  *Mechanism of failure: too expensive to refresh often enough.*
-- **`block` — retrain only the last block (~8 tensors), rest of the backbone frozen.**
-  Enough capacity to reshape features so the mark generalises, but skips most of the
-  backbone's backward pass → cheap per round. So it re-embeds almost every round and
-  stays fresh, at low total cost → **BER 0.075 < η, effort 18%, healthy 72%. WINNER.**
-  *Why it wins: cheap AND sufficient — the Goldilocks depth.*
-
-The monotonic scope curve (BER: head 0.42 → full 0.155 → block 0.075) is the headline.
-
-### 14.5 The TWO effort levers (why "cheap" happens two different ways)
-
-- **Lever 1 — coasting (temporal):** skip training rounds. `full` relies on this (trains
-  19/50 rounds). Saves cost but the mark decays between rare taps → caught.
-- **Lever 2 — cheap shallow re-embedding (structural):** make each re-embed cheap by
-  freezing the backbone. `block` relies on this (trains 37/50 rounds but each is ~1/6
-  cost) → stays fresh AND cheap → wins.
-
-So the honest thesis: the vulnerability is structural, not temporal — **the watermark
-is forgeable by retraining a shallow SLICE (the last block); the head is too shallow,
-the full model unnecessary.** Coasting helps but, used alone, gets caught. The
-`submarine` plot shows both: block dives often but cheaply (wins); full coasts then is
-caught.
-
-### 14.6 Why the detector is fooled (one paragraph)
-
-FareMark assumes "has the watermark" ⇔ "did the expensive training". The attack breaks
-that equivalence: the mark is an output-space property that a *shallow* re-embed can
-forge on the freely-received backbone, so a client can have the mark without doing the
-work. The fair threshold (frozen η) raises the bar — most cheap tricks are caught — but
-`block`-scope re-embedding still clears it. The eventual DEFENCE follows from this: add
-a check the shallow forgery can't pass (e.g. backbone-consistency), or a fair threshold,
-which already neutralises the coasting/poisoning routes.
-
----
-
-## 15. WATERMARKING MECHANISM & GLOSSARY (answers to the deck TODOs)
-
-### 15.1 Exactly how FareMark's watermark works — the key and the secret message
-
-Three secrets are agreed per client at REGISTRATION and stored by BOTH the client
-and the server:
-1. **Trigger class** — one image category (e.g. "cat") assigned to the client; the
-   mark is read only from images of this class.
-2. **Watermark message B** — the secret bit-string the client must embed,
-   B = [b_1..b_m], m bits (CIFAR-100: m≈49; CIFAR-10: m≈2). Chosen at registration;
-   **the server keeps a copy — that is how it knows what the bits "should" be.**
-3. **Key M** — a secret pseudorandom projection matrix; each bit k has its own random
-   projection vector (row M_k).
-
-**Embed (client).** For a trigger image the model outputs softmax vector P (probs over
-classes). Bit k is read as: b̂_k = 1 if (P·M_k) ≥ 0 else 0 (a smoothing f(x)=x^α is
-applied to P first so it isn't too spiky). Training adds a watermark loss that pushes
-each projected sign to match the target b_k. So "embedding" = shaping the softmax on
-trigger images until its projections onto the secret directions spell out B.
-
-**Verify (server).** Take ~50 held-out trigger-class images, run them through the
-submitted model, recover B̂ the same way (project onto M, take signs, average over the
-50 images), compare to the registered B. **BER = fraction of the m bits where B̂ ≠ B.**
-Low BER ⇒ the client shaped the output as only real training can ⇒ not a free-rider.
-Flag if BER ≥ η.
-
-**How the attacker estimates the threshold.** The attacker is a registered client, so
-it holds its OWN B and M and can compute its own BER every round for free. It does NOT
-know the server's η, so it estimates η as μ+3σ of its recent clean BERs (or a fallback
-0.25 before it has data) and aims below that. Its estimate can be far from the true
-fair η — see the `estimate` plot; in our block run eta_est sat at 0.25 while the actual
-fair η was ~0.10 (false confidence).
-
-**The probe≠server gap.** The attacker probes BER on 16 of ITS OWN shard's trigger
-images; the server verifies on HELD-OUT trigger images. Same B and M, different images
-→ the attacker can read a lower BER than the server sees. This gap is why FR BER can be
-above the server's line even when the attacker thinks it is safe.
-
-### 15.2 Box-free vs black-box vs white-box — and why the attack is box-free-specific
-
-Watermarking methods differ by WHAT the verifier needs and WHERE the signal lives:
-- **White-box (feature-based, e.g. FedIPR):** signal is IN THE WEIGHTS. Verify by
-  reading bits from the parameters directly. Needs full parameter access.
-- **Black-box (backdoor-based, e.g. Adi et al.):** signal is a hidden INPUT→LABEL rule
-  (trigger image → planted label). Verify by querying. Recognizing the trigger is a
-  FEATURE-DETECTION job → lives in the BACKBONE.
-- **Box-free (FareMark):** signal is the SHAPE of the softmax OUTPUT on trigger-class
-  images (bits via projection onto M). Verify by querying. Signal is SHALLOW — a
-  property of the output mapping.
-
-**Why our shallow-slice attack is box-free-specific:**
-- Box-free: the mark is a shallow output property, so a cheap shallow re-embed (last
-  block) reaches it → our attack works.
-- Black-box: forging the label rule needs the network to RECOGNIZE the trigger, a
-  backbone job → a last-block-only tap can't build a trigger detector → you're pushed
-  to full-model cost (i.e. toward doing the real work). HARDER for our method.
-- White-box: verification reads weights, not outputs, so riding under an output BER is
-  irrelevant; you'd have to reproduce a weight-space signature. HARDEST for our method
-  — BUT white-box needs the server to hold every client's weights, which FL privacy
-  (secure aggregation) often forbids. That assumption is exactly WHY FareMark chose
-  box-free.
-
-**Sharper thesis:** the weakness is intrinsic to putting the mark in a SHALLOW
-output-space location. Box-free is the only method that works under FL privacy, but its
-shallowness is what makes it cheaply forgeable. This directly motivates the defence:
-anchor the mark deeper (force backbone dependence, like black-box) or add a
-backbone-consistency check so a shallow forgery is caught. CAVEAT: black/white-box
-resistance is reasoned from mechanism, not yet tested — a clean future experiment.
-
-### 15.3 GLOSSARY (plain definitions for the deck TODOs)
-
-- **Weights / parameters:** the numbers inside each layer that get adjusted during
-  training; "the model" is essentially its weights.
-- **Features / feature vector:** the compact numeric description of an image produced by
-  the backbone (edges→textures→shapes→objects); the head classifies from these.
-- **Layer:** one processing stage. ResNet-18 ≈ 18 such stages: a conv stem, 4 stages of
-  residual blocks (the backbone), then a final linear layer (the head).
-- **ResNet-18 / CNN:** ResNet-18 is one specific Convolutional Neural Network (CNN)
-  architecture — CNNs are the standard family for image classification. We use ResNet-18
-  because the paper does; the attack idea is architecture-agnostic (any backbone+head
-  model), but all our NUMBERS are ResNet-18 on CIFAR-100/10.
-- **Batch / mini-batch:** training processes images in small groups called mini-batches
-  (here 16 images). One "batch" in our tap counts = one mini-batch of 16. "250 batches"
-  = 250×16 = 4,000 image-passes.
-- **Effort from batches:** effort_ratio = attacker image-passes ÷ honest image-passes.
-  Honest ≈ 25,000 passes/round (full shard × 5 epochs). A frozen-backbone tap of 250
-  batches = 4,000 passes AND skips the backbone's backward pass, so it is much cheaper
-  per round. Sum over all rounds → the ~18% figure.
-- **Forward / backward pass:** forward = compute the prediction; backward
-  (backpropagation) = compute how to nudge weights. The backbone's backward pass is the
-  expensive part; freezing the backbone skips it.
-- **"Knee at 250":** on the tap-strength sweep, BER stops improving much past
-  max_batches=250 (the curve bends like a knee) — bigger taps cost more for little gain,
-  so 250 is the efficient choice.
-- **Safety margin (autop_margin0) and how it auto-adjusts:** the attacker aims at
-  target = eta_est − margin so it acts before being caught. It RELAXES the margin (×0.98,
-  coast longer, cheaper) after safe rounds and TIGHTENS it (+0.02, safer) after a tap
-  undershoots. Starts at 0.08.
-- **Sawtooth:** the shape of the free-rider's BER over rounds — it rises while coasting
-  (mark decaying) then drops sharply at a tap (re-embed), repeatedly, like saw teeth.
-- **Slope (decay plot):** how fast BER climbs per coasting round = how fast the mark
-  decays = how many rounds you can coast before nearing η. Read it as rise-over-run on
-  the BER curve during a clear (non-shaded) stretch.
-- **Duty cycle:** fraction of rounds the free-rider actually trains (block: 37/50; full:
-  19/50).
-
----
-
-## 16. HONEST-ROUND ETA CALIBRATION + adaptive convergence (2026-07-09)
-
-**Why:** the 3-seed confirm sweep showed the block attack rides ON the fair eta
-(BER ~0.10-0.13 vs eta ~0.09), not under it. Root cause: the attacker estimated eta
-(mu+3sigma) from its own COAST/TAP probe, which reads high (~0.15-0.25), so the
-estimate was ~0.25 and it aimed too high. The `blk_honest` arm evaded best because a
-deep full-model warmup buys a long coast — but it still used the wrong eta target.
-
-**Fix (in `attacks_adaptive.py`, autopilot):** during the forced-honest warmup the FR
-IS an honest client, so its BER there samples the SAME distribution the server's fair
-eta is calibrated on. It now:
-  1. Trains fully-honest (full model, full epoch) at the start;
-  2. **Auto-detects convergence** = the honest BER curve FLATTENS (two consecutive
-     round-to-round improvements < `autop_conv_eps`, default 0.02 — a RATE test, not a
-     hand-tuned BER cutoff, so it is dataset-agnostic);
-  3. Calibrates eta = mu+3sigma over the CONVERGED honest rounds only (~0.09), not the
-     pessimistic probe (~0.25);
-  4. **Auto-stops the honest phase** at convergence (>=2 calibration samples), with
-     `autop_honest_until` now just a SAFETY CAP (not an exact schedule).
-
-**IMPORTANT — which numbers are computed vs assumed (for the write-up):**
-  * COMPUTED from the run: all eta values (mu+3sigma), FR/honest BER, effort, accuracy,
-    tap timing, and NOW the convergence round (auto-detected) and the eta estimate
-    (calibrated on the converged honest rounds).
-  * ASSUMED (fixed hyperparameters, not measured): `autop_conv_eps=0.02` (flattening
-    rate), `autop_honest_until` cap (default 10 in the sweep), `autop_margin0`,
-    `autop_max_batches`. The old hard-coded `ber<=0.15` convergence gate has been
-    REMOVED and replaced by the rate test. mu+3sigma itself is from the FareMark paper.
-
-**Test:** `run_honestcal_sweep.sh` — arms hc_block / hc_block2 / hc_full (all do the
-honest warmup + converged-round calibration) + hc_block_nocal (honest_until=0, A/B
-baseline). Read `honestcal_evade.png` first; then the seed-bands — the tell is the grey
-ESTIMATED-eta line dropping from ~0.25 to ~0.09, and red (FR) dipping under green
-(actual eta). Wiring: config.py/run_experiment.py/wm_client.py/submit_experiment.sh
-forward `AUTOP_HONEST_UNTIL`; `autop_conv_eps` is tunable via config.
-
----
-
-## 17. WHY THE honest-cal RUN DIDN'T EVADE (2026-07-09) + restructure
-
-**Diagnosis from the traces (hc_block rep0):** the free-rider's 16-image PROBE reads
-~0.0 while the SERVER reads 0.10-0.25 — even during the honest warmup. The probe
-overfits its tiny held-out set, so the FR *thinks* it is safe and coasts while the
-server has it above the fair eta. Two gaps, both real:
-  1. PROBE->SERVER gap: the FR cannot see its true standing (probe << server BER).
-  2. GENERALIZATION gap: a shallow re-embed generalizes worse than honest full
-     training, so server BER floors ABOVE the fair eta (~0.09).
-This is a robustness/defense signal: under a fair threshold the cheap attack grazes
-but doesn't clear the line.
-
-**Code fixes applied (attacks_adaptive.py):**
-  * FREEZE eta ONCE after the honest phase (`_eta_frozen`), held fixed thereafter.
-  * Stay honest `autop_honest_extra` (=3) rounds AFTER convergence for a better estimate.
-  * Bigger, more representative PROBE: hold out up to HALF the trigger images (was 1/3,
-    n_probe 16->32) so the probe stops reading ~0 while the server reads high.
-  * Kept ONLY the best attacks: `autopilot` (+ `submarine` as coast baseline). REMOVED
-    `make_memory_exploit_attack` and `make_reembed_attack` (dead ends) and their
-    wm_client branches. Scopes kept: `full` and `block2` (last two blocks); `head`/`block`
-    remain for ablation only.
-
-**Restructured test (`run_final_sweep.sh`):** every run = honest-until-flatten + extra,
-freeze eta, coast/tap. Arms: full & block2 (full shard) + ORACLE (given true eta) +
-DATA ABLATION (trigger-only / trigger+common / full shard) per scope. The ORACLE arm is
-the decider: if even a free-rider GIVEN the true eta can't stay under cheaply, the
-detector is robust and we pivot to the defense.
-
-**New plots:** `meters` (effort under every compute meter — samples/gpu_ms/fwd/bwd/opt —
-so we report the one that best captures the scope attack; bwd_passes & gpu_ms reward
-block2, samples does not); `submarine` now shows the honest BER reference and tap cost in
-SAMPLES (image-passes), not mini-batches.
-
-**Delta/margin (open TODO):** margin is `autop_margin0` (aims target = eta - margin),
-auto-relaxing when safe. Still to explore: set margin from the honest BER std (e.g.
-k*sigma) and find the optimal k. Not yet swept.
----
-
-## 2026-07-10 — Oracle "defense" claim RETRACTED (probe confound); STAY-UNDER fix implemented
-
-### Why the earlier oracle result did NOT prove a defense
-Reading the controller end-to-end (`attacks_adaptive.py`): the autopilot's **tap
-trigger** (`must_tap`), **tap size** (`drift = ber_coast − floor`) and **tap early-stop**
-(`_embed_loop` returns as soon as the probe BER ≤ `autop_floor`=0.05) are ALL driven by
-the free-rider's own held-out **probe** BER. The probe reads ~0.00 (it overfits the FR's
-own shard) while the SERVER reads ~0.11 — confirmed in the traces (rep1: coast probe
-0.000 vs server 0.111) and predicted by the paper itself (Table V: training on few
-trigger samples overfits and won't generalise). Handing the FR the oracle η only rewrites
-the *target* it aims at; it does not fix the *ruler*. So the probe stays below the (lower)
-oracle target → it keeps coasting, taps stay tiny → server BER floats at ~0.13 > η. The
-oracle arm therefore measured the controller's thriftiness, **not** the detector's
-strength. `oracle_full` spent effort 0.33 at duty 0.63 — active most rounds but leaving
-~⅔ of honest effort unused. **Prior "generalisation gap / defense result" wording is
-retracted** pending the fix below.
-
-### The fix — STAY-UNDER mode (attacks_adaptive.py)
-New knob `autop_stay_under` (auto-ON whenever `autop_oracle_eta>0`). When active, after
-warmup the FR **re-embeds on the fresh global EVERY round** with a **fixed honest-style
-budget**: `local_epochs` passes over the selected shard, `early_stop=False` (probe cannot
-cut a tap short), no dynamic sizing. Priority = stay below η; cost then falls out of
-**scope** (`autop_scope`: full|block2) and **data** (`autop_common_per_class`). Taps are
-fixed-size, so "samples per tap" is constant (= `local_epochs × |shard|` image-passes =
-the honest per-round cost). For full scope this is honest training every round →
-server BER → honest (~0.04 < η) by construction: staying under is feasible at ≈ honest
-cost. `block2` (less backprop) and reduced data buy "a bit under honest".
-
-### The estimator was also wrong (est η ~0.18 vs fair ~0.09)
-`_eta_est` froze `μ+3σ` over the FR's converged honest-round probes, but a single
-pre-convergence straggler inflated σ. **Fix:** trim the worst sample before `μ+kσ`
-(`≥4` samples) and expose `autop_eta_k` (default 3.0). The honest-phase probe generalises
-(full training), so the trimmed estimate should land ON the fair η or just below.
-
-### New code / plumbing
-- `attacks_adaptive.py`: `_embed_loop(..., early_stop=True)`; `AutopilotFreeRider`
-  gains `autop_stay_under`, `autop_eta_k`; STAY-UNDER branch; robust `_eta_est`.
-- `config.py`, `wm_client.py`, `submit_experiment.sh`: plumb the two knobs.
-- `scripts/run_experiment.py`: **needs 2 lines added** (see `run_experiment_ADDITIONS.md`);
-  oracle arms work without it (auto-on), `est_*` arms need it.
-- `scripts/plot_thresholds.py`: knob x-axis now reads **triggers-only → +N/class → full
-  shard** (was −1/0/20); every effort axis is labelled **"FR image-passes ÷ honest
-  image-passes (samples)"**; timeline/submarine shade the **forced honest warmup** and
-  mark where **coast/tap begins**; meters subtitle says which meters capture the scope
-  attack (gpu_ms / bwd_passes / opt_steps drop for block2; samples / fwd_passes don't).
-
-### Naming (fixed the confusion)
-Arms are `<eta-source>_<scope>`: eta-source ∈ {oracle (given true η), est (estimates η)};
-scope ∈ {full (whole model), block2 (last two stages+head)}. The two tokens are
-eta-source and scope — NOT two scopes. (`data_*` arms add the `autop_common_per_class`
-sweep.) The old `full_full`/`block2_full` meant scope=×, shard=full — the doubled "full"
-was the source of confusion.
-
-### New sweep (`run_full_sweep.sh`, 3 seeds)
-`oracle_full`, `oracle_block2`, `est_full`, `est_block2` (full shard, stay-under) +
-`data_oracle_full`, `data_oracle_block2` (cpc ∈ {0,5,10,20,50,-1} = triggers-only →
-+N/class → full shard). Expectation to test: oracle_full BER sits BELOW η the whole run
-(feasibility proven); triggers-only stays ABOVE η (overfits, Table V) while +N/class and
-full shard drop under; est η lands ~0.09 not ~0.18. Results pending.
-
-### Which meter captures effort best (answer to the standing question)
-`samples` and `fwd_passes` are **scope-blind** (same forward work per batch regardless of
-which params carry gradients) → they under-credit the block2 saving. `gpu_ms`,
-`bwd_passes`, `opt_steps` **drop when block2 freezes the backbone** → they capture the
-scope attack. Headline `samples` (machine-independent, conservative) for the "how cheap"
-claim; cite `gpu_ms` for the true wall-cost saving of block2.
-
----
-
-## 2026-07-10 (PM) — STAY-UNDER RESULTS: attack is caught by a fair η. Honest verdict.
-
-**The sweep ran (3 seeds; oracle/est × full/block2 + data ablation). Result is a NEGATIVE
-for cheap evasion — and that is itself the finding.**
-
-### Numbers (read off the 3-seed bands; frozen fair η ≈ 0.09, honest BER ≈ 0.04)
-- **oracle_full / oracle_block2 (given the true η, re-embed every round):** FR BER plateaus
-  at **~0.10–0.13**, ABOVE the fair η, FLAT from round ~15 to 50 (not a lag — a floor).
-  Evades the fair line only **~30–37%** of rounds (evade_bars). Full and block2 identical.
-- **Effort:** samples **~1.45×** honest; GPU-ms ~1.05× (full) / **~0.80×** (block2); duty ~1.0.
-  It spends AS MUCH OR MORE than an honest client and still doesn't clear the bar.
-  → In stay-under, the "free-rider" has degenerated into "honest client, but worse and dearer."
-- **est_full / est_block2:** attacker's estimated η ≈ **0.18** (still ~2× the fair 0.09).
-  NOT a bug now — the FR calibrates η on its OWN watermark error (~0.10–0.15, worse than
-  honest's 0.04), so its "fair-for-me" bar is inflated. It sits at 0.11 < its own 0.18 and
-  feels safe while the server's real η (0.09) flags it. The estimator error and the BER
-  plateau are the SAME phenomenon.
-- **Data ablation (full scope):** triggers-only → BER **~0.50** (total failure = paper Table V,
-  overfits, won't generalize); +5/class ~0.10, +10 ~0.11, +20 ~0.14, +50 ~0.19, full shard
-  ~0.09. Effort scales 0.07 → 1.45. **No point is both cheap AND under η** — cheap data
-  overfits, safe data costs honest-level effort.
-- **Accuracy:** ~72–73% everywhere (healthy, not poisoned).
-- **Under cumulative η (paper-faithful) and fixed=0.25:** 100% evasion — artifacts of a bad
-  threshold, not a real break.
-
-### Interpretation (be honest)
-1. **The watermark holds under a fair frozen η.** Output-only re-embedding does not generalize
-   to the server's held-out triggers the way real training does. The free-rider cannot cheaply
-   forge honest-quality evidence of participation.
-2. **The real limitation is the THRESHOLD.** cumulative/naive μ+3σ → 100% evadable; robustness
-   exists ONLY under a frozen post-convergence calibration the paper underspecifies — and even
-   then the margin is THIN (0.11 vs 0.09).
-3. **Attacker's structural disadvantage:** it can only measure itself, and it is a weaker
-   embedder than honest, so it can't recover the true honest η. Built-in, not fixable by tuning.
-
-### Open diagnostic (decides attack-dead vs revivable)
-Is the FR-vs-honest BER floor (0.11 vs 0.04 at equal effort) **fundamental** or an **artifact of
-the autopilot's embedder being weaker than the honest path**? One control run: FR re-embeds via
-the EXACT honest training path every round. Reaches ~0.04 → embedder was the bottleneck (attack
-revivable, "defense" premature). Stays ~0.10 → fundamental (FareMark robust; pivot fully).
-
-### Direction
-- Reframe the thesis: **from "cheap evasion attack" (not working) → "limitation/robustness study
-  of FareMark's threshold" + a backbone-consistency defense.**
-- Most promising remaining ATTACK angle: **non-IID** federation → higher honest BER variance →
-  looser η → the FR's 0.11 may slip under. Untested.
-- Strongest current CONTRIBUTION: threshold-fragility (evasion vs η-policy) + the Table V
-  generalization asymmetry (evasion fails, but honest clients with sparse triggers risk FPR).
-
-### Deck
-Rebuilt clean (19 slides): goals + journey, research question, watermark→BER, threshold (frozen
-vs cumulative), algorithm pseudocode + schematic, setup table, metrics glossary, then the final
-results (evade_bars, seedband oracle, seedband est, worth, meters, data ablation, submarine),
-the structural-gap interpretation, honest conclusion, next steps. Every metric on every graph is
-explained (source / calculation / meaning / what it shows). Old single-seed and confounded-run
-slides removed.
-
----
-
-## 2026-07-11 — Code audit + fixes (effort bug, holdout, honest-clone), threshold analysis, non-IID wired
-
-### Bugs found & fixed (attacks_adaptive.py)
-1. **Effort >100% was a probe-accounting artifact.** `_embed_loop` probed every
-   `sub_probe_every` batches and `_probe_ber_current_model` calls
-   `meter.record_forward_only()`, which counts probe forward-passes as `samples`.
-   In stay-under the probe is never used, yet ~500 probes/round × ~32 imgs ≈ 50–66%
-   sample overhead → the observed 1.45×. FIX: probe ONLY when `early_stop=True`;
-   stay-under taps now cost exactly an honest round (samples ≈ 1.0). block2 stays
-   cheaper on gpu_ms/bwd only.
-2. **Trigger holdout handicapped the enriched/data-ablation arms.** `_ensure_triggers`
-   held out up to half the trigger images for the probe and trained the mark on the
-   rest. Stay-under doesn't use the probe → FIX: in stay-under, train on ALL trigger
-   images (like honest). (Full-shard arms were already using self.loader = all
-   triggers, so this mainly fixes the +N/class arms.)
-3. **honest_clone diagnostic added** (`autop_honest_clone`): in stay-under, embed via
-   the EXACT honest `_local_train_wm` (full model, full shard, no probe/holdout).
-   Settles Q2: if FR reaches ~0.04 the earlier 0.11 plateau was the autopilot
-   embedder; if it still plateaus ~0.11 the gap is fundamental (late-join/dynamics).
-   NB: for FULL scope the stay-under path was already functionally identical to
-   honest, so with fixes 1–2 the full-scope FR BER should move toward honest; the
-   clone arm is the control that proves it. The 0.11 may also be partly 2-FR small-
-   sample noise (only 2 free-riders vs 8 honest → noisier mean).
-
-### Threshold analysis (which η is faithful; can it be challenged)
-- **Closest to the paper's INTENT: `frozen` / `converged`** — μ+3σ over the
-  *converged* honest BER ("the typical error rate for legitimate clients", Fig. 8).
-- **Literal reading = `cumulative`** (μ+3σ over ALL rounds) → balloons to 0.28–0.6
-  because it includes the high pre-convergence rounds → flags nothing → self-defeating.
-- The FR (BER ~0.11) is **UNDER every η except frozen/converged**, and even those are
-  borderline (frozen ≈ 0.09–0.10 vs FR 0.11 — a thin ~1–2σ margin). Demonstrated on a
-  real file with inspect_results.py: fr_ber 0.125 → cumulative η 0.279 (evades),
-  fixed 0.25 (evades), frozen 0.104 (caught, but 60% of rounds), windowed/converged
-  0.05 (caught).
-- **Challenges:** (a) underspecification — a naive μ+3σ-over-training implementation
-  is broken; (b) circularity — "calibrate on legitimate clients" assumes you can
-  already tell them apart (wm_verify `calib_on_all` shows FR BER 0.5 poisons η);
-  (c) small-sample σ instability (our data-ablation η line swings 0.06–0.40).
-  → Strongest contribution: FareMark's security = an unstated threshold-calibration
-  assumption.
-
-### Non-IID (Q4)
-- Code is **fully wired**: config.partition/dirichlet_alpha → run_experiment
-  `--partition/--dirichlet_alpha` → build_data → datasets.dirichlet_partition
-  (Hsu 2019). submit_experiment.sh forwards PARTITION/DIRICHLET_ALPHA.
-- **Hypothesis:** non-IID → some clients have few trigger-class images → weaker/ noisier
-  honest marks → honest BER μ AND σ rise → frozen η (μ+3σ) loosens → FR's ~0.11 slips
-  under. Most promising remaining attack angle.
-- **Added to run_full_sweep.sh:** `noniid_full_a{0.1,0.5,1.0}` arms (oracle_full,
-  stay-under) + IID baseline; PLOT makes one seedband per α, an IID-vs-α evade_bars,
-  and an α-sweep knob. Also added the `clone_full` diagnostic arm + its seedband and a
-  clone-vs-autopilot evade_bars.
-
-### New tool
-- `inspect_results.py`: `list` (find runs by family/cpc) and `show` (dump a file's
-  config + FR BER vs EVERY η variant with evade fractions). Use it to confirm the
-  +5/class point exactly.
-
----
-
-## 2026-07-12 — Results in: effort FIXED, honest-clone settles the floor, non-IID WORKS
-
-### Confirmed fixed
-- **Effort now 103–105% of honest** (submarine plots), down from 148–151%. The
-  probe-forward-passes-counted-as-samples bug is gone. (suggestions.txt PATCH 4 was
-  already resolved by this; no double-count — honest-clone calls _local_train_wm only.)
-
-### The decisive diagnostic: honest-clone (Image 4)
-- honest-clone = FR embeds via the EXACT honest `_local_train_wm` every round.
-- It STILL plateaus at ~0.10–0.11, same as the autopilot embedder, while the 8 honest
-  clients reach ~0.04. → **the 0.11 floor is NOT the embedder, undertraining, or
-  early-stop.** It is structural to the free-rider's POSITION (its trigger class/shard).
-- Corollary (the real finding): an honest client at that position would ALSO read 0.11.
-  A frozen η=0.09 (μ+3σ over the lucky honest clients) therefore **flags honest clients
-  at hard trigger classes = FALSE POSITIVE.** The "attack failure" under IID is actually
-  the detector's FPR problem in disguise. → added per-client BER recording to wm_verify
-  + a new `fpr` plot to quantify it.
-
-### Why "so close but can't get under" (answer to the standing question)
-- The FR's BER floor (~0.10–0.11) for its class is ABOVE the fair η (0.09), and the floor
-  is set by position, NOT effort. +5/class already reaches it at ~14% effort; more data
-  or more taps cannot push below it. So the last 0.02 is unreachable by working harder.
-
-### Non-IID: the attack WORKS (Images 7–9)
-- α=0.5: honest BER variance rises → frozen η ≈ 0.23; FR ≈ 0.15–0.20 → **UNDER η**.
-- α=0.1: η ≈ 0.36, FR ≈ 0.27–0.30 → under (but everything is high/noisy).
-- α=1.0: η ≈ 0.18, FR ≈ 0.25 → above (FR's starved classes read high; noisy, 2 FRs).
-- Effort ~0.92–0.98. So under realistic heterogeneity the fair threshold loosens enough
-  that a re-embedding free-rider rides under it. This is the real evasion result.
-
-### suggestions.txt evaluation
-- PATCH 1 (configurable holdout) — reasonable; implemented as `autop_holdout_ratio`
-  (default 0.5; dynamic arm uses 0.25). Only affects the dynamic attack (stay-under
-  already trains on all triggers).
-- PATCH 2 (early_stop=False in dynamic tap) — implemented, gated on small holdout.
-- PATCH 3 (dynamic, wide margin 0.12, no stay_under) — added as the `dyn_lowcost` arm.
-- PATCH 4 (double-count) — already resolved by the probe fix; verified no double-count.
-- HONEST CAVEAT: these all target UNDERTRAINING, which honest-clone has RULED OUT as the
-  cause of the 0.11 floor. They will not push IID BER under 0.09. Included as
-  falsification tests + to trace the effort/BER frontier.
-
-### New knobs / tools
-- `autop_stay_min` (coast-when-safe min-effort stay-under), `autop_holdout_ratio`,
-  `autop_honest_clone`. wm_verify now records `wm_per_client` / `wm_*_ber_list`.
-- New plot `fpr` (per-client BER vs η, honest false-positive rate).
-- Sweep adds: oracle_full_min, dyn_lowcost, clone_full, non-IID α∈{0.1,0.5,1.0},
-  fpr plots, keeptrying_worth.
-
-### Direction
-- IID evasion is blocked by a STRUCTURAL floor that is really an FPR limitation.
-- Live positive results: non-IID evasion (α≈0.5) + the FPR/threshold-fragility limitations.
-- Next attacks to line up: collusion (multiple FRs share/average marks), trigger-class
-  choice (attacker picks an easy class), label-flip aggregation poisoning of η.
-
----
-
-## 2026-07-12 (b) — controls added to settle the floor; collusion/poisoning arms; modularity audit
-
-- **honest_clone made a PURE honest bypass** (skips ALL autopilot machinery every round),
-  so the only remaining difference from an honest client is the cid/trigger-class.
-- **New control arms:** all_honest (attack=none, per-class BER of every honest position),
-  collude_fr{3,5} (num_free_riders sweep), poison_eta (calib_on_all=1, 5 FRs → η-poisoning).
-  Plots: fpr_all_honest, collusion_evade, fpr_poison_eta, seedband_poison_eta.
-- **Modularity audit written** (IMPLEMENTATION_SUMMARY.md): FR reuses honest key/bits/
-  λ/α/β/exclude/shard/optimizer/_local_train_wm/_memory_update verbatim; only tweak is the
-  control flow in produce_update, which honest_clone removes.
-- **Answer to "why oracle can't get under":** a single FR can't push its OWN-class BER below
-  a η calibrated on a tight cluster of OTHER (easier) honest positions. Oracle gives the
-  target but can't lower the floor. Collusion helps only via η-poisoning (calib_on_all) or
-  shared-mark reinforcement; non-IID helps by loosening η. Both are now tested.
+| Uses the same modules as honest for the whole run | subclass of `WatermarkClient`; reuses `_local_train_wm`, `_memory_update`, key/bits/λ/α/β/exclude verbatim |
+| Estimate the threshold (oracle optional for testing) | `_eta_est()`: `autop_oracle_eta>0` → given η; else μ+kσ over converged forced-honest rounds, frozen once |
+| Know when the server stops forcing honesty | forced-honest phase (`autop_honest_until`) + convergence detector (`autop_conv_eps`) → freezes η, sets `_warm_done`, then defects |
+| Train trigger + N common OR full shard | `autop_common_per_class`: `0`=triggers-only, `N`=+N/common-class, `-1`=full shard (`_reduced_loader`) |
+| Tap when under threshold; tap strength = #samples | post-warmup: coast when probe safely under `η−margin` (`autop_stay_min`), else re-embed; strength = data (`autop_common_per_class`) × scope (`autop_scope`) |
+
+## 7. Needed one-line addition — pin free-rider positions
+
+Positions currently come from `choose_free_riders(n, k, seed)` (varies by seed),
+which confounds every result with position luck. Add a deterministic override:
+
+```python
+# run_experiment.py (argparse):
+p.add_argument("--free_rider_ids", type=str, default=None)   # e.g. "3,6"
+# config.py (ExpConfig):
+free_rider_ids: str = ""
+# wm_client.build_watermarked_clients, right after choosing fr_idx:
+if getattr(cfg, "free_rider_ids", ""):
+    fr_idx = set(int(i) for i in cfg.free_rider_ids.split(","))
+# submit_experiment.sh (with the other overrides):
+[ -n "${FREE_RIDER_IDS:-}" ] && PY_EXTRA="$PY_EXTRA --free_rider_ids ${FREE_RIDER_IDS}"
+```
+
+## 8. The three tests (see `run_tests.sh` + `plot_tests.py`)
+
+All tests: **3 seeds**, std shown (error band / points). Converged window = last 20 rounds.
+
+- **TEST 1 — honest false-positive check.** 10 honest clients, no free-rider. Plot
+  each honest client's BER (by trigger class) + overall mean, against **two** η lines:
+  μ+3σ over round-means (as coded) and μ+3σ over per-client BERs (alternative). Report
+  FPR under each. *Shows whether every honest client can sit under η, and exposes the
+  calibration dilemma directly.*
+- **TEST 2 — full-scope data sweep, ×2 positions.** 2 free-riders, `scope=full`,
+  `autop_common_per_class ∈ {0,5,10,20,50,-1}`. Run at two position sets (`POS_A`,
+  `POS_B`) to separate mechanism from position luck. Plot **each** free-rider's BER +
+  FR mean and **each** honest BER + honest mean (distinguishable), plus effort in
+  **GPU-ms and samples**, with the honest baseline on the same axes.
+- **TEST 3 — same as TEST 2 but `scope=block2`.** Backbone frozen. Expect samples ≈
+  unchanged but GPU-ms lower (backbone backprop skipped) — the scope-vs-data cost
+  distinction becomes visible by comparing TEST 3 to TEST 2.
+
+Run: `./run_tests.sh` then `RES=/path ./run_tests.sh PLOT`.
+
+## 9. Status & next steps
+
+Done: reproduction (Stages 1–4); adaptive autopilot; effort meter fix (~1.0×);
+`honest_clone`, `all_honest`, data-ablation, non-IID, poisoning controls.
+
+Open / next:
+1. Run the 3 cleaned tests (positions pinned) → the false-positive dilemma is the paper.
+2. **η-poisoning**, clean: log each FR's position; separate "η rose" from "FRs sat on
+   easy classes." (`calib_on_all`, sweep FR count.)
+3. **Collusion via a shared trigger class** — untested; stresses the paper's capacity
+   mechanism (Table IX). Highest-value unexplored attack.
+4. Non-IID: report under BOTH frozen and converged η (they disagree); only severe
+   α=0.1 gives genuine cover, and there the honest watermark fails too. Don't headline α=0.5.
+
+## 10. Missing files to upload (referenced but not provided)
+
+Needed to finish/verify the cleanup: `attacks.py`, `datasets.py`, `utils.py`,
+`inspect_results.py`, `plot_adaptive.py` (if it exists), and `watermark.py` is
+present. Send `attacks.py` especially — the client factory imports `choose_free_riders`
+and the attack registry from it, so the delete-list in §5 needs its exact contents.
