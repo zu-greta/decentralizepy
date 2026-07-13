@@ -102,8 +102,7 @@ runai submit "$JOB_NAME" \
     EXTRA_ARR=($PY_EXTRA)
     [ -n "${NOTE:-}" ] && EXTRA_ARR+=(--manifest_note "$NOTE")
     set +u
-    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda \
-      --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" "${EXTRA_ARR[@]}"
+    python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" "${EXTRA_ARR[@]}"
     EXIT=$?
     set -u; set -e
     echo "experiment exit code: $EXIT"
