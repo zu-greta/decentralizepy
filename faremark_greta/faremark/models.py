@@ -1,10 +1,10 @@
 """Models
 
-The paper uses AlexNet, ShuffleNet, ResNet-18 and GoogleNet on MNIST / CIFAR-10 / CIFAR-100. 
-Implemented: ResNet-18 and AlexNet + tiny SmallCNN for fast smoke tests. 
-ShuffleNet / GoogleNet are to be added later via `build_model`.
+FareMark: AlexNet, ShuffleNet, ResNet-18 and GoogleNet on MNIST / CIFAR-10 / CIFAR-100. 
+Implemented: ResNet-18 and AlexNet + tiny SmallCNN for fast smoke tests 
+ShuffleNet / GoogleNet are to be added later via `build_model`
 
-Both nets are adapted for small images (28x28 / 32x32). The stock torchvision
+NOTE: Both nets are adapted for small images (28x28 / 32x32). The stock torchvision
 ResNet-18 is built for 224x224 ImageNet inputs; on CIFAR you must shrink the
 stem (3x3 stride-1 conv, drop the max-pool) or the feature maps collapse and
 accuracy stalls in the 80s. This adaptation is the standard "CIFAR ResNet".

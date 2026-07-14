@@ -1,8 +1,4 @@
-"""Self-describing run metadata.
-
-The manifest is descriptive only. Values come from CLI flags 
-(forwarded by submit_experiment.sh as FAMILY/NOTE/SWEEP_VAR/
-SWEEP_LEVEL) 
+"""run metadata
 """
 from __future__ import annotations
 

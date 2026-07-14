@@ -1,4 +1,4 @@
-"""Server side: registration, extraction and detection.
+"""Server side: registration, extraction and detection
 
 The verification center registers every client's (trigger class, secret key,
 watermark bits). Each round it extracts the watermark from each submitted model
@@ -7,9 +7,7 @@ using N_T trigger samples (Eq. 15) and computes the bit-error-rate (Eq. 16):
   * benign client   -> trained with L_wm  -> BER ~ 0          (watermark present)
   * free-rider      -> fabricated update  -> BER ~ 0.5         (no watermark)
 
-A client is flagged as a free-rider when BER >= eta. This module is the
-mechanism behind Tables II-V; the honest-only run (idx 11) exercises the
-extraction/fidelity half, the free-rider run (idx 12) the detection half.
+A client is flagged as a free-rider when BER >= eta
 """
 from __future__ import annotations
 
@@ -21,8 +19,7 @@ from . import watermark as wm
 
 class WatermarkRegistry:
     """cid -> (trigger_class, key, target_bits, kind, alpha). One entry per
-    client slot, including slots that turn out to be free-riders (they have a
-    registered watermark they simply cannot reproduce)."""
+    client slot, including slots that turn out to be free-riders"""
 
     def __init__(self):
         self.entries: dict[int, dict] = {}
@@ -62,16 +59,17 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
     return {c: torch.stack(v) for c, v in by_class.items() if v}
 
 
+# TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
                   free_rider_indices, eta=0.25, verify_every=1,
                   paper_faithful=False, calib_on_all=False):
-    """Return a verify_hook(server, round, updates) for Server.
+    """Return a verify_hook(server, round, updates) for Server
 
-    paper_faithful=True: cumulative mu+3sigma over ALL rounds, no window, no cap.
-    calib_on_all=True: calibrate eta over EVERY client's BER (server cannot tell
+    paper_faithful=True: cumulative mu+3sigma over all rounds, no window, no cap.
+    calib_on_all=True: calibrate eta over every client's BER (server cannot tell
     honest from free-rider), exposing the paper's circularity — free-rider BER
     ~0.5 poisons mu+3sigma. Default False matches the paper's 'observe legitimate
-    clients' (a trusted pool it never explains how to obtain in deployment).
+    clients' (a trusted pool ?)
     """
     fr_set = set(free_rider_indices)
     benign_history = []          # per-round BER means used to calibrate eta
@@ -113,7 +111,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         if calib_now:
             benign_history.append(sum(calib_now) / len(calib_now))
         if paper_faithful:
-            # paper-exact: cumulative mu+3sigma over ALL rounds, no window, no cap
+            # paper-exact: cumulative mu+3sigma over all rounds, no window, no cap
             eta_round = (wm.calibrate_eta(benign_history, floor=eta)
                          if benign_history else eta)
         else:
@@ -122,7 +120,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0
-        # PER-CLIENT records so we can see the BER *distribution* (not just the mean).
+        # per-client: records so we can see the BER distribution (not just the mean).
         # This is what exposes a false-positive: an honest client at a hard trigger
         # class can sit as high as a re-embedding free-rider, so a tight mu+3sigma eta
         # flags honest clients too. (analysis of the 0.11 floor)

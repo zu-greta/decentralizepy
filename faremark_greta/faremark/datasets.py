@@ -1,7 +1,10 @@
 """Dataset loading and the IID partition across clients
 
-The paper divides the training set *evenly* among clients (IID)
-Non-IID (Dirichlet) splits without changing call sites for testing as well
+IID: split training set evenly into `num_clients` shards, shuffling the indices first 
+Non-IID (Dirichlet): for each class, draw a Dirichlet(alpha) vector over clients and hand out that class's samples in those proportions. 
+    Small alpha -> each client sees only a few classes (severe skew); 
+    large alpha -> approaches IID. alpha~=0.5 is the common FL non-IID benchmark; 
+    alpha>=100 is effectively IID
 """
 from dataclasses import dataclass
 
@@ -27,7 +30,7 @@ class DataBundle:
 
 
 def _build_transforms(name: str, train: bool):
-    """Data augmentation and normalization per dataset. Adapted from standard recipes"""
+    """Data augmentation and normalization per dataset"""
     mean, std = _NORM[name]
     tfms = []
     if name in ("cifar10", "cifar100") and train:
@@ -101,7 +104,7 @@ def _labels_of(dataset):
 def build_data(name: str, data_root: str, num_clients: int, batch_size: int,
                seed: int, num_workers: int = 2, partition: str = "iid",
                dirichlet_alpha: float = 0.5) -> DataBundle:
-    """Load a dataset and split it into `num_clients` shards (IID or Dirichlet)."""
+    """Load a dataset and split it into `num_clients` shards (IID or Dirichlet)"""
     train, test, num_classes, in_channels = _load_raw(name, data_root)
 
     if partition == "iid":

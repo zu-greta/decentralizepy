@@ -1,10 +1,8 @@
-"""Free-rider attacks (paper baselines).
+"""Free-rider attacks (FareMark baseline)
 
 A free-rider submits a fabricated local model instead of doing real training, to
-obtain the global model "for free". Free-riders still own a data shard (so they
-report a normal sample count for FedAvg weighting) but never train on it. This
-module implements the paper's two crude baselines; the adaptive autopilot lives
-in attacks_adaptive.py.
+obtain the global model without contributing to its training. 
+Free-riders still own a data shard but never train on it. 
 
 PreviousModelsFreeRider (Eq. 17): W_free = 2*W_t - W_{t-1}  (delta-weights).
 GaussianNoiseFreeRider  (Eq. 18): W_free = W_t + N(0, sigma^2), optional decay.
@@ -17,7 +15,7 @@ import torch
 from .client import Client
 
 
-# ---- weight-fabrication helpers (operate on CPU state dicts) ----------------
+# ---- weight-fabrication helpers ----------------
 def _is_norm_buffer(key: str) -> bool:
     """BatchNorm running stats. Extrapolating these can push running_var negative
     -> NaN -> model collapse. A real free-rider would keep valid stats, so copy
@@ -26,7 +24,7 @@ def _is_norm_buffer(key: str) -> bool:
 
 
 def _extrapolate(w_t: dict, w_prev: dict) -> dict:
-    """Elementwise 2*W_t - W_{t-1} over float WEIGHTS; copy buffers/norm stats."""
+    """Elementwise 2*W_t - W_{t-1} over float weights; copy buffers/norm stats."""
     out = {}
     for k, v in w_t.items():
         if v.is_floating_point() and k in w_prev and not _is_norm_buffer(k):
@@ -37,7 +35,7 @@ def _extrapolate(w_t: dict, w_prev: dict) -> dict:
 
 
 def _add_noise(state: dict, sigma: float, generator=None) -> dict:
-    """Add N(0, sigma^2) noise to float WEIGHTS; copy buffers/norm stats."""
+    """Add N(0, sigma^2) noise to float weights; copy buffers/norm stats."""
     out = {}
     for k, v in state.items():
         if v.is_floating_point() and not _is_norm_buffer(k):
@@ -72,10 +70,10 @@ class GaussianNoiseFreeRider(Client):
 
     def produce_update(self, global_state, prev_global_state, round_idx):
         sigma = self.noise_sigma
-        if self.noise_decay > 0:
-            sigma = self.noise_sigma * (round_idx ** (-self.noise_decay))
-        g = torch.Generator().manual_seed(1234 + self.cid * 1000 + round_idx)
-        fake = _add_noise(global_state, sigma, generator=g)
+        if self.noise_decay > 0: 
+            sigma = self.noise_sigma * (round_idx ** (-self.noise_decay)) # decay noise over rounds
+        g = torch.Generator().manual_seed(1234 + self.cid * 1000 + round_idx) 
+        fake = _add_noise(global_state, sigma, generator=g) 
         return fake, self.num_samples                       # no training
 
 
@@ -91,11 +89,7 @@ ATTACKS = {
 
 
 def choose_free_riders(num_clients: int, num_free_riders: int, seed: int) -> list:
-    """Pick which client ids are free-riders (deterministic given seed).
-
-    NOTE: for the watermark experiments prefer cfg.free_rider_ids (an explicit
-    "3,6") so positions are pinned and results aren't confounded by which
-    (class, key, bits) the free-riders happened to land on."""
+    """Pick which client ids are free-riders (deterministic given seed)"""
     if num_free_riders <= 0:
         return []
     if num_free_riders > num_clients:
@@ -105,7 +99,7 @@ def choose_free_riders(num_clients: int, num_free_riders: int, seed: int) -> lis
 
 
 def resolve_free_riders(cfg, num_clients: int, seed: int) -> set:
-    """Explicit cfg.free_rider_ids ("3,6") wins; else the seeded choice."""
+    """Explicit cfg.free_rider_ids ("3,6") wins; else the seeded choice"""
     ids = getattr(cfg, "free_rider_ids", "") or ""
     if ids.strip():
         return set(int(x) for x in ids.split(",") if x.strip() != "")
@@ -114,7 +108,7 @@ def resolve_free_riders(cfg, num_clients: int, seed: int) -> set:
 
 
 def build_clients(cfg, client_loaders, model, device, seed):
-    """Construct honest + (baseline) free-rider clients for the NON-watermark path.
+    """Construct honest + (baseline) free-rider clients for the non-watermark path.
     Returns (clients, free_rider_indices)."""
     fr_idx = resolve_free_riders(cfg, len(client_loaders), seed)
     attack = getattr(cfg, "attack", "none")

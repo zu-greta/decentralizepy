@@ -1,13 +1,8 @@
-"""Experiment configs.
+"""Experiment configs
 
 `config_idx` selects an experiment; `repeat` selects a seed.
 
-Cleaned: only the paper baselines (reproduction) and the AUTOPILOT adaptive
-free-rider are kept. The submarine / memory-exploit / reembed / trigger-only /
-mixed / random-round / train-then-attack variants were removed.
-
-`expected_acc` is a loose [low, high] band on final FedAvg test accuracy
-(pass/fail reference only).
+`expected_acc` is a loose [low, high] band on final FedAvg test accuracy for reference
 """
 from dataclasses import dataclass, field, asdict
 
@@ -38,11 +33,11 @@ class ExpConfig:
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
 
     # ---- autopilot adaptive free-rider ----
-    # Acts exactly like an honest client, except: (1) it estimates the detection
-    # threshold eta (or is GIVEN it for testing), (2) it behaves honestly until the
-    # server's eta is calibrated (the forced-honest window), then defects, (3) it
-    # can train on trigger+N/common or the full shard, and (4) after warmup it
-    # coasts and taps to hold its mark; a tap's cost = the data it trains on.
+    # Acts exactly like an honest client, except: 
+    # (1) it estimates the detection threshold eta (or is GIVEN it for testing), 
+    # (2) it behaves honestly until the server's eta is calibrated (the forced-honest window), then defects, 
+    # (3) it can train on trigger+N/common or the full shard, and 
+    # (4) after warmup it coasts and taps to hold its mark; a tap's cost = the data it trains on.
     autop_oracle_eta: float = 0.0           # >0 => FR is GIVEN the true eta (testing). 0 => estimate.
     autop_honest_until: int = 12            # behave honestly until BER converges or this round (the
                                             # forced-honest window the server calibrates eta on). 0=off.
@@ -134,8 +129,8 @@ CONFIGS = [
               attack="previous_models", num_free_riders=2,
               paper_faithful=True, expected_acc=(0.0, 100.0)),
 
-    # 14: AUTOPILOT adaptive free-rider — THE attack config (all tests use this).
-    #     Override autop_* / free_rider_ids / attack via CLI (see run_tests.sh).
+    # 14: autopilot submarine free-rider
+    #     Override autop_* / free_rider_ids / attack via CLI (see run_tests.sh)
     ExpConfig("autopilot_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="autopilot", num_free_riders=2, paper_faithful=True,

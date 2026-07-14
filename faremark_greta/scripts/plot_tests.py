@@ -1,6 +1,4 @@
-"""plot_tests.py — plots for the 3-test suite (see run_tests.sh).
-
-Reads result.json files (schema written by run_experiment.py):
+"""
   run["manifest"]  = {family, sweep_var, sweep_level, note}
   run["history"]   = [{round, wm_benign_ber, wm_fr_ber, wm_eta_round,
                        wm_benign_ber_list, wm_fr_ber_list,
@@ -12,9 +10,6 @@ Two subcommands:
   test1_fpr   per-client honest BER vs TWO eta definitions + false-positive rate
   test_data   per-FR & per-honest BER (each distinguishable) + GPU/samples effort,
               swept over training-data amount (autop_common_per_class)
-
-NOTE: written against the schema but not executed here — smoke-test on one
-result.json before the full run.  3 seeds expected; std shown as error bars/bands.
 """
 import json, glob, sys, argparse, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,6 +18,7 @@ import numpy as np
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plotstyle as ps
+import eta_calib
 ps.apply()
 
 CONVERGED_TAIL = 20   # use the last N rounds as the "converged" window
@@ -79,8 +75,8 @@ def test1_fpr(a):
         print("no per-client BER in history for", a.family); return
 
     # two eta definitions
-    eta_roundmean = mu3s(round_means)    # mu+3sigma over per-round MEANS  (as coded)
-    eta_perclient = mu3s(all_indiv)      # mu+3sigma over INDIVIDUAL client BERs (alternative)
+    # eta FROZEN on all clients during the converged warmup window (before any free-riding)
+    eta_roundmean, eta_perclient = eta_calib.frozen_eta(runs)
 
     fpr_rm = np.mean([b >= eta_roundmean for b in all_indiv]) if eta_roundmean else 0.0
     fpr_pc = np.mean([b >= eta_perclient for b in all_indiv]) if eta_perclient else 0.0
@@ -150,25 +146,27 @@ def test_data(a):
     # order: triggers-only(0), +N ascending, full shard(-1) last
     order = sorted(levels, key=lambda v: (v == -1, v if v is not None else 1e9))
 
-    fr_mean, fr_std, ho_mean, eta_line = [], [], [], []
+    fr_mean, fr_std, ho_mean = [], [], []
     fr_indiv = {}          # level_index -> list of per-FR mean BERs (each FR distinguishable)
     g_ms_fr, g_ms_ho, s_fr, s_ho = [], [], [], []
+    pool_rm, pool_pc = [], []   # honest ROUND-MEAN and PER-CLIENT BERs -> fair eta (see below)
 
     for li, lv in enumerate(order):
         rs = levels[lv]
-        fr_vals, ho_vals, etas = [], [], []
+        fr_vals, ho_vals = [], []
         per_fr = {}        # cid -> [ber across seeds/rounds]
         gmf, gmh, smf, smh = [], [], [], []
         for r in rs:
             hist = r.get("history", [])[-CONVERGED_TAIL:]
             for h in hist:
+                hround = []
                 for p in (h.get("wm_per_client") or []):
                     if p.get("is_free_rider"):
                         fr_vals.append(p["ber"]); per_fr.setdefault(p["cid"], []).append(p["ber"])
                     else:
-                        ho_vals.append(p["ber"])
-                if h.get("wm_eta_round") is not None:
-                    etas.append(h["wm_eta_round"])
+                        ho_vals.append(p["ber"]); hround.append(p["ber"]); pool_pc.append(p["ber"])
+                if hround:
+                    pool_rm.append(float(np.mean(hround)))   # this round's honest MEAN
             cs = (r.get("compute", {}) or {}).get("summary", {}) or {}
             if cs.get("fr_mean_gpu_ms") is not None:      gmf.append(cs["fr_mean_gpu_ms"])
             if cs.get("honest_mean_gpu_ms") is not None:  gmh.append(cs["honest_mean_gpu_ms"])
@@ -178,10 +176,14 @@ def test_data(a):
         fr_mean.append(np.mean(fr_vals) if fr_vals else np.nan)
         fr_std.append(np.std(fr_vals) if fr_vals else 0.0)
         ho_mean.append(np.mean(ho_vals) if ho_vals else np.nan)
-        eta_line.append(np.mean(etas) if etas else np.nan)
         fr_indiv[li] = [np.mean(v) for v in per_fr.values()]
         g_ms_fr.append(np.mean(gmf) if gmf else np.nan); g_ms_ho.append(np.mean(gmh) if gmh else np.nan)
         s_fr.append(np.mean(smf) if smf else np.nan);   s_ho.append(np.mean(smh) if smh else np.nan)
+
+    # FAIR thresholds, calibrated on the HONEST clients' CONVERGED BERs (last N rounds):
+    #   eta_tight = mu+3sigma over per-ROUND-MEAN honest BER  -> what the live detector approximates
+    #   eta_loose = mu+3sigma over PER-CLIENT honest BER      -> the looser alternative
+    eta_tight, eta_loose = eta_calib.frozen_eta(runs)  # all clients, warmup window (frozen)
 
     x = np.arange(len(order))
     xlabels = [_label_for_level(lv) for lv in order]
@@ -197,21 +199,26 @@ def test_data(a):
         for v in fr_indiv[li]:
             axB.scatter(li, v, s=26, color=ps.C_FR, alpha=0.5, marker="x")
     axB.plot(x, ho_mean, color=ps.C_HONEST, lw=2.6, marker="s", label="honest mean BER")
-    axB.plot(x, eta_line, color=ps.OKABE["black"], ls="--", lw=2, label="server η (mean)")
+    if eta_tight is not None:
+        axB.axhline(eta_tight, color=ps.OKABE["black"], ls="--", lw=2,
+                    label=f"fair η (frozen, all clients) = {eta_tight:.3f}")
+    if eta_loose is not None:
+        axB.axhline(eta_loose, color=ps.OKABE.get("grey", "888888"), ls=":", lw=1.8,
+                    label=f"loose η (per-client) = {eta_loose:.3f}")
     axB.set_ylabel("bit-error-rate\n(converged)")
     axB.set_title(a.title or "per-free-rider & per-honest BER vs training-data amount")
     axB.legend(loc="upper right", fontsize=8)
 
     # --- panel 2: GPU-ms effort (scope-sensitive) ---
-    axG.plot(x, g_ms_fr, color=ps.C_FR, lw=2.4, marker="o", label="free-rider GPU-ms/round")
-    axG.plot(x, g_ms_ho, color=ps.C_HONEST, lw=2.4, marker="s", label="honest GPU-ms/round")
-    axG.set_ylabel("GPU-ms\nper round")
+    axG.plot(x, g_ms_fr, color=ps.C_FR, lw=2.4, marker="o", label="free-rider GPU-ms (total)")
+    axG.plot(x, g_ms_ho, color=ps.C_HONEST, lw=2.4, marker="s", label="honest GPU-ms (total)")
+    axG.set_ylabel("total GPU-ms\n(whole run)")
     axG.legend(loc="upper right", fontsize=8)
 
     # --- panel 3: samples effort (scope-blind) ---
-    axS.plot(x, s_fr, color=ps.C_FR, lw=2.4, marker="o", label="free-rider samples/round")
-    axS.plot(x, s_ho, color=ps.C_HONEST, lw=2.4, marker="s", label="honest samples/round")
-    axS.set_ylabel("image-passes\nper round")
+    axS.plot(x, s_fr, color=ps.C_FR, lw=2.4, marker="o", label="free-rider image-passes (total)")
+    axS.plot(x, s_ho, color=ps.C_HONEST, lw=2.4, marker="s", label="honest image-passes (total)")
+    axS.set_ylabel("total image-passes\n(whole run)")
     axS.set_xlabel("training data per round (triggers-only → +N/common-class → full shard)")
     axS.set_xticks(x); axS.set_xticklabels(xlabels)
     axS.legend(loc="upper left", fontsize=8)

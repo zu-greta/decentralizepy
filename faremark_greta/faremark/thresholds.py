@@ -1,11 +1,6 @@
 """Threshold (eta) variants 
 
-eta only decides the detection LABEL (flag / don't flag) from BERs; it
-never changes the model or training. 
-
-Each variant maps the benign mean-BER time series b[0..T-1] -> an eta value per
-round eta[0..T-1] (a scalar line you overlay; a free-rider evades at round t iff
-fr_ber[t] < eta[t]).
+eta only decides the detection label (flag / don't flag) from BERs 
 
 ------------------------------------------------------------------------------
 

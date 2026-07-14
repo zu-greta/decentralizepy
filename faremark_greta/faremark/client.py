@@ -1,14 +1,13 @@
 """Client-side logic for FedAvg training and free-rider attacks
 
-`produce_update` is the ONE method later stages override:
+`produce_update` is the method free-riders override:
 
   * Free-rider: ignore the data, fabricate weights from the global
     history (`global_state`, `prev_global_state`) per Eq. 17 / Eq. 18.
   * Watermark client: split data into trigger / common classes, add the
     L_wm regularizer (Eq. 11-12), and apply the memory-enhanced update (Eq. 14).
 
-The honest client just does standard local SGD starting from the current
-global weights — i.e. textbook FedAvg.
+Honest client just does standard local SGD starting from the current global weights — FedAvg.
 """
 from __future__ import annotations  
 
