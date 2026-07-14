@@ -1,4 +1,6 @@
-"""
+"""plot_tests.py — plots for the 3-test suite (see run_tests.sh).
+
+Reads result.json files (schema written by run_experiment.py):
   run["manifest"]  = {family, sweep_var, sweep_level, note}
   run["history"]   = [{round, wm_benign_ber, wm_fr_ber, wm_eta_round,
                        wm_benign_ber_list, wm_fr_ber_list,
@@ -75,7 +77,8 @@ def test1_fpr(a):
         print("no per-client BER in history for", a.family); return
 
     # two eta definitions
-    # eta FROZEN on all clients during the converged warmup window (before any free-riding)
+    # eta FROZEN on ALL clients during the converged warmup window (before any
+    # free-riding) -> independent of who the free-riders are.
     eta_roundmean, eta_perclient = eta_calib.frozen_eta(runs)
 
     fpr_rm = np.mean([b >= eta_roundmean for b in all_indiv]) if eta_roundmean else 0.0
@@ -183,6 +186,7 @@ def test_data(a):
     # FAIR thresholds, calibrated on the HONEST clients' CONVERGED BERs (last N rounds):
     #   eta_tight = mu+3sigma over per-ROUND-MEAN honest BER  -> what the live detector approximates
     #   eta_loose = mu+3sigma over PER-CLIENT honest BER      -> the looser alternative
+    # (NOT the swingy cumulative wm_eta_round, which over-states evasion.)
     eta_tight, eta_loose = eta_calib.frozen_eta(runs)  # all clients, warmup window (frozen)
 
     x = np.arange(len(order))

@@ -1,4 +1,5 @@
-"""
+"""plot_analysis.py — at-a-glance analysis plots built from result.json history.
+
 Subcommands
   timeline    BER vs communication round for ONE run: per-FR & per-honest + means,
               warmup end, tap/coast markers, and the fair thresholds (annotated).

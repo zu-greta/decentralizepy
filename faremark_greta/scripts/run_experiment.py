@@ -60,12 +60,8 @@ def parse_args():
     # ---- autopilot overrides ----
     p.add_argument("--autop_oracle_eta", type=float, default=None)
     p.add_argument("--autop_honest_until", type=int, default=None)
-    p.add_argument("--autop_conv_eps", type=float, default=None)
-    p.add_argument("--autop_honest_extra", type=int, default=None)
+    p.add_argument("--autop_calib_rounds", type=int, default=None)
     p.add_argument("--autop_eta_k", type=float, default=None)
-    p.add_argument("--autop_protect_until", type=int, default=None)
-    p.add_argument("--autop_warmup_cap", type=int, default=None)
-    p.add_argument("--autop_max_batches", type=int, default=None)
     p.add_argument("--autop_margin0", type=float, default=None)
     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
@@ -100,8 +96,7 @@ _OVERRIDABLE = [
     "model", "dataset", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",
-    "autop_oracle_eta", "autop_honest_until", "autop_conv_eps", "autop_honest_extra",
-    "autop_eta_k", "autop_protect_until", "autop_warmup_cap", "autop_max_batches",
+    "autop_oracle_eta", "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
     "autop_margin0", "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
     "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",

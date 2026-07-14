@@ -11,13 +11,13 @@
 #   SEEDS                      : "0 1 2"
 #
 # USAGE
-#   ./run_all.sh matrix                 # submit everything
+#   ./run_all.sh matrix                 # submit EVERYTHING (large!)
 #   PARTS=iid STAYS=tap ./run_all.sh matrix        # a slice
 #   ./run_all.sh quick                  # tiny sanity slice (iid, estimate, full, tap, posA/B, 1 seed)
 #   RES=/path ./run_all.sh PLOT [iid|dir0.5|...]   # plot a partition's results
 #
 # SIZE: full matrix = 4 parts x 2 eta x 2 scope x 2 stay x 6 cpc x 2 pos x 3 seeds
-#       = 1152 runs (+ 4 all-honest x 3). 
+#       = 1152 runs (+ 4 all-honest x 3). Run slices; start with `quick`.
 set -uo pipefail
 CFG="${CFG:-14}"; RES="${RES:-/mnt/nfs/home/zu/results}"
 PARTS="${PARTS:-iid dir0.1 dir0.5 dir1.0}"

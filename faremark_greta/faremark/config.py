@@ -1,4 +1,4 @@
-"""Experiment configs
+"""Experiment configs.
 
 `config_idx` selects an experiment; `repeat` selects a seed.
 
@@ -39,14 +39,12 @@ class ExpConfig:
     # (3) it can train on trigger+N/common or the full shard, and 
     # (4) after warmup it coasts and taps to hold its mark; a tap's cost = the data it trains on.
     autop_oracle_eta: float = 0.0           # >0 => FR is GIVEN the true eta (testing). 0 => estimate.
-    autop_honest_until: int = 12            # behave honestly until BER converges or this round (the
-                                            # forced-honest window the server calibrates eta on). 0=off.
-    autop_conv_eps: float = 0.02            # "converged" = honest BER improves < this for 2 rounds
-    autop_honest_extra: int = 3             # stay honest N rounds AFTER convergence (better frozen eta)
-    autop_eta_k: float = 3.0                # k in the frozen estimate mu + k*sigma over converged honest
-    autop_protect_until: int = 8            # never defect before this round
-    autop_warmup_cap: int = 15              # hard cap so warmup can't run forever
-    autop_max_batches: int = 250            # batch budget for the (rare) non-honest warmup transition
+    autop_honest_until: int = 12            # W: free-riding starts at this round. Rounds < W are
+                                            # forced-honest (FR trains the FULL shard, like an honest client).
+    autop_calib_rounds: int = 4             # K: the last K warmup rounds [W-K, W-1] are the calibration
+                                            # window -- eta is frozen here (all clients honest). Used by the
+                                            # server AND by the free-rider's own eta estimate, everywhere.
+    autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
     autop_margin0: float = 0.06             # safety gap: target BER = eta - margin
     autop_floor: float = 0.05               # "mark is good" bar
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
