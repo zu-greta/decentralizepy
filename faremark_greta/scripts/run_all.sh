@@ -66,21 +66,42 @@ run_matrix(){
 
 # =============================== PLOT ===============================
 if [ "${1:-}" = "PLOT" ]; then
-  P="${2:-iid}"; PT_="$(part_tag $P)"; OUT="${OUT:-figs/$PT_}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
-  ETA="${ETA_MODE:-estimate}"; STAY="${STAY_MODE:-tap}"
+  P="${2:-iid}"; PT_="$(part_tag $P)"; ALL="$RES/*/result.json"
+  ETA="${ETA_MODE:-estimate}"; STAY="${STAY_MODE:-tap}"; SFX="${FAM_SUFFIX:-}"
+  # OUT defaults to a slice-specific dir so different slices don't overwrite each other
+  OUT="${OUT:-figs/${PT_}${SFX}$([ "$ETA" = estimate ] || echo "_$ETA")$([ "$STAY" = tap ] || echo "_$STAY")}"
+  mkdir -p "$OUT"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
   # per-scope x position BER+effort
   for scope in full block2; do for pn in posA posB; do
-    F="${PT_}_${ETA}_${scope}_${STAY}_${pn}"
+    F="${PT_}_${ETA}_${scope}_${STAY}_${pn}${SFX}"
     run $PT test_data --in "'$ALL'" --family $F --scope $scope --title "'$F'" --out "$OUT/${F}"
   done; done
   # timeline (representative: full, posA), effort frontier, scorecard, and ALL thresholds
-  run $PA timeline   --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA --level -1 --out "$OUT/timeline_${PT_}"
-  run $PA frontier   --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA ${PT_}_${ETA}_block2_${STAY}_posA --title "'Effort frontier $P (posA)'" --out "$OUT/frontier_${PT_}"
-  run $PA scorecard  --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA ${PT_}_${ETA}_block2_${STAY}_posA ${PT_}_${ETA}_full_${STAY}_posB ${PT_}_${ETA}_block2_${STAY}_posB --out "$OUT/scorecard_${PT_}"
-  run $PA all_thresholds --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA --honest_family t1_${PT_} --title "'All thresholds $P'" --out "$OUT/all_thresholds_${PT_}"
+  run $PA timeline   --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA${SFX} --level -1 --out "$OUT/timeline_${PT_}"
+  run $PA frontier   --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA${SFX} ${PT_}_${ETA}_block2_${STAY}_posA${SFX} --title "'Effort frontier $P (posA)'" --out "$OUT/frontier_${PT_}"
+  run $PA scorecard  --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA${SFX} ${PT_}_${ETA}_block2_${STAY}_posA${SFX} ${PT_}_${ETA}_full_${STAY}_posB${SFX} ${PT_}_${ETA}_block2_${STAY}_posB${SFX} --out "$OUT/scorecard_${PT_}"
+  run $PA all_thresholds --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA${SFX} --honest_family t1_${PT_} --title "'All thresholds $P'" --out "$OUT/all_thresholds_${PT_}"
   run $PT test1_fpr  --in "'$ALL'" --family t1_${PT_} --out "$OUT/test1_fpr_${PT_}"
-  echo "plotted -> $OUT   (ETA_MODE=$ETA STAY_MODE=$STAY)"; exit 0
+  echo "plotted -> $OUT   (ETA_MODE=$ETA STAY_MODE=$STAY FAM_SUFFIX='$SFX')"; exit 0
+fi
+
+# ---- PLOTALL: every slice that `slim` produces, into its own figs/ subdir ----
+if [ "${1:-}" = "PLOTALL" ]; then
+  echo "### iid  estimate/tap  (HEADLINE: tier0+tier1+tier2-block2)"
+  bash "$0" PLOT iid
+  echo "### iid  estimate/COAST (tier2)"
+  STAY_MODE=coast bash "$0" PLOT iid
+  echo "### iid  ORACLE/tap    (tier4)"
+  ETA_MODE=oracle bash "$0" PLOT iid
+  echo "### iid  DYNAMIC warmup (tier5 robustness)"
+  FAM_SUFFIX=_dyn bash "$0" PLOT iid
+  for p in dir0.5 dir0.1 dir1.0; do
+    echo "### $p  estimate/tap  (tier3)"
+    bash "$0" PLOT "$p"
+  done
+  echo "ALL PLOTS DONE -> figs/"
+  exit 0
 fi
 
 # =============================== SLIM (tiered) =======================
@@ -166,6 +187,6 @@ case "${1:-matrix}" in
   tier4)  tier4 ;;
   tier5)  tier5 ;;
   quick)  PARTS=iid ETAS=estimate SCOPES=full STAYS=tap SEEDS=0 CPC_HOPS="0 5 -1" run_matrix ;;
-  *) echo "usage: ./run_all.sh [quick|tier0..tier5|slim|matrix]  |  RES=... ./run_all.sh PLOT <partition>"; exit 1 ;;
+  *) echo "usage: ./run_all.sh [quick|tier0..tier5|slim|matrix]\n       RES=... ./run_all.sh PLOT <partition>   (ETA_MODE/STAY_MODE/FAM_SUFFIX to pick a slice)\n       RES=... ./run_all.sh PLOTALL            (every slim slice -> figs/*)"; exit 1 ;;
 esac
 echo "submitted '${1:-matrix}'. When done:  RES=$RES ./run_all.sh PLOT <partition>"
