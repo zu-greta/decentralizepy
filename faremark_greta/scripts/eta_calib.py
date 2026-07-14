@@ -25,22 +25,36 @@ def _cfg(run, key, default):
     return default if v is None else v
 
 
-def freeride_start(run):
-    return int(_cfg(run, "autop_honest_until", 12))                 # W
-
-
-def calib_window(run):
-    """[lo, hi] calibration rounds — from 'calib' trace tags, else config [W-K,W-1]."""
+def _calib_tagged_rounds(run):
+    """Rounds the free-rider tagged 'calib' in its trace (the true calibration
+    window; DYNAMIC under autop_warmup_mode='dynamic')."""
     tagged = set()
     for c in ((run.get("compute", {}) or {}).get("per_client", {}) or {}).values():
         if c.get("is_free_rider"):
             for t in c.get("trace", []):
                 if t.get("action") == "calib":
                     tagged.add(t["round"])
+    return tagged
+
+
+def calib_window(run):
+    """[lo, hi] calibration rounds — from 'calib' trace tags (dynamic), else the
+    config window [W-K, W-1] (e.g. the all-honest run has no free-rider to tag)."""
+    tagged = _calib_tagged_rounds(run)
     if tagged:
         return min(tagged), max(tagged)
-    W = freeride_start(run)
-    return W - int(_cfg(run, "autop_calib_rounds", 4)), W - 1
+    W = int(_cfg(run, "autop_honest_until", 12))
+    K = int(_cfg(run, "autop_calib_rounds", 4))
+    return W - K, W - 1
+
+
+def freeride_start(run):
+    """W = first free-riding round = (last calibration round) + 1. Prefers the
+    run's actual (dynamic) calib window; falls back to config autop_honest_until."""
+    tagged = _calib_tagged_rounds(run)
+    if tagged:
+        return max(tagged) + 1
+    return int(_cfg(run, "autop_honest_until", 12))
 
 
 def window_bounds(runs):

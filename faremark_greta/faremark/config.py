@@ -39,11 +39,23 @@ class ExpConfig:
     # (3) it can train on trigger+N/common or the full shard, and 
     # (4) after warmup it coasts and taps to hold its mark; a tap's cost = the data it trains on.
     autop_oracle_eta: float = 0.0           # >0 => FR is GIVEN the true eta (testing). 0 => estimate.
-    autop_honest_until: int = 12            # W: free-riding starts at this round. Rounds < W are
-                                            # forced-honest (FR trains the FULL shard, like an honest client).
-    autop_calib_rounds: int = 4             # K: the last K warmup rounds [W-K, W-1] are the calibration
-                                            # window -- eta is frozen here (all clients honest). Used by the
-                                            # server AND by the free-rider's own eta estimate, everywhere.
+    # ---- warmup / calibration-window schedule (see attacks_adaptive.py) ----
+    autop_warmup_mode: str = "fixed"        # DEFAULT "fixed": warmup ends at round autop_honest_until (W),
+                                            # calib window [W-K, W-1]. Position-INDEPENDENT, so the position
+                                            # comparison isn't confounded by warmup length/cost.
+                                            # "dynamic" = end warmup when the FR's OWN probe BER converges
+                                            # (position-dependent: hard positions converge later, warm up
+                                            # longer, pay more, defect later). Use as a robustness cell.
+    autop_honest_min: int = 6               # dynamic: never defect before this round (protect window).
+    autop_warmup_cap: int = 15              # dynamic: hard stop -- defect by here even if never converges.
+    autop_conv_eps: float = 0.03            # dynamic: converged when the last (patience+1) probe BERs are
+                                            # within this tolerance (BER is coarse, 1/m steps, so this means
+                                            # "unchanged for patience+1 rounds").
+    autop_conv_patience: int = 2            # dynamic: consecutive flat rounds required to declare convergence.
+    autop_honest_until: int = 12            # W: used in fixed mode (warmup=[1,W-1]) and as the dynamic fallback.
+    autop_calib_rounds: int = 4             # K: the K CONVERGED honest rounds that calibrate eta. Dynamic:
+                                            # [conv, conv+K-1]; fixed: [W-K, W-1]. Used by the server AND by
+                                            # the free-rider's own eta estimate. Tagged "calib" in the trace.
     autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
     autop_margin0: float = 0.06             # safety gap: target BER = eta - margin
     autop_floor: float = 0.05               # "mark is good" bar
@@ -64,7 +76,10 @@ class ExpConfig:
     wm_beta: float = 0.6                    # memory coefficient (Eq. 14)
     wm_label_smoothing: float = 0.1
     wm_num_triggers: int = 50               # N_T trigger samples for extraction (Eq. 15)
-    wm_eta: float = 0.25                    # detection-threshold floor (Eq. 16)
+    wm_eta_floor: float = 0.05              # small DEGENERATE GUARD for eta only (not the threshold):
+                                            # keeps eta = mu+3sigma strictly positive if every benign BER is
+                                            # ~0. The operative threshold is ALWAYS the computed mu+3sigma.
+                                            # (was `wm_eta=0.25`, which wrongly floored/capped the live eta.)
     wm_verify_every: int = 1
     paper_faithful: bool = True             # random keys, no trigger-class exclusion, cumulative mu+3sigma
     calib_on_all: bool = False              # calibrate eta over ALL clients (exposes circularity) vs benign-only

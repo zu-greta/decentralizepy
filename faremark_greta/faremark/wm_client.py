@@ -149,6 +149,11 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_stay_min=getattr(cfg, "autop_stay_min", False),
                     autop_holdout_ratio=getattr(cfg, "autop_holdout_ratio", 0.5),
                     autop_honest_clone=getattr(cfg, "autop_honest_clone", False),
+                    autop_warmup_mode=getattr(cfg, "autop_warmup_mode", "dynamic"),
+                    autop_honest_min=getattr(cfg, "autop_honest_min", 6),
+                    autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
+                    autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.03),
+                    autop_conv_patience=getattr(cfg, "autop_conv_patience", 2),
                     **wm_args, **common))
             elif attack in ATTACKS:
                 # crude paper baselines (previous_models / gaussian): they don't

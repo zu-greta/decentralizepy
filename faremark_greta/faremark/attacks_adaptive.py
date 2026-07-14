@@ -10,16 +10,37 @@ Threat model:
 
 Autopilot behaviour (matches the 4-point design):
   1. Uses the honest client's modules verbatim (key/bits/lambda/alpha/beta/memory/
-     _local_train_wm) — it subclasses WatermarkClient.
-  2. Estimates eta (or uses the oracle) — _eta_est().
-  3. Behaves honestly until the honest BER converges (the window the server
-     calibrates eta on), freezes eta once, then defects — the warmup/honest phase.
+     _local_train_wm) -- it subclasses WatermarkClient.
+  2. Estimates eta (or uses the oracle) -- _eta_est().
+  3. Behaves honestly until its OWN watermark BER has CONVERGED (this is the window
+     the server calibrates eta on): it watches its probe BER flatten, then observes
+     K more honest rounds as the calibration window, freezes eta, and defects.
+     The warmup length is therefore DYNAMIC (a hard trigger position converges later
+     than an easy one). A 'fixed' mode reproduces the old deterministic schedule.
   4. After warmup it re-embeds ("taps") to hold its mark under eta. A tap trains on
      trigger-only / +N-per-common-class / the full shard (autop_common_per_class)
-     with scope full|block2|block|head (autop_scope) — so a tap's COST = the data
+     with scope full|block2|block|head (autop_scope) -- so a tap's COST = the data
      and params it uses. With autop_stay_min it coasts (no training) while safely
      under target and taps only when needed; otherwise it taps every round
      (honest-style), which is what the data-sweep tests use.
+
+WARMUP / CALIBRATION-WINDOW SELECTION (the schedule)
+  autop_warmup_mode = "dynamic" (default):
+      round r, phase "warmup":  train honestly, probe own BER, append to history.
+          once r >= autop_honest_min AND the last (autop_conv_patience+1) probe BERs
+          are within autop_conv_eps of each other  ->  CONVERGED  ->  enter "calib".
+          A hard cap autop_warmup_cap forces "calib" even if never flat.
+      phase "calib":  the CONVERGED rounds. Train honestly, tag them "calib",
+          collect BERs. After autop_calib_rounds (K) of them, FREEZE eta, defect.
+      => warmup = [1 .. conv-1], calib window = [conv .. conv+K-1], free-ride >= conv+K.
+         All dynamic and position-dependent.
+  autop_warmup_mode = "fixed":
+      reproduces the old deterministic schedule exactly: warmup = [1 .. W-1],
+      calib window = [W-K .. W-1], free-ride >= W, with W = autop_honest_until.
+      (Useful as a position-independent control so warmup length is not a confound.)
+
+The 'calib' trace tag marks exactly the calibration rounds, so the offline
+analysis (eta_calib.py) reads the true (dynamic) window straight from the trace.
 
 Per-round decisions are recorded in self.trace for plotting.
 """
@@ -65,7 +86,7 @@ class _AdaptiveMixin:
         hr = getattr(self, "autop_holdout_ratio", 0.5)
         k = min(n_probe, max(1, int(len(allt) * hr)))
         self._probe_x = allt[:k].clone()            # held-out for probing
-        # train the mark on ALL trigger images (like an honest client) — the probe
+        # train the mark on ALL trigger images (like an honest client) -- the probe
         # is never used to gate stay-under training, so don't sacrifice half the data.
         trig_train = allt
 
@@ -179,15 +200,16 @@ class _AdaptiveMixin:
 def make_autopilot_attack(base_cls):
     """Autopilot adaptive free-rider factory. `base_cls` is WatermarkClient.
 
-    FIXED SCHEDULE (deterministic, position-independent):
-      rounds  1 .. W-1        FORCED HONEST  (train the FULL shard, exactly like an
-                              honest client -- so it is indistinguishable and pays
-                              the honest warmup cost)
-      rounds  W-K .. W-1      CALIBRATION WINDOW (subset of warmup): the server
-                              freezes eta here on ALL clients; the free-rider freezes
-                              its OWN eta estimate here too (it only sees its own BER)
-      rounds  W ..            FREE-RIDE: tap (reduced data x scope) or coast (stay_min)
-      W = autop_honest_until,  K = autop_calib_rounds.
+    SCHEDULE (see module docstring):
+      rounds  warmup       FORCED HONEST (full shard, exactly like an honest client
+                           -- indistinguishable, and pays the honest warmup cost).
+                           Ends DYNAMICALLY when the FR's own probe BER converges
+                           (autop_warmup_mode="dynamic"), or at a fixed round W
+                           (autop_warmup_mode="fixed", W=autop_honest_until).
+      calibration window   the K (=autop_calib_rounds) converged honest rounds: the
+                           server freezes eta here on ALL clients; the free-rider
+                           freezes its OWN eta estimate here too (only sees own BER).
+      free-ride            tap (reduced data x scope) or coast (stay_min).
     """
     _ETA_FALLBACK = 0.35
 
@@ -197,8 +219,8 @@ def make_autopilot_attack(base_cls):
 
         def __init__(self, *a,
                      autop_oracle_eta: float = 0.0,
-                     autop_honest_until: int = 12,   # W: free-riding starts here
-                     autop_calib_rounds: int = 4,    # K: last K warmup rounds calibrate eta
+                     autop_honest_until: int = 12,   # fixed-mode W / dynamic fallback
+                     autop_calib_rounds: int = 4,    # K: converged rounds that calibrate eta
                      autop_eta_k: float = 3.0,
                      autop_margin0: float = 0.06,
                      autop_floor: float = 0.05,
@@ -207,6 +229,11 @@ def make_autopilot_attack(base_cls):
                      autop_stay_min: bool = False,
                      autop_holdout_ratio: float = 0.5,
                      autop_honest_clone: bool = False,
+                     autop_warmup_mode: str = "dynamic",   # "dynamic" | "fixed"
+                     autop_honest_min: int = 6,            # never defect before this round
+                     autop_warmup_cap: int = 15,           # hard stop if never converges
+                     autop_conv_eps: float = 0.03,         # flatness tolerance on probe BER
+                     autop_conv_patience: int = 2,         # consecutive flat rounds required
                      **kw):
             super().__init__(*a, **kw)
             self.autop_oracle_eta = autop_oracle_eta
@@ -220,19 +247,46 @@ def make_autopilot_attack(base_cls):
             self.autop_stay_min = autop_stay_min
             self.autop_holdout_ratio = autop_holdout_ratio
             self.autop_honest_clone = autop_honest_clone
-            # state
+            self.autop_warmup_mode = autop_warmup_mode
+            self.autop_honest_min = int(autop_honest_min)
+            self.autop_warmup_cap = int(autop_warmup_cap)
+            self.autop_conv_eps = float(autop_conv_eps)
+            self.autop_conv_patience = int(autop_conv_patience)
+            # ---- schedule state ----
+            self._phase = "warmup"        # "warmup" -> "calib" -> "freeride"
+            self._honest_ber_hist = []    # probe BER each honest round (convergence test)
+            self._calib_start = None      # first calibration round (set at convergence)
+            # 'fixed' mode reproduces the old [W-K, W-1] window by forcing the
+            # convergence transition to fire exactly at round W-K.
+            if self.autop_warmup_mode == "fixed":
+                W, K = self.autop_honest_until, self.autop_calib_rounds
+                self._eff_honest_min = W - K
+                self._eff_warmup_cap = W - K
+                self._force_conv = True
+            else:
+                self._eff_honest_min = self.autop_honest_min
+                self._eff_warmup_cap = self.autop_warmup_cap
+                self._force_conv = False
+            # ---- estimate state ----
             self._prepared = False
             self._probe_x = None
             self._enr_loader = None
             self._reduced_loader = None
             self._own_calib_bers = []     # this FR's OWN BER in the calibration window
-            self._eta_frozen = None       # estimated once, at the end of warmup
+            self._eta_frozen = None       # estimated once, at the end of the calib window
             self._mark_delta = None
             self.trace = []
 
-        def _calib_bounds(self):
-            W = self.autop_honest_until
-            return W - self.autop_calib_rounds, W - 1   # [lo, hi] inclusive
+        # ---- convergence test on the FR's own (coarse) probe BER ----
+        def _converged(self):
+            if self._force_conv:
+                return True
+            h = self._honest_ber_hist
+            need = self.autop_conv_patience + 1
+            if len(h) < need:
+                return False
+            recent = h[-need:]
+            return (max(recent) - min(recent)) <= self.autop_conv_eps
 
         def _eta_target(self):
             if self.autop_oracle_eta and self.autop_oracle_eta > 0:
@@ -267,8 +321,6 @@ def make_autopilot_attack(base_cls):
 
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
-            W = self.autop_honest_until
-            lo, hi = self._calib_bounds()
 
             # DIAGNOSTIC: pure honest every round (never defects).
             if self.autop_honest_clone:
@@ -278,22 +330,41 @@ def make_autopilot_attack(base_cls):
                                    "ber_after": self._probe_ber_state(submit)})
                 return submit, n
 
-            # ---- WARMUP: rounds < W -> behave EXACTLY like an honest client ----
-            if round_idx < W:
+            # ---- HONEST PHASES (warmup -> calibration): train EXACTLY like an
+            #      honest client. Warmup ends dynamically when the FR's own BER has
+            #      converged (or the hard cap is hit); the next K rounds are the
+            #      calibration window over which eta is frozen; then it defects. ----
+            if self._phase in ("warmup", "calib"):
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
                 self._update_mark_delta(global_state)
                 ber = self._probe_ber_state(submit)
-                if lo <= round_idx <= hi and ber is not None:
-                    self._own_calib_bers.append(ber)     # FR's own calibration observations
-                if round_idx == W - 1:
-                    self._freeze_own_eta()                # freeze eta at the end of warmup
-                self.trace.append({"round": round_idx,
-                                   "action": "calib" if lo <= round_idx <= hi else "honest",
+                if ber is not None:
+                    self._honest_ber_hist.append(ber)
+
+                # warmup -> calib transition (dynamic convergence, or the hard cap)
+                if self._phase == "warmup":
+                    past_min = round_idx >= self._eff_honest_min
+                    hit_cap = round_idx >= self._eff_warmup_cap
+                    if (past_min and self._converged()) or hit_cap:
+                        self._phase = "calib"
+                        self._calib_start = round_idx        # first calibration round
+
+                action = "honest"
+                if self._phase == "calib":
+                    action = "calib"
+                    if ber is not None:
+                        self._own_calib_bers.append(ber)
+                    # freeze eta and end the calibration window after K rounds
+                    if round_idx - self._calib_start + 1 >= self.autop_calib_rounds:
+                        self._freeze_own_eta()
+                        self._phase = "freeride"
+
+                self.trace.append({"round": round_idx, "action": action,
                                    "ber_after": None if ber is None else round(ber, 4),
                                    "eta_frozen": self._eta_frozen})
                 return submit, n
 
-            # ---- FREE-RIDE: rounds >= W ----
+            # ---- FREE-RIDE: rounds after the calibration window ----
             self.meter.start_round(round_idx)
             eta = self._eta_target()
             target = max(self.autop_floor, eta - self.autop_margin0)

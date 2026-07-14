@@ -1,7 +1,7 @@
 # CODE_MAP — technical reference
 
 Line numbers refer to the **cleaned** files (the autopilot-only refactor). Core
-files (client, server, watermark, wm_verify, compute_meter, thresholds, datasets,
+files (client, server, watermark, wm_verify, compute_meter, eta_calib, datasets,
 utils, manifest, plotstyle) are unchanged from the original upload.
 
 Package layout (import root `faremark/`, scripts in `scripts/`):
@@ -17,7 +17,10 @@ faremark/
   attacks_adaptive.py AUTOPILOT adaptive free-rider (the attack under study)
   wm_verify.py        server: extract each client's mark -> BER -> calibrate eta -> flag
   compute_meter.py    per-client effort (samples, gpu_ms, flops, duty cycle)
-  thresholds.py       offline eta variants for plots (frozen/converged/windowed/...)
+  eta_calib.py        offline eta variants for the plots (frozen-window / per-client /
+                      cumulative / all_thresholds) -- reads the DYNAMIC calib window
+                      from the free-rider's 'calib' trace tags. (Replaces thresholds.py,
+                      which is unused by every current plotter and can be deleted.)
   manifest.py         self-describing run metadata block for result.json
   models.py           build_model (resnet18/alexnet/smallcnn)   [not reviewed here]
   robustness.py       finetune/prune/quantize ops (Figs 9-10)   [not reviewed here]
@@ -95,9 +98,14 @@ different control flow. Reuses key/bits/lambda/alpha/beta/memory/`_local_train_w
 - `_update_mark_delta` (275): memory - global = the mark direction.
 - `produce_update` (283): **the controller** —
   1. `autop_honest_clone` bypass -> pure honest every round (control).
-  2. WARMUP / honest phase: train honestly, detect convergence (`autop_conv_eps`),
-     calibrate + FREEZE eta once, then end warmup (this is "know when the server
-     stops forcing honesty").
+  2. WARMUP -> CALIB (a state machine, `autop_warmup_mode`):
+     - "dynamic" (default): train honestly, probe own BER; once BER is flat for
+       `autop_conv_patience`+1 rounds within `autop_conv_eps` (after `autop_honest_min`,
+       hard-capped at `autop_warmup_cap`) -> CONVERGED. The next `autop_calib_rounds` (K)
+       honest rounds are the calibration window (tagged "calib"); freeze eta, then defect.
+       Warmup length is thus position-dependent (hard positions converge later).
+     - "fixed": end warmup at round `autop_honest_until` (W); calib window `[W-K, W-1]`
+       (the old deterministic schedule; a position-independent control).
   3. POST-WARMUP: if `autop_stay_min` and coast probe safely under target -> COAST
      (no training); else TAP = `_embed_loop` at fixed budget (cost = data x scope).
 
@@ -115,8 +123,10 @@ different control flow. Reuses key/bits/lambda/alpha/beta/memory/`_local_train_w
   1. Extract every client's mark on the trigger bank -> **one BER per client** (`measured`).
   2. `benign_now` = this round's honest BERs; **append their MEAN to `benign_history`**
      (the round-mean series). `calib_on_all=True` includes free-riders in the pool.
-  3. `eta_round = calibrate_eta(benign_history)` = μ+3σ over the round-MEAN series
-     (paper_faithful=cumulative; else windowed+capped at 0.25).
+  3. `eta_round = calibrate_eta(benign_history, floor=wm_eta_floor)` = μ+3σ over the
+     round-MEAN series -- ALWAYS the computed value (paper_faithful=cumulative; else a
+     sliding window so eta can recover after a spike). `wm_eta_floor` (0.05) is only a
+     degenerate guard so eta can't collapse to 0; it never binds in the studied regime.
   4. Flag each client individually iff `ber >= eta_round`.
   5. Emit `wm_benign_ber`, `wm_fr_ber`, `wm_eta_round`, `wm_fpr`, `wm_fr_recall`,
      `wm_benign_ber_list`, `wm_fr_ber_list`, and `wm_per_client`
@@ -146,9 +156,12 @@ different control flow. Reuses key/bits/lambda/alpha/beta/memory/`_local_train_w
 - `server.Server.run` (53): each round calls every client's `produce_update`, runs the
   verify hook, then `Aggregator.aggregate` (19, weighted FedAvg), evaluates test acc.
 - `datasets.build_data` (101): `iid_partition` (63) or `dirichlet_partition` (70, Hsu 2019).
-- `thresholds.eta_series` (39): offline eta variants — `frozen` (post-convergence window,
-  the HEADLINE), `converged` (last-C), `windowed`, `cumulative`, `fixed`. **Note:** these
-  are for plotting; the LIVE detector uses `watermark.calibrate_eta` over the round-mean series.
+- `eta_calib.py`: offline eta variants for plots — `frozen_eta` (the HEADLINE: μ+3σ over
+  the round-MEANS *in the calibration window*), per-client, cumulative, and `all_thresholds`.
+  `calib_window`/`freeride_start` read the DYNAMIC window straight from the free-rider's
+  `calib` trace tags (config fallback for all-honest runs). **Note:** these are for plotting;
+  the LIVE detector uses `watermark.calibrate_eta` over the round-mean series.
+  (`thresholds.py` is the old, now-unused version — safe to delete after a tree-wide grep.)
 - `plot_tests.py`: `test1_fpr` (58) — per-client honest BER vs two eta definitions + FPR;
   `test_data` (140) — per-FR & per-honest BER + GPU/samples effort over the data sweep.
 - `plotstyle.py`: `apply` (46), `stacked_panels` (76), `finish` (87).
@@ -183,21 +196,22 @@ Override any of them at run time via `--flag` (run_experiment) or `ENV=val`
 ### Autopilot (46-62)
 | field | line | default | meaning |
 |---|---|---|---|
-| autop_oracle_eta | 46 | 0.0 | >0 => FR is GIVEN eta (testing). 0 => estimate. |
-| autop_honest_until | 47 | 12 | behave honestly until convergence or this round (forced-honest window) |
-| autop_conv_eps | 49 | 0.02 | convergence = BER improves < eps for 2 rounds |
-| autop_honest_extra | 50 | 3 | stay honest N rounds after convergence |
-| autop_eta_k | 51 | 3.0 | k in the frozen estimate mu+k*sigma |
-| autop_protect_until | 52 | 8 | never defect before this round |
-| autop_warmup_cap | 53 | 15 | hard warmup cap |
-| autop_max_batches | 54 | 250 | budget for the non-honest warmup transition |
-| autop_margin0 | (55) | 0.06 | target BER = eta - margin |
-| autop_floor | 56 | 0.05 | "mark is good" bar |
-| **autop_common_per_class** | 57 | -1 | DATA/tap: -1=full shard, 0=triggers-only, N=+N/common-class |
-| **autop_scope** | 58 | full | PARAMS/tap: full / block2 / block / head |
-| autop_stay_min | 59 | False | coast when safe, tap only when needed (else tap every round) |
-| autop_holdout_ratio | 61 | 0.5 | probe holdout fraction |
-| autop_honest_clone | 62 | False | DIAGNOSTIC: pure honest every round (the floor control) |
+| autop_oracle_eta | 41 | 0.0 | >0 => FR is GIVEN eta (testing). 0 => estimate. |
+| autop_warmup_mode | 43 | **fixed** | "fixed" (DEFAULT) = warmup ends at W, calib `[W-K,W-1]`; position-INDEPENDENT so the position comparison is unconfounded. "dynamic" = end at own-BER convergence (position-dependent) -- robustness cell |
+| autop_honest_min | 46 | 6 | dynamic: never defect before this round (protect window) |
+| autop_warmup_cap | 47 | 15 | dynamic: hard stop -- defect by here even if never converges |
+| autop_conv_eps | 48 | 0.03 | dynamic: flat if last (patience+1) probe BERs within this (BER is coarse => "unchanged") |
+| autop_conv_patience | 51 | 2 | dynamic: consecutive flat rounds to declare convergence |
+| autop_honest_until | 52 | 12 | W: fixed-mode warmup end / dynamic fallback |
+| autop_calib_rounds | 53 | 4 | K: converged honest rounds that calibrate eta (tagged "calib") |
+| autop_eta_k | 56 | 3.0 | k in the FR's own frozen estimate mu+k*sigma |
+| autop_margin0 | 57 | 0.06 | target BER = eta - margin |
+| autop_floor | 58 | 0.05 | "mark is good" bar |
+| **autop_common_per_class** | 59 | -1 | DATA/tap: -1=full shard, 0=triggers-only, N=+N/common-class |
+| **autop_scope** | 60 | full | PARAMS/tap: full / block2 / block / head |
+| autop_stay_min | 61 | False | coast when safe, tap only when needed (else tap every round) |
+| autop_holdout_ratio | 63 | 0.5 | probe holdout fraction |
+| autop_honest_clone | 64 | False | DIAGNOSTIC: pure honest every round (the floor control) |
 
 ### Watermark (66-77)
 | field | line | default | meaning |
@@ -207,10 +221,10 @@ Override any of them at run time via `--flag` (run_experiment) or `ENV=val`
 | wm_lambda | 68 | 5.0 | embed-loss weight (Eq. 11) |
 | wm_alpha | 69 | 0.4 | smoothing exponent (Eq. 8) |
 | wm_beta | 71 | 0.6 | memory coefficient (Eq. 14) |
-| wm_num_triggers (N_T) | 73 | 50 | extraction trigger count (Eq. 15) |
-| wm_eta | 74 | 0.25 | eta floor / cap |
-| paper_faithful | 76 | True | random keys, no exclusion, cumulative mu+3sigma |
-| **calib_on_all** | 77 | False | calibrate eta over ALL clients (poisoning) vs benign-only |
+| wm_num_triggers (N_T) | 75 | 50 | extraction trigger count (Eq. 15) |
+| wm_eta_floor | 76 | 0.05 | degenerate GUARD only (keeps eta>0); threshold is ALWAYS mu+3sigma |
+| paper_faithful | 81 | True | random keys, no exclusion, cumulative mu+3sigma |
+| **calib_on_all** | 82 | False | calibrate eta over ALL clients (poisoning) vs benign-only |
 
 Sweep grids live in the runners: `CPC_HOPS="0 5 10 20 50 -1"`, `POS_A/POS_B`,
 `SEEDS`, `ORACLE=0.09` in `run_tests.sh`.

@@ -83,15 +83,21 @@ if honest_clone:                           # DIAGNOSTIC control
 eta    = oracle_eta if given else estimate()
 target = max(floor, eta - margin)
 
-# ---- WARMUP: honest until eta is calibrated, then defect ----
-if not warm_done:
+# ---- WARMUP -> CALIB: honest until own BER converges, calibrate, then defect ----
+# warmup_mode="dynamic" (default): window is DYNAMIC & position-dependent.
+if phase in ("warmup","calib"):
     train honestly (full model, full shard)         # like an honest client
-    ber = probe(submit)
-    if honest_BER has flattened (rate < conv_eps for 2 rounds):
-        collect converged BERs; after honest_extra rounds -> eta_frozen = estimate(); honest_done
-    if (mark good AND past protect_until AND honest_done) or round >= warmup_cap:
-        warm_done = True
+    ber = probe(submit); honest_ber_hist.append(ber)
+    if phase == "warmup":
+        # converged = last (conv_patience+1) probe BERs within conv_eps, after honest_min
+        if (round >= honest_min and converged()) or round >= warmup_cap:
+            phase = "calib"; calib_start = round
+    if phase == "calib":                            # tag "calib"; collect BERs
+        own_calib.append(ber)
+        if round - calib_start + 1 >= calib_rounds:  # K converged rounds
+            eta_frozen = estimate(); phase = "freeride"
     return submit
+# warmup_mode="fixed": reproduces warmup=[1,W-1], calib=[W-K,W-1], defect at W.
 
 # ---- POST-WARMUP: coast when safe, else tap ----
 if stay_min and probe(coast_state) <= target:
@@ -136,7 +142,7 @@ The dilemma:
 
 ```
  tight eta (over round-means, ~0.09):  catches the free-rider  BUT flags honest hard positions
- loose eta (over per-client BERs, ~0.25): spares honest clients BUT the free-rider passes too
+ loose eta (over per-client BERs, ~0.28-0.31): spares honest clients BUT the free-rider passes too
 ```
 
 No single scalar η separates an *embedding* free-rider from an honest hard-position

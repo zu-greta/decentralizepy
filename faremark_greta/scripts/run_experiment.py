@@ -59,6 +59,12 @@ def parse_args():
     p.add_argument("--noise_decay", type=float, default=None)
     # ---- autopilot overrides ----
     p.add_argument("--autop_oracle_eta", type=float, default=None)
+    p.add_argument("--autop_warmup_mode", type=str, default=None,
+                   choices=["dynamic", "fixed"])
+    p.add_argument("--autop_honest_min", type=int, default=None)
+    p.add_argument("--autop_warmup_cap", type=int, default=None)
+    p.add_argument("--autop_conv_eps", type=float, default=None)
+    p.add_argument("--autop_conv_patience", type=int, default=None)
     p.add_argument("--autop_honest_until", type=int, default=None)
     p.add_argument("--autop_calib_rounds", type=int, default=None)
     p.add_argument("--autop_eta_k", type=float, default=None)
@@ -78,6 +84,7 @@ def parse_args():
     p.add_argument("--wm_num_triggers", type=int, default=None)
     p.add_argument("--wm_lambda", type=float, default=None)
     p.add_argument("--wm_beta", type=float, default=None)
+    p.add_argument("--wm_eta_floor", type=float, default=None)
     p.add_argument("--paper_faithful", dest="paper_faithful",
                    action="store_true", default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
@@ -96,11 +103,13 @@ _OVERRIDABLE = [
     "model", "dataset", "partition", "dirichlet_alpha", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",
-    "autop_oracle_eta", "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
+    "autop_oracle_eta", "autop_warmup_mode", "autop_honest_min", "autop_warmup_cap",
+    "autop_conv_eps", "autop_conv_patience",
+    "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
     "autop_margin0", "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
     "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",
-    "paper_faithful", "calib_on_all",
+    "wm_eta_floor", "paper_faithful", "calib_on_all",
 ]
 
 
@@ -203,7 +212,7 @@ def main():
         trigger_bank = build_trigger_bank(data.test_dataset, classes,
                                           cfg.wm_num_triggers, seed=seed)
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
-                                    free_rider_indices, eta=cfg.wm_eta,
+                                    free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,
                                     paper_faithful=getattr(cfg, "paper_faithful", False),
                                     calib_on_all=getattr(cfg, "calib_on_all", False))

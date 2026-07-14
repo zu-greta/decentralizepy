@@ -61,13 +61,24 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 
 # TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
-                  free_rider_indices, eta=0.25, verify_every=1,
+                  free_rider_indices, eta_floor=0.05, verify_every=1,
                   paper_faithful=False, calib_on_all=False):
     """Return a verify_hook(server, round, updates) for Server
 
-    paper_faithful=True: cumulative mu+3sigma over all rounds, no window, no cap.
+    The threshold is ALWAYS the computed eta = mu + 3*sigma over the benign BER
+    distribution (Eq. 16) -- never a hardcoded value. `eta_floor` is only a small
+    degenerate guard: if every benign BER is ~0, mu+3sigma collapses to 0 and the
+    rule "flag iff BER >= eta" would flag every honest client (BER 0 >= 0); the
+    floor keeps eta strictly positive. It sits well below the honest hard-position
+    band (~0.10-0.20) and the tight round-mean eta (~0.09), so it never binds in
+    the regime we study.
+
+    paper_faithful=True: cumulative mu+3sigma over ALL rounds (the paper's "typical
+    error rate over many rounds"). Else: a sliding window of recent rounds so eta
+    can RECOVER after a transient benign-BER spike (e.g. a brief model collapse
+    under many free-riders); a cumulative mean would stay poisoned forever.
     calib_on_all=True: calibrate eta over every client's BER (server cannot tell
-    honest from free-rider), exposing the paper's circularity — free-rider BER
+    honest from free-rider), exposing the paper's circularity -- free-rider BER
     ~0.5 poisons mu+3sigma. Default False matches the paper's 'observe legitimate
     clients' (a trusted pool ?)
     """
@@ -98,25 +109,23 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             ber = wm.bit_error_rate(bits, entry["target_bits"])
             measured.append((cid, ber, cid in fr_set, tc))  # +trigger class
 
-        # Calibrate the threshold from the benign BER distribution (Eq. 16): eta = mu + 3*sigma. 
-        # NOTE: Two guards make it robust to a transient model
-        # collapse (e.g. 80% free-riders), during which honest clients briefly
-        # cannot embed and benign BER spikes:
-        #   (1) use a sliding window of recent rounds, so eta recovers afterwards
-        #       (a cumulative mean stays poisoned forever);
-        #   (2) cap eta at 0.25 — a balanced watermark has benign BER->0 and a
-        #       random model ->0.5, so a threshold above 0.25 would flag nothing.
+        # Calibrate the threshold from the benign BER distribution (Eq. 16):
+        #   eta = mu + 3*sigma   over the per-round MEAN benign BER.
+        # This is ALWAYS the computed value (no hardcoded floor/cap); `eta_floor`
+        # is only the tiny degenerate guard described in make_verifier's docstring.
+        # paper_faithful -> cumulative over all rounds; else a sliding window so eta
+        # can recover after a transient benign-BER spike.
         benign_now = [b for _, b, isfr, _ in measured if not isfr]
         calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now
         if calib_now:
             benign_history.append(sum(calib_now) / len(calib_now))
         if paper_faithful:
-            # paper-exact: cumulative mu+3sigma over all rounds, no window, no cap
-            eta_round = (wm.calibrate_eta(benign_history, floor=eta)
-                         if benign_history else eta)
+            eta_round = (wm.calibrate_eta(benign_history, floor=eta_floor)
+                         if benign_history else eta_floor)
         else:
             recent = benign_history[-CAL_WINDOW:]
-            eta_round = min(wm.calibrate_eta(recent, floor=eta) if recent else eta, 0.25)
+            eta_round = (wm.calibrate_eta(recent, floor=eta_floor)
+                         if recent else eta_floor)
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0
