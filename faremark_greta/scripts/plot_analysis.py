@@ -19,7 +19,6 @@ THRESHOLDS (all use the converged tail = last N rounds of honest BER):
                high, ~0.3; NOT fair for judging evasion)
   eta_fixed  = 0.25 (a constant baseline the paper caps at)
 """
-
 import json, glob, sys, argparse, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "faremark"); sys.path.insert(0, "scripts")
@@ -97,15 +96,15 @@ def timeline(a):
     def mean_series(d):
         return [np.nanmean([d[c].get(rd, np.nan) for c in d]) if d else np.nan for rd in rounds]
 
-    # warmup end + tap/coast rounds from FR traces
-    warm_end, taps, coasts = 0, set(), set()
+    # schedule from the fixed window: warmup=[1,W-1], calib=[W-K,W-1], free-ride>=W
+    lo, hi = eta_calib.calib_window(r)      # [W-K, W-1]
+    W = hi + 1
+    taps, coasts = set(), set()
     pc = (r.get("compute", {}) or {}).get("per_client", {}) or {}
     for cid, c in pc.items():
         for t in c.get("trace", []):
-            act = t.get("action")
-            if act in ("honest", "warmup"): warm_end = max(warm_end, t["round"])
-            elif act == "tap": taps.add(t["round"])
-            elif act == "coast": coasts.add(t["round"])
+            if t.get("action") == "tap": taps.add(t["round"])
+            elif t.get("action") == "coast": coasts.add(t["round"])
 
     E = eta_defs([r])
     fig, ax = ps.stacked_panels(1, figsize=(12, 6.2))[0] if False else plt.subplots(figsize=(12, 6.2))
@@ -118,22 +117,25 @@ def timeline(a):
     ax.plot(rounds, mean_series(honest), color=ps.C_HONEST, lw=2.8, label="honest mean BER")
     ax.plot(rounds, mean_series(freer), color=ps.C_FR, lw=2.8, label="free-rider mean BER")
 
-    # warmup shading + tap markers
-    if warm_end:
-        ax.axvspan(min(rounds), warm_end + 0.5, color="#FADFA6", alpha=0.35, lw=0)
-        ax.axvline(warm_end + 0.5, color=GREY, ls="--", lw=1.4)
-        ax.text(warm_end + 0.6, ax.get_ylim()[1]*0.94, " taps begin", color=GREY, fontsize=9, va="top")
+    ytop = ax.get_ylim()[1]
+    # warmup band + calibration window + free-ride delimiter
+    ax.axvspan(min(rounds), lo - 0.5, color="#FADFA6", alpha=0.30, lw=0, label="forced-honest warmup")
+    ax.axvspan(lo - 0.5, hi + 0.5, color="#BFE3C6", alpha=0.55, lw=0, label=f"calibration window [{lo},{hi}] (η frozen here)")
+    ax.axvline(lo - 0.5, color="#2C7A3F", ls="-", lw=1.4)
+    ax.axvline(W - 0.5, color=GREY, ls="--", lw=1.6)
+    ax.text(lo - 0.4, ytop*0.97, " converged → calibrate η", color="#2C7A3F", fontsize=8.5, va="top")
+    ax.text(W - 0.4, ytop*0.90, " free-riding starts", color=GREY, fontsize=8.5, va="top")
+
     frm = mean_series(freer)
     tap_x = [rd for rd in rounds if rd in taps]
-    tap_y = [frm[rounds.index(rd)] for rd in tap_x]
-    ax.scatter(tap_x, tap_y, marker="v", s=34, color=ps.C_FR, edgecolor="white",
-               linewidth=0.5, zorder=5, label="tap (re-embed)")
+    ax.scatter(tap_x, [frm[rounds.index(rd)] for rd in tap_x], marker="v", s=34,
+               color=ps.C_FR, edgecolor="white", linewidth=0.5, zorder=5, label="tap (re-embed)")
     if coasts:
         cx = [rd for rd in rounds if rd in coasts]
-        cy = [frm[rounds.index(rd)] for rd in cx]
-        ax.scatter(cx, cy, marker="s", s=30, color="#FFFFFF", edgecolor=ps.C_FR, zorder=5, label="coast (no train)")
+        ax.scatter(cx, [frm[rounds.index(rd)] for rd in cx], marker="s", s=30,
+                   color="#FFFFFF", edgecolor=ps.C_FR, zorder=5, label="coast (no train)")
 
-    # thresholds
+    # thresholds (calibrated ON the green window, all clients)
     if E["eta_tight"]: ax.axhline(E["eta_tight"], color=BLACK, ls="--", lw=2,
         label=f"fair η tight (round-mean) = {E['eta_tight']:.3f}")
     if E["eta_loose"]: ax.axhline(E["eta_loose"], color=GREY, ls=":", lw=1.8,
@@ -141,12 +143,13 @@ def timeline(a):
 
     ax.set_xlabel("communication round"); ax.set_ylabel("bit-error-rate (lower = mark present)")
     ax.set_title(a.title or f"BER vs round  ·  {fam(r)}  ·  cpc={lvl(r)}  ·  seed={r.get('seed')}")
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
-    note = ("η calibrated on honest clients' last %d rounds:  tight = μ+3σ of the per-round MEAN honest BER;"
-            "  loose = μ+3σ of all per-client honest BERs.") % TAIL
+    ax.legend(loc="upper right", fontsize=7.5, ncol=2)
+
+    note = ("η frozen on the CALIBRATION window (green, all clients honest):  tight = μ+3σ of the "
+            "per-round MEAN BER;  loose = μ+3σ of all per-client BERs.  Same window the free-rider uses.")
     ax.text(0.005, -0.16, note, transform=ax.transAxes, fontsize=8.5, color=GREY)
     ps.finish(fig, a.out + ".png")
-    print("warmup_end:", warm_end, "| n_taps:", len(taps), "| n_coasts:", len(coasts), "| eta:", E)
+    print(f"calib window [{lo},{hi}] | free-ride from {W} | n_taps={len(taps)} n_coasts={len(coasts)} | eta={E}")
 
 
 # ================================================================= FRONTIER
@@ -272,17 +275,56 @@ def thresholds(a):
     print("eta:", E, "| n_honest_obs:", len(indiv))
 
 
+def all_thresholds(a):
+    """Bar chart of the seven threshold definitions + honest false-positive rate."""
+    runs = load(a.inp)
+    attack = [r for r in runs if fam(r) == a.family]            # a data-sweep family
+    honest = [r for r in runs if fam(r) == (a.honest_family or "t1_all_honest")]
+    if not attack and not honest:
+        print("no runs for", a.family, "/", a.honest_family); return
+    T = eta_calib.all_thresholds(attack, honest)
+    # honest client-rounds (converged tail of the all-honest run) for FPR
+    n_rounds = max((h.get("round", 0) for r in (honest or attack)
+                    for h in r.get("history", [])), default=50)
+    _, indiv = eta_calib._pool(honest or attack, n_rounds - 19, n_rounds, honest_only=True)
+
+    names = list(T.keys()); vals = [T[k] for k in names]
+    fpr = [100.0*np.mean([b >= v for b in indiv]) if (v is not None and indiv) else np.nan for v in vals]
+    lo, hi = eta_calib.window_bounds(attack or honest)
+
+    fig, ax = plt.subplots(figsize=(15, 6.6))
+    cols = [ps.C_FR, "#0072B2", "#009E73", "#E69F00", GREY, "#CC79A7", "#7FB069", "#B23A2E"]
+    bars = ax.bar(range(len(names)), vals, color=[cols[i % len(cols)] for i in range(len(names))],
+                  edgecolor="white")
+    for i, (b, v, f) in enumerate(zip(bars, vals, fpr)):
+        txt = f"η={v:.3f}\nFPR {f:.0f}%" if (v is not None and not np.isnan(f)) else "n/a"
+        ax.text(b.get_x()+b.get_width()/2, (v or 0)+0.008, txt, ha="center", fontsize=8.5)
+    ax.set_xticks(range(len(names))); ax.set_xticklabels(names, fontsize=8)
+    ax.set_ylabel("threshold η   (bar)   +   honest FPR (label)")
+    ax.set_title(a.title or f"All threshold definitions  ·  calibration window = rounds [{lo},{hi}]")
+    ax.text(0.0, -0.30,
+            "Window [W-K,W-1] = converged warmup, all clients honest. 1=spec (round-mean over the window). "
+            "2=longer honest window. 3=per-client (individual BERs -> bigger σ). 4=all warmup incl. non-converged. "
+            "5=live cumulative μ+3σ. 6=all clients incl. cheating FRs (post-warmup). 7a/7b=all-honest, easy vs hard positions. "
+            "Lower FPR = fewer honest clients wrongly flagged; but lower η catches more free-riders.",
+            transform=ax.transAxes, fontsize=8.2, color=GREY, wrap=True)
+    ps.finish(fig, a.out + ".png")
+    print("thresholds:", {k.split(chr(10))[0]: (round(v,3) if v else None) for k,v in T.items()})
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("timeline", "frontier", "scorecard", "thresholds"):
+    for name in ("timeline", "frontier", "scorecard", "thresholds", "all_thresholds"):
         s = sub.add_parser(name)
         s.add_argument("--in", dest="inp", nargs="+", required=True)
         s.add_argument("--out", required=True)
         s.add_argument("--title", default="")
         s.add_argument("--family", default=None)
         s.add_argument("--families", nargs="+", default=None)
+        s.add_argument("--honest_family", default=None)
         s.add_argument("--level", default=None)
         s.add_argument("--seed", default=None)
     a = ap.parse_args()
-    {"timeline": timeline, "frontier": frontier, "scorecard": scorecard, "thresholds": thresholds}[a.cmd](a)
+    {"timeline": timeline, "frontier": frontier, "scorecard": scorecard,
+     "thresholds": thresholds, "all_thresholds": all_thresholds}[a.cmd](a)

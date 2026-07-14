@@ -1,17 +1,14 @@
-"""Shared threshold (eta) calibration
+"""threshold (eta)
 
-FAIR / FROZEN eta: during the forced-honest warmup every client behaves honestly. 
-server calibrates eta once, on all clients, over the converged rounds at the end of
-warmup — before any free-riding starts — then freezes it
+Protocol:
+  rounds 1 .. W-1      forced-honest warmup (every client trains full-shard honestly)
+  rounds W-K .. W-1    calibration window: eta computed here once and frozen (every client honest);
+                       free-rider estimates its own eta from this same window.
+  rounds W .. end      free-riding (tap or coast)
+  W = autop_honest_until,  K = autop_calib_rounds.
 
-  frozen_eta(runs) -> (eta_tight, eta_loose)
-     eta_tight = mu + 3*sigma over the per-ROUND-MEAN BER of all clients in the
-                 calibration window   (what the live detector approximates)
-     eta_loose = mu + 3*sigma over PER-CLIENT BER of all clients in the window
-                 (the looser reading; sigma inflated by hard positions)
-
-The window = the last K rounds that are converged and still all-honest,
-i.e. ending just before the first free-rider defects 
+The attack tags calibration rounds with trace action "calib"; we read the window
+from the trace, else fall back to config [W-K, W-1].
 """
 import numpy as np
 
@@ -23,35 +20,104 @@ def mu3s(xs):
     return float(np.mean(xs)) + 3.0 * (float(np.std(xs)) if len(xs) > 1 else 0.0)
 
 
-def calib_window(run, k=5, default_end=12):
-    """[lo, hi] rounds to calibrate on: the last k all-honest converged rounds."""
-    first_defect = None
-    pc = (run.get("compute", {}) or {}).get("per_client", {}) or {}
-    for c in pc.values():
+def _cfg(run, key, default):
+    v = (run.get("config", {}) or {}).get(key)
+    return default if v is None else v
+
+
+def freeride_start(run):
+    return int(_cfg(run, "autop_honest_until", 12))                 # W
+
+
+def calib_window(run):
+    """[lo, hi] calibration rounds — from 'calib' trace tags, else config [W-K,W-1]."""
+    tagged = set()
+    for c in ((run.get("compute", {}) or {}).get("per_client", {}) or {}).values():
         if c.get("is_free_rider"):
-            ds = [t["round"] for t in c.get("trace", [])
-                  if t.get("action") in ("tap", "coast")]
-            if ds:
-                first_defect = min(ds) if first_defect is None else min(first_defect, min(ds))
-    if first_defect is not None:
-        end = first_defect - 1                      # last all-honest round
-    else:
-        end = (run.get("config", {}) or {}).get("autop_honest_until") or default_end
-    end = max(k, int(end))
-    return end - k + 1, end
+            for t in c.get("trace", []):
+                if t.get("action") == "calib":
+                    tagged.add(t["round"])
+    if tagged:
+        return min(tagged), max(tagged)
+    W = freeride_start(run)
+    return W - int(_cfg(run, "autop_calib_rounds", 4)), W - 1
 
 
-def frozen_eta(runs, k=5):
-    """(eta_tight, eta_loose) pooled over ALL clients in each run's calib window."""
+def window_bounds(runs):
+    return calib_window(runs[0]) if runs else (8, 11)
+
+
+def last_round(runs):
+    return max((h.get("round", 0) for r in runs for h in r.get("history", [])), default=50)
+
+
+def _pool(runs, lo, hi, honest_only=False):
+    """(round_means, individual_bers) over rounds in [lo, hi]."""
     rm, pc = [], []
     for r in runs:
-        lo, hi = calib_window(r, k)
         for h in r.get("history", []):
             rd = h.get("round")
             if rd is None or rd < lo or rd > hi:
                 continue
-            vals = [p["ber"] for p in (h.get("wm_per_client") or [])]   # ALL clients
+            vals = [p["ber"] for p in (h.get("wm_per_client") or [])
+                    if not (honest_only and p.get("is_free_rider"))]
             if vals:
                 rm.append(float(np.mean(vals)))
                 pc.extend(vals)
-    return mu3s(rm), mu3s(pc)
+    return rm, pc
+
+
+def frozen_eta(runs):
+    """(tight, loose) on ALL clients in the calibration window — the FAIR eta."""
+    tight_rm, loose_pc = [], []
+    for r in runs:
+        lo, hi = calib_window(r)
+        rm, pc = _pool([r], lo, hi, honest_only=False)
+        tight_rm += rm
+        loose_pc += pc
+    return mu3s(tight_rm), mu3s(loose_pc)
+
+
+def _cumulative(runs):
+    """μ+3σ over ALL honest round-means across the whole run (the swingy live one)."""
+    end = last_round(runs)
+    rm, _ = _pool(runs, 1, end, honest_only=True)
+    return mu3s(rm)
+
+
+def _easy_hard(runs, lo, hi, split=0.03):
+    """Per-client honest BER in the calib window, split into easy vs hard positions
+    by per-trigger-class mean BER."""
+    byclass = {}
+    for r in runs:
+        for h in r.get("history", []):
+            rd = h.get("round")
+            if rd is None or rd < lo or rd > hi:
+                continue
+            for p in (h.get("wm_per_client") or []):
+                if not p.get("is_free_rider"):
+                    byclass.setdefault(p["trigger_class"], []).append(p["ber"])
+    cmean = {c: float(np.mean(v)) for c, v in byclass.items()}
+    easy = [b for c, v in byclass.items() if cmean[c] < split for b in v]
+    hard = [b for c, v in byclass.items() if cmean[c] >= split for b in v]
+    return mu3s(easy), mu3s(hard)
+
+
+def all_thresholds(attack, honest):
+    """The seven threshold definitions (bar chart source). `attack` = a data-sweep
+    family (all clients honest during warmup); `honest` = the all-honest run."""
+    ref = attack or honest
+    lo, hi = window_bounds(ref)
+    W = freeride_start(ref[0])
+    end = last_round(ref)
+    T = {}
+    rm, _ = _pool(attack or honest, lo, hi);                       T["1. SPEC\n(calib win,\nround-mean)"] = mu3s(rm)
+    rm, _ = _pool(honest or attack, end - 19, end, honest_only=True); T["2. longer\nhonest window"] = mu3s(rm)
+    _, pc = _pool(attack or honest, lo, hi);                       T["3. per-client\n(calib win)"] = mu3s(pc)
+    rm, _ = _pool(attack or honest, 1, W - 1);                     T["4. incl. full\nwarmup"] = mu3s(rm)
+    T["5. cumulative\n(live)"] = _cumulative(honest or attack)
+    rm, _ = _pool(attack, W, end);                                T["6. FR-inflated\n(post-warmup)"] = mu3s(rm)
+    e, h = _easy_hard(honest or attack, lo, hi)
+    T["7a. all-honest\nEASY pos"] = e
+    T["7b. all-honest\nHARD pos"] = h
+    return T

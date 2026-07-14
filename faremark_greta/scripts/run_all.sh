@@ -1,110 +1,89 @@
 #!/usr/bin/env bash
-# run_all.sh — one entry point for every experiment. Autopilot free-rider, config 14.
+# run_all.sh 
 #
-#   ./run_all.sh iid          # Tests 1-3 (IID): FPR + data sweep x2 positions x {full,block2}
-#   ./run_all.sh submarine    # Test 4: coast-when-safe (stay_min) at easy vs hard positions
-#   ./run_all.sh noniid       # Tests 1-3 under Dirichlet(alpha), swept alpha
-#   ./run_all.sh all          # everything above
-#   RES=/path ./run_all.sh PLOT [iid|submarine|noniid|all]
+# DIMENSIONS (env-overridable):
+#   PARTS   partitions        : "iid dir0.1 dir0.5 dir1.0"
+#   ETAS    threshold source  : "oracle estimate"        (oracle=0.09 for testing; estimate=realistic)
+#   SCOPES  params per tap     : "full block2"
+#   STAYS   attack mode        : "tap coast"             (coast = submarine/stay_min)
+#   CPC_HOPS data per tap      : "0 5 10 20 50 -1"       (trig-only -> +N/class -> full shard)
+#   POSES   positions          : "posA:3,6 posB:1,7"     (hard / easy)
+#   SEEDS                      : "0 1 2"
 #
-# Knobs (env):  SEEDS="0 1 2"  ALPHAS="0.1 0.5 1.0"  CPC_HOPS="0 5 10 20 50 -1"
-#               POS_A=3,6  POS_B=1,7  ORACLE=0.09  CFG=14  RES=/mnt/nfs/home/zu/results
+# USAGE
+#   ./run_all.sh matrix                 # submit everything
+#   PARTS=iid STAYS=tap ./run_all.sh matrix        # a slice
+#   ./run_all.sh quick                  # tiny sanity slice (iid, estimate, full, tap, posA/B, 1 seed)
+#   RES=/path ./run_all.sh PLOT [iid|dir0.5|...]   # plot a partition's results
+#
+# SIZE: full matrix = 4 parts x 2 eta x 2 scope x 2 stay x 6 cpc x 2 pos x 3 seeds
+#       = 1152 runs (+ 4 all-honest x 3). 
 set -uo pipefail
-SEEDS="${SEEDS:-0 1 2}"
-ALPHAS="${ALPHAS:-0.1 0.5 1.0}"
+CFG="${CFG:-14}"; RES="${RES:-/mnt/nfs/home/zu/results}"
+PARTS="${PARTS:-iid dir0.1 dir0.5 dir1.0}"
+ETAS="${ETAS:-oracle estimate}"
+SCOPES="${SCOPES:-full block2}"
+STAYS="${STAYS:-tap coast}"
 CPC_HOPS="${CPC_HOPS:-0 5 10 20 50 -1}"
-POS_A="${POS_A:-3,6}"; POS_B="${POS_B:-1,7}"
-ORACLE="${ORACLE:-0.09}"; CFG="${CFG:-14}"
-RES="${RES:-/mnt/nfs/home/zu/results}"
+POSES="${POSES:-posA:3,6 posB:1,7}"
+SEEDS="${SEEDS:-0 1 2}"
 PT="python scripts/plot_tests.py"; PA="python scripts/plot_analysis.py"
-aid(){ echo "$1" | tr -d '.'; }
 
-sub(){ WAIT=0 ./submit_experiment.sh "$CFG" "$1"; }   # $1 = seed; env vars carry the rest
+part_env(){ case "$1" in
+  iid)     echo "" ;;
+  dir*)    echo "PARTITION=dirichlet DIRICHLET_ALPHA=${1#dir}" ;;
+esac; }
+part_tag(){ echo "$1" | tr -d '.'; }         # dir0.5 -> dir05
 
-# ------- IID Tests 1-3 (tap every round; cost = data x scope) -------
-run_iid(){
- for R in $SEEDS; do
-  env ATTACK=none ROUNDS=50 FAMILY=t1_all_honest NOTE="t1 all honest" sub $R
-  for NC in $CPC_HOPS; do for PP in "posA:$POS_A" "posB:$POS_B"; do P=${PP%%:*}; IDS=${PP##*:}
-   env ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_HONEST_UNTIL=12 AUTOP_MARGIN0=0.06 ROUNDS=50 \
-       AUTOP_SCOPE=full  AUTOP_COMMON_PER_CLASS=$NC FREE_RIDER_IDS=$IDS \
-       FAMILY=t2_full_$P SWEEP_LEVEL=$NC NOTE="t2 full $P cpc=$NC" sub $R
-   env ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_HONEST_UNTIL=12 AUTOP_MARGIN0=0.06 ROUNDS=50 \
-       AUTOP_SCOPE=block2 AUTOP_COMMON_PER_CLASS=$NC FREE_RIDER_IDS=$IDS \
-       FAMILY=t3_block2_$P SWEEP_LEVEL=$NC NOTE="t3 block2 $P cpc=$NC" sub $R
-  done; done
- done
+submit_one(){  # args: part eta scope stay cpc posname posids seed
+  local part=$1 eta=$2 scope=$3 stay=$4 cpc=$5 pn=$6 ids=$7 seed=$8
+  local E="ROUNDS=50 CALIB_ON_ALL=0 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 AUTOP_MARGIN0=0.06"
+  E="$E $(part_env $part) AUTOP_SCOPE=$scope AUTOP_COMMON_PER_CLASS=$cpc FREE_RIDER_IDS=$ids ATTACK=autopilot"
+  [ "$eta" = oracle ] && E="$E AUTOP_ORACLE_ETA=0.09"
+  [ "$stay" = coast ] && E="$E AUTOP_STAY_MIN=1"
+  local fam="$(part_tag $part)_${eta}_${scope}_${stay}_${pn}"
+  env $E FAMILY="$fam" SWEEP_LEVEL=$cpc NOTE="$fam cpc=$cpc" WAIT=0 ./submit_experiment.sh "$CFG" "$seed"
 }
 
-# ------- Test 4: SUBMARINE / coast (stay_min=1) -------
-# Coast (no training) while safely under target; tap only when the mark drifts up.
-# Point: at EASY positions the FR already passes -> submarine makes it near-free.
-#        at HARD positions it's still caught (coast BER >= tap BER >= eta).
-run_submarine(){
- for R in $SEEDS; do for NC in 5 -1; do for PP in "posA:$POS_A" "posB:$POS_B"; do
-   P=${PP%%:*}; IDS=${PP##*:}
-   env ATTACK=autopilot AUTOP_ORACLE_ETA=$ORACLE AUTOP_HONEST_UNTIL=12 AUTOP_MARGIN0=0.06 ROUNDS=50 \
-       AUTOP_STAY_MIN=1 AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=$NC FREE_RIDER_IDS=$IDS \
-       FAMILY=t4_sub_${P}_cpc$NC SWEEP_LEVEL=$NC NOTE="t4 submarine $P cpc=$NC" sub $R
- done; done; done
+run_matrix(){
+  for part in $PARTS; do
+    # all-honest reference per partition (for the thresholds/FPR)
+    for seed in $SEEDS; do
+      env ROUNDS=50 ATTACK=none $(part_env $part) FAMILY="t1_$(part_tag $part)" \
+          NOTE="all honest $part" WAIT=0 ./submit_experiment.sh "$CFG" "$seed"
+    done
+    for eta in $ETAS; do for scope in $SCOPES; do for stay in $STAYS; do
+      for cpc in $CPC_HOPS; do for pp in $POSES; do
+        pn=${pp%%:*}; ids=${pp##*:}
+        for seed in $SEEDS; do submit_one $part $eta $scope $stay $cpc $pn $ids $seed; done
+      done; done
+    done; done; done
+  done
 }
 
-# ------- Non-IID Tests 1-3 (FR ESTIMATES eta; no oracle) -------
-run_noniid(){
- for A in $ALPHAS; do AT=$(aid $A); for R in $SEEDS; do
-   env ATTACK=none ROUNDS=50 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
-       FAMILY=t1_noniid_a$AT NOTE="t1 noniid a=$A" sub $R
-   for NC in $CPC_HOPS; do for PP in "posA:$POS_A" "posB:$POS_B"; do P=${PP%%:*}; IDS=${PP##*:}
-    env ATTACK=autopilot AUTOP_HONEST_UNTIL=12 AUTOP_MARGIN0=0.06 ROUNDS=50 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
-        AUTOP_SCOPE=full  AUTOP_COMMON_PER_CLASS=$NC FREE_RIDER_IDS=$IDS \
-        FAMILY=t2_noniid_a${AT}_$P SWEEP_LEVEL=$NC NOTE="t2 noniid a=$A $P cpc=$NC" sub $R
-    env ATTACK=autopilot AUTOP_HONEST_UNTIL=12 AUTOP_MARGIN0=0.06 ROUNDS=50 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
-        AUTOP_SCOPE=block2 AUTOP_COMMON_PER_CLASS=$NC FREE_RIDER_IDS=$IDS \
-        FAMILY=t3_noniid_a${AT}_$P SWEEP_LEVEL=$NC NOTE="t3 noniid a=$A $P cpc=$NC" sub $R
-   done; done
- done; done
-}
-
-# =================== PLOT ===================
+# =============================== PLOT ===============================
 if [ "${1:-}" = "PLOT" ]; then
-  WHAT="${2:-all}"; OUT="${OUT:-figs}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
+  P="${2:-iid}"; PT_="$(part_tag $P)"; OUT="${OUT:-figs/$PT_}"; mkdir -p "$OUT"; ALL="$RES/*/result.json"
+  ETA="${ETA_MODE:-estimate}"; STAY="${STAY_MODE:-tap}"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
-  if [ "$WHAT" = "iid" ] || [ "$WHAT" = "all" ]; then
-    run $PT test1_fpr --in "'$ALL'" --family t1_all_honest --out "$OUT/test1_fpr"
-    for P in posA posB; do
-      run $PT test_data --in "'$ALL'" --family t2_full_$P  --scope full   --title "'Test2 full $P'"   --out "$OUT/test2_full_$P"
-      run $PT test_data --in "'$ALL'" --family t3_block2_$P --scope block2 --title "'Test3 block2 $P'" --out "$OUT/test3_block2_$P"
-    done
-    run $PA frontier   --in "'$ALL'" --families t2_full_posA t3_block2_posA --title "'Effort frontier (posA)'" --out "$OUT/frontier_posA"
-    run $PA scorecard  --in "'$ALL'" --families t2_full_posA t3_block2_posA t2_full_posB t3_block2_posB --out "$OUT/scorecard_iid"
-    run $PA thresholds --in "'$ALL'" --family t1_all_honest --out "$OUT/thresholds_iid"
-  fi
-  if [ "$WHAT" = "submarine" ] || [ "$WHAT" = "all" ]; then
-    for f in $(cd "$RES" 2>/dev/null && ls -d */ 2>/dev/null | sed 's#/##' | grep t4_sub | sed 's/_[0-9]*$//' | sort -u); do :; done
-    run $PA timeline  --in "'$ALL'" --family t4_sub_posB_cpc-1 --title "'Submarine — easy positions (coast)'" --out "$OUT/sub_timeline_posB"
-    run $PA timeline  --in "'$ALL'" --family t4_sub_posA_cpc-1 --title "'Submarine — hard positions (coast)'" --out "$OUT/sub_timeline_posA"
-  fi
-  if [ "$WHAT" = "noniid" ] || [ "$WHAT" = "all" ]; then
-    for A in $ALPHAS; do AT=$(aid $A)
-      run $PT test1_fpr --in "'$ALL'" --family t1_noniid_a$AT --out "$OUT/t1_noniid_a$AT"
-      for P in posA posB; do
-        run $PT test_data --in "'$ALL'" --family t2_noniid_a${AT}_$P --scope full   --title "'Test2 noniid a=$A $P'" --out "$OUT/t2_noniid_a${AT}_$P"
-        run $PT test_data --in "'$ALL'" --family t3_noniid_a${AT}_$P --scope block2 --title "'Test3 noniid a=$A $P'" --out "$OUT/t3_noniid_a${AT}_$P"
-      done
-      run $PA frontier   --in "'$ALL'" --families t2_noniid_a${AT}_posA t3_noniid_a${AT}_posA --title "'Frontier noniid a=$A'" --out "$OUT/frontier_noniid_a$AT"
-      run $PA scorecard  --in "'$ALL'" --families t2_noniid_a${AT}_posA t3_noniid_a${AT}_posA t2_noniid_a${AT}_posB t3_noniid_a${AT}_posB --out "$OUT/scorecard_noniid_a$AT"
-      run $PA thresholds --in "'$ALL'" --family t1_noniid_a$AT --out "$OUT/thresholds_noniid_a$AT"
-    done
-  fi
-  echo "plotted -> $OUT"; exit 0
+  # per-scope x position BER+effort
+  for scope in full block2; do for pn in posA posB; do
+    F="${PT_}_${ETA}_${scope}_${STAY}_${pn}"
+    run $PT test_data --in "'$ALL'" --family $F --scope $scope --title "'$F'" --out "$OUT/${F}"
+  done; done
+  # timeline (representative: full, posA), effort frontier, scorecard, and ALL thresholds
+  run $PA timeline   --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA --level -1 --out "$OUT/timeline_${PT_}"
+  run $PA frontier   --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA ${PT_}_${ETA}_block2_${STAY}_posA --title "'Effort frontier $P (posA)'" --out "$OUT/frontier_${PT_}"
+  run $PA scorecard  --in "'$ALL'" --families ${PT_}_${ETA}_full_${STAY}_posA ${PT_}_${ETA}_block2_${STAY}_posA ${PT_}_${ETA}_full_${STAY}_posB ${PT_}_${ETA}_block2_${STAY}_posB --out "$OUT/scorecard_${PT_}"
+  run $PA all_thresholds --in "'$ALL'" --family ${PT_}_${ETA}_full_${STAY}_posA --honest_family t1_${PT_} --title "'All thresholds $P'" --out "$OUT/all_thresholds_${PT_}"
+  run $PT test1_fpr  --in "'$ALL'" --family t1_${PT_} --out "$OUT/test1_fpr_${PT_}"
+  echo "plotted -> $OUT   (ETA_MODE=$ETA STAY_MODE=$STAY)"; exit 0
 fi
 
-# =================== SUBMIT ===================
-case "${1:-all}" in
-  iid)       run_iid ;;
-  submarine) run_submarine ;;
-  noniid)    run_noniid ;;
-  all)       run_iid; run_submarine; run_noniid ;;
-  *) echo "usage: ./run_all.sh [iid|submarine|noniid|all]  |  RES=... ./run_all.sh PLOT [iid|submarine|noniid|all]"; exit 1 ;;
+# =============================== SUBMIT ===============================
+case "${1:-matrix}" in
+  matrix) run_matrix ;;
+  quick)  PARTS=iid ETAS=estimate SCOPES=full STAYS=tap SEEDS=0 CPC_HOPS="0 5 -1" run_matrix ;;
+  *) echo "usage: ./run_all.sh [matrix|quick]  |  RES=... ./run_all.sh PLOT <partition>"; exit 1 ;;
 esac
-echo "submitted '${1:-all}'. When done: RES=$RES ./run_all.sh PLOT ${1:-all}"
+echo "submitted '${1:-matrix}'. When done:  RES=$RES ./run_all.sh PLOT <partition>"
