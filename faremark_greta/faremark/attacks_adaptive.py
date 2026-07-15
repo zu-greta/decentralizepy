@@ -2,35 +2,32 @@
 
 Threat model:
   * The free-rider is an honest client with an assigned trigger class + key + wm
-    bits. It can embed and measure its OWN BER but does not see eta, other clients'
-    keys, or other clients' BER. It must estimate eta to stay undetected (or be
-    GIVEN it via autop_oracle_eta for controlled testing).
-  * "Attacker in the calibration pool or not" is a server-side setting
-    (wm_verify.calib_on_all), not a property of the attacker.
+    bits. It estimates (using its own BER) the eta to stay undetected - (or given
+    the oracle eta for controlled testing). 
 
-Autopilot behaviour (matches the 4-point design):
-  1. Uses the honest client's modules verbatim (key/bits/lambda/alpha/beta/memory/
-     _local_train_wm) -- it subclasses WatermarkClient.
+Submarine behaviour:
+  1. Uses the honest client's modules (key/bits/lambda/alpha/beta/memory/
+     _local_train_wm) -- subclasse of WatermarkClient
   2. Estimates eta (or uses the oracle) -- _eta_est().
-  3. Behaves honestly until its OWN watermark BER has CONVERGED (this is the window
+  3. Behaves honestly until its own watermark BER has converged (same window
      the server calibrates eta on): it watches its probe BER flatten, then observes
      K more honest rounds as the calibration window, freezes eta, and defects.
-     The warmup length is therefore DYNAMIC (a hard trigger position converges later
-     than an easy one). A 'fixed' mode reproduces the old deterministic schedule.
+     The warmup length is therefore dynamic (a hard trigger position converges later
+     than an easy one). On 'fixed' mode, follows deterministic schedule: 
+     warmup = [1 .. W-1], calib window = [W-K .. W-1], free-ride >= W, with W = autop_honest_until.
   4. After warmup it re-embeds ("taps") to hold its mark under eta. A tap trains on
      trigger-only / +N-per-common-class / the full shard (autop_common_per_class)
-     with scope full|block2|block|head (autop_scope) -- so a tap's COST = the data
+     with scope full|block2|block|head (autop_scope) -- so a tap's cost = the data
      and params it uses. With autop_stay_min it coasts (no training) while safely
-     under target and taps only when needed; otherwise it taps every round
-     (honest-style), which is what the data-sweep tests use.
+     under target and taps only when needed; otherwise it taps every round (honest-style)
 
 WARMUP / CALIBRATION-WINDOW SELECTION (the schedule)
   autop_warmup_mode = "dynamic" (default):
       round r, phase "warmup":  train honestly, probe own BER, append to history.
           once r >= autop_honest_min AND the last (autop_conv_patience+1) probe BERs
-          are within autop_conv_eps of each other  ->  CONVERGED  ->  enter "calib".
+          are within autop_conv_eps of each other  ->  converged  ->  enter "calib".
           A hard cap autop_warmup_cap forces "calib" even if never flat.
-      phase "calib":  the CONVERGED rounds. Train honestly, tag them "calib",
+      phase "calib":  the converged rounds. Train honestly, tag them "calib",
           collect BERs. After autop_calib_rounds (K) of them, FREEZE eta, defect.
       => warmup = [1 .. conv-1], calib window = [conv .. conv+K-1], free-ride >= conv+K.
          All dynamic and position-dependent.
@@ -38,9 +35,6 @@ WARMUP / CALIBRATION-WINDOW SELECTION (the schedule)
       reproduces the old deterministic schedule exactly: warmup = [1 .. W-1],
       calib window = [W-K .. W-1], free-ride >= W, with W = autop_honest_until.
       (Useful as a position-independent control so warmup length is not a confound.)
-
-The 'calib' trace tag marks exactly the calibration rounds, so the offline
-analysis (eta_calib.py) reads the true (dynamic) window straight from the trace.
 
 Per-round decisions are recorded in self.trace for plotting.
 """
@@ -69,7 +63,7 @@ class _AdaptiveMixin:
         if getattr(self, "_prepared", False):
             return
         self._prepared = True
-        self._enr_loader = None                     # (enriched mode removed; kept None for _embed_loop guard)
+        self._enr_loader = None                     
         trig, comm_x, comm_y = [], [], []
         for x, y in self.loader:
             tm = (y == self.trigger_class)
@@ -86,12 +80,11 @@ class _AdaptiveMixin:
         hr = getattr(self, "autop_holdout_ratio", 0.5)
         k = min(n_probe, max(1, int(len(allt) * hr)))
         self._probe_x = allt[:k].clone()            # held-out for probing
-        # train the mark on ALL trigger images (like an honest client) -- the probe
-        # is never used to gate stay-under training, so don't sacrifice half the data.
+        # train the mark on all trigger images (like an honest client) 
         trig_train = allt
 
         # reduced shard for a tap (data-ablation): trigger samples + N images from
-        # each common class. autop_common_per_class = -1 -> use full shard instead.
+        # each common class. autop_common_per_class = -1 -> use full shard instead
         ncpc = getattr(self, "autop_common_per_class", -1)
         self._reduced_loader = None
         if ncpc >= 0:
@@ -138,8 +131,8 @@ class _AdaptiveMixin:
         scope: None/"full" -> whole model; "block2" -> last 20 tensors; "block" ->
         last 8; "head" -> last 2 (backbone frozen => cheaper backward).
         Loader priority: if use_full (the forced-honest warmup) -> the full shard,
-        so the free-rider is INDISTINGUISHABLE from an honest client while eta is
-        being calibrated; else reduced (data-ablation, cpc>=0) else full shard.
+        so the free-rider is same as honest client while eta is being calibrated; 
+        else reduced (data-ablation, cpc>=0) else full shard
         """
         self.model.load_state_dict(global_state)
         self.model.train()
@@ -198,17 +191,17 @@ class _AdaptiveMixin:
 
 
 def make_autopilot_attack(base_cls):
-    """Autopilot adaptive free-rider factory. `base_cls` is WatermarkClient.
+    """submarine adaptive free-rider factory. `base_cls` is WatermarkClient
 
-    SCHEDULE (see module docstring):
+    schedule:
       rounds  warmup       FORCED HONEST (full shard, exactly like an honest client
-                           -- indistinguishable, and pays the honest warmup cost).
-                           Ends DYNAMICALLY when the FR's own probe BER converges
+                           and pays the honest warmup cost).
+                           Ends dynamically when the FR's own probe BER converges
                            (autop_warmup_mode="dynamic"), or at a fixed round W
                            (autop_warmup_mode="fixed", W=autop_honest_until).
       calibration window   the K (=autop_calib_rounds) converged honest rounds: the
-                           server freezes eta here on ALL clients; the free-rider
-                           freezes its OWN eta estimate here too (only sees own BER).
+                           server freezes eta here on all clients; the free-rider
+                           freezes its own eta estimate here too (only sees own BER)
       free-ride            tap (reduced data x scope) or coast (stay_min).
     """
     _ETA_FALLBACK = 0.35
@@ -322,7 +315,7 @@ def make_autopilot_attack(base_cls):
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
 
-            # DIAGNOSTIC: pure honest every round (never defects).
+            # pure honest every round (never defects)
             if self.autop_honest_clone:
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
                 self._update_mark_delta(global_state)
@@ -330,10 +323,10 @@ def make_autopilot_attack(base_cls):
                                    "ber_after": self._probe_ber_state(submit)})
                 return submit, n
 
-            # ---- HONEST PHASES (warmup -> calibration): train EXACTLY like an
+            # ---- HONEST PHASES (warmup -> calibration): train exactly like an
             #      honest client. Warmup ends dynamically when the FR's own BER has
             #      converged (or the hard cap is hit); the next K rounds are the
-            #      calibration window over which eta is frozen; then it defects. ----
+            #      calibration window over which eta is frozen; then it defects ----
             if self._phase in ("warmup", "calib"):
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
                 self._update_mark_delta(global_state)

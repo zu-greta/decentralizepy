@@ -91,7 +91,7 @@ def make_key(num_bits: int, group_size: int, seed: int,
 def unembeddable_fraction(key: torch.Tensor) -> float:
     """Fraction of key rows that are same-sign (all +1 or all -1).
 
-    A same-sign row forces z_k = sum_j f(p_j) M_{k,j} to a fixed sign for EVERY
+    A same-sign row forces z_k = sum_j f(p_j) M_{k,j} to a fixed sign for every
     input (because f(p) >= 0), so that bit cannot be embedded -- it sits at ~50%
     error against a balanced target, independent of training. This is structural.
     With balanced=True it is 0 by construction. With random keys it grows as the

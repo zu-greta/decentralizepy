@@ -65,18 +65,16 @@ def make_verifier(registry, trigger_bank, verify_model, device,
                   paper_faithful=False, calib_on_all=False):
     """Return a verify_hook(server, round, updates) for Server
 
-    The threshold is ALWAYS the computed eta = mu + 3*sigma over the benign BER
-    distribution (Eq. 16) -- never a hardcoded value. `eta_floor` is only a small
-    degenerate guard: if every benign BER is ~0, mu+3sigma collapses to 0 and the
-    rule "flag iff BER >= eta" would flag every honest client (BER 0 >= 0); the
-    floor keeps eta strictly positive. It sits well below the honest hard-position
-    band (~0.10-0.20) and the tight round-mean eta (~0.09), so it never binds in
-    the regime we study.
+    The threshold is always the computed eta = mu + 3*sigma over the benign BER
+    distribution (Eq. 16). `eta_floor` is a guard: if every benign BER is ~0, 
+    mu+3sigma collapses to 0 and the rule "flag iff BER >= eta" would flag every 
+    honest client (BER 0 >= 0); the floor keeps eta strictly positive. 
+    It sits well below the honest hard-position band (~0.10-0.20) and the tight 
+    round-mean eta (~0.09), so it never binds
 
-    paper_faithful=True: cumulative mu+3sigma over ALL rounds (the paper's "typical
-    error rate over many rounds"). Else: a sliding window of recent rounds so eta
-    can RECOVER after a transient benign-BER spike (e.g. a brief model collapse
-    under many free-riders); a cumulative mean would stay poisoned forever.
+    paper_faithful=True: cumulative mu+3sigma over all rounds 
+    else: a sliding window of recent rounds so eta can recover after a transient 
+    benign-BER spike; a cumulative mean would stay poisoned forever.
     calib_on_all=True: calibrate eta over every client's BER (server cannot tell
     honest from free-rider), exposing the paper's circularity -- free-rider BER
     ~0.5 poisons mu+3sigma. Default False matches the paper's 'observe legitimate

@@ -1,11 +1,5 @@
 # CODE_MAP — technical reference
 
-Line numbers refer to the **cleaned** files (the autopilot-only refactor). Core
-files (client, server, watermark, wm_verify, compute_meter, eta_calib, datasets,
-utils, manifest, plotstyle) are unchanged from the original upload.
-
-Package layout (import root `faremark/`, scripts in `scripts/`):
-
 ```
 faremark/
   client.py           honest FedAvg client (base class)
@@ -44,20 +38,20 @@ mark, extracted from its trigger-class softmax.
 
 | Symbol / step | Function | Line | Paper |
 |---|---|---|---|
-| smoothing f(p)=p^alpha | `smooth` | 48 | Eq. 7-9 |
+| smoothing `f(p)=p^alpha` | `smooth` | 48 | Eq. 7-9 |
 | secret +/-1 key M [m,l] | `make_key` | 67 | §IV-A |
 | same-sign (stuck) key rows | `unembeddable_fraction` | 91 | floor diagnostic |
-| target bits B in {0,1}^m | `make_bits` | 106 | Eq. 2 |
-| group size l = n//m | `grouping` | 120 | §IV-A |
+| target bits B in `{0,1}^m` | `make_bits` | 106 | Eq. 2 |
+| group size `l = n//m` | `grouping` | 120 | §IV-A |
 | project probs -> per-bit z | `project_logits` | 132 | Eq. 1/13 |
-| embed loss BCE(z, B) | `watermark_loss` | 157 | Eq. 11-12 |
-| extract: mean over N_T, sign | `extract_bits` | 170 | Eq. 15 |
-| BER = mean(bits != B) | `bit_error_rate` | 178 | Eq. 16 |
-| flag test BER < eta | `detected` | 183 | Eq. 16 |
-| **eta = mu + 3*sigma** | `calibrate_eta` | 188 | §IV-D-3 |
+| embed loss `BCE(z, B)` | `watermark_loss` | 157 | Eq. 11-12 |
+| extract: `mean over N_T`, sign | `extract_bits` | 170 | Eq. 15 |
+| `BER = mean(bits != B)` | `bit_error_rate` | 178 | Eq. 16 |
+| flag test `BER < eta` | `detected` | 183 | Eq. 16 |
+| `**eta = mu + 3*sigma**` | `calibrate_eta` | 188 | §IV-D-3 |
 | anti-dominance ratio | `dominance_ratio` | 202 | Eq. 6/10 |
 
-**Key fact:** `calibrate_eta(benign_bers, floor)` takes μ+3σ over **whatever list you
+**Key fact:** `calibrate_eta(benign_bers, floor)` takes `μ+3σ` over **whatever list you
 pass it**. In the live server that list is the per-round *mean* honest BER (see §4).
 
 ---

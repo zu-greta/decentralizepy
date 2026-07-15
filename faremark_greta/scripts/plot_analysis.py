@@ -1,5 +1,4 @@
-"""plot_analysis.py — at-a-glance analysis plots built from result.json history.
-
+"""
 Subcommands
   timeline    BER vs communication round for ONE run: per-FR & per-honest + means,
               warmup end, tap/coast markers, and the fair thresholds (annotated).
@@ -146,8 +145,8 @@ def timeline(a):
     ax.set_title(a.title or f"BER vs round  ·  {fam(r)}  ·  cpc={lvl(r)}  ·  seed={r.get('seed')}")
     ax.legend(loc="upper right", fontsize=7.5, ncol=2)
 
-    note = ("η frozen on the CALIBRATION window (green, all clients honest):  tight = μ+3σ of the "
-            "per-round MEAN BER;  loose = μ+3σ of all per-client BERs.  Same window the free-rider uses.")
+    note = ("η frozen on the calibration window (green, all clients honest):  tight = μ+3σ of the "
+            "per-round mean BER;  loose = μ+3σ of all per-client BERs")
     ax.text(0.005, -0.16, note, transform=ax.transAxes, fontsize=8.5, color=GREY)
     ps.finish(fig, a.out + ".png")
     print(f"calib window [{lo},{hi}] | free-ride from {W} | n_taps={len(taps)} n_coasts={len(coasts)} | eta={E}")
@@ -267,7 +266,7 @@ def thresholds(a):
         ax.text(b.get_x()+b.get_width()/2, f+0.6, f"FPR {f:.0f}%\nη={v:.3f}" if v is not None else "n/a",
                 ha="center", fontsize=9)
     ax.set_ylabel("honest false-positive rate  (% of honest client-rounds flagged)")
-    ax.set_title(a.title or "Which threshold gives the fewest false positives?")
+    ax.set_title(a.title or "threshold vs. false positives")
     ax.set_ylim(0, max([f for f in fpr if not np.isnan(f)] + [10]) * 1.25)
     ax.text(0.0, -0.17, "All η from honest clients' last %d rounds. tight/loose = μ+3σ over round-means / per-client; "
             "cumul = live paper-faithful; fixed = 0.25. Lower bar = fewer honest clients wrongly flagged."%TAIL,
@@ -290,16 +289,21 @@ def all_thresholds(a):
     _, indiv = eta_calib._pool(honest or attack, n_rounds - 19, n_rounds, honest_only=True)
 
     names = list(T.keys()); vals = [T[k] for k in names]
-    fpr = [100.0*np.mean([b >= v for b in indiv]) if (v is not None and indiv) else np.nan for v in vals]
+    # a variant is None/NaN when its pool is empty for this slice (e.g. no honest
+    # client at an easy/hard position inside the window, or no post-warmup rounds).
+    # Draw a zero-height bar for it and label "n/a" so bar() never gets a None height.
+    def _num(v): return (v is not None) and not (isinstance(v, float) and np.isnan(v))
+    heights = [v if _num(v) else 0.0 for v in vals]
+    fpr = [100.0*np.mean([b >= v for b in indiv]) if (_num(v) and indiv) else np.nan for v in vals]
     lo, hi = eta_calib.window_bounds(attack or honest)
 
     fig, ax = plt.subplots(figsize=(15, 6.6))
     cols = [ps.C_FR, "#0072B2", "#009E73", "#E69F00", GREY, "#CC79A7", "#7FB069", "#B23A2E"]
-    bars = ax.bar(range(len(names)), vals, color=[cols[i % len(cols)] for i in range(len(names))],
+    bars = ax.bar(range(len(names)), heights, color=[cols[i % len(cols)] for i in range(len(names))],
                   edgecolor="white")
     for i, (b, v, f) in enumerate(zip(bars, vals, fpr)):
-        txt = f"η={v:.3f}\nFPR {f:.0f}%" if (v is not None and not np.isnan(f)) else "n/a"
-        ax.text(b.get_x()+b.get_width()/2, (v or 0)+0.008, txt, ha="center", fontsize=8.5)
+        txt = f"η={v:.3f}\nFPR {f:.0f}%" if (_num(v) and not np.isnan(f)) else "n/a"
+        ax.text(b.get_x()+b.get_width()/2, heights[i]+0.008, txt, ha="center", fontsize=8.5)
     ax.set_xticks(range(len(names))); ax.set_xticklabels(names, fontsize=8)
     ax.set_ylabel("threshold η   (bar)   +   honest FPR (label)")
     ax.set_title(a.title or f"All threshold definitions  ·  calibration window = rounds [{lo},{hi}]")

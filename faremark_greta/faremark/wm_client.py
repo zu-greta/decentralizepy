@@ -156,8 +156,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_conv_patience=getattr(cfg, "autop_conv_patience", 2),
                     **wm_args, **common))
             elif attack in ATTACKS:
-                # crude paper baselines (previous_models / gaussian): they don't
-                # embed, so they inherit the plain Client attack, not wm_args.
+                # paper baselines (previous_models / gaussian) - no embedding
                 cls = ATTACKS[attack]
                 if cls is GaussianNoiseFreeRider:
                     clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),

@@ -1,209 +1,157 @@
-# NEW CONVERSATION PLAN — build the FareMark results deck
+# FareMark results deck — build brief (handoff to a fresh conversation)
 
-Paste this whole file into a fresh chat, upload the files in §12, then hand over the
-new result plots. The new Claude's job: **place every plot into the slide deck's
-appendix (with the full description template in §11) and refresh the body findings.**
+**Your job in the new conversation:** build a fresh slide deck presenting these results, in the
+same visual style/structure as the existing `FareMark_attack.pptx` (which the user will upload as
+the style reference), on the APPROVED palette below. Body slides tell the story; the appendix has
+one slide per figure using the appendix template in §7. Pull exact numbers from any uploaded
+`result.json`; otherwise use the numbers embedded here (they were read off the figures).
 
----
-
-## 1. Mission for the new Claude
-1. Take the existing deck (`FareMark_attack.pptx`) + `experiment_rundown.pptx`.
-2. For every uploaded result plot, add an appendix slide using the template in §11
-   (what it is · setup · every symbol/line/acronym · thresholds & how computed · why ·
-   data choice · units + theoretical meaning · analysis · conclusion).
-3. Update the body findings/numbers where the new (post-warmup-fix) results change them.
-4. Keep the fairness discipline: every attack stays inside FareMark's protocol; the one
-   exploited gap is the η-population ambiguity, where multiple readings fail.
+Read the pptx skill (`/mnt/skills/public/pptx/SKILL.md`) before building. Validate + render to
+check overflow before finishing.
 
 ---
 
-## 2. Context & the finding (one paragraph)
-We stress-test **FareMark** (Li et al., IEEE IoT-J 2025): honest FL clients embed a
-private output-space watermark on their assigned trigger class; the server extracts it
-on N_T=50 held-out trigger images → per-client **bit-error-rate (BER)**; flags a client
-if **BER ≥ η**, η = μ+3σ over legitimate BERs. We built an adaptive free-rider (the
-"autopilot"). **Finding:** the honest BER floor is *position-dependent*; no single scalar
-η both catches an embedding free-rider and spares honest hard-position clients — tight η
-→ ~32% honest false positives, loose η → the free-rider passes. It's a false-positive /
-threshold-calibration limitation, not a cheap-evasion result. Setup: CIFAR-100 · ResNet-18
-· 10 clients · 50 rounds · 5 local epochs · m=10 bits · N_T=50 · λ=5, β=0.6, α=0.4 ·
-paper-faithful · 3 seeds.
+## 1. The contribution (the one thing the deck must land)
+
+FareMark (Li et al., IEEE IoT-J 2025) detects free-riders in federated learning by having honest
+clients embed an m-bit output-space **watermark** on their assigned trigger class; the server
+extracts it, computes each client's **bit-error-rate (BER)**, and flags a client if `BER ≥ η`,
+with `η = μ + 3σ` over legitimate clients' BER.
+
+**Finding (a negative result — this IS the contribution):** the honest BER floor is
+**position-dependent** — it depends on which trigger class / bit-position a client is assigned.
+Easy positions sit at BER ≈ 0.00; hard positions sit far higher (≈0.10–0.20 under IID, up to
+≈0.87 under non-IID). But `η` is calibrated on the per-round **MEAN** honest BER (tight) and then
+applied to **INDIVIDUAL** clients (wide spread). **No single scalar η both catches an embedding
+free-rider and spares honest hard-position clients.** Tight η → many honest false positives; loose
+(per-client) η → the free-rider passes. It is a **false-positive / threshold-calibration
+limitation**, not a cheap evasion trick — and it gets dramatically worse as data becomes non-IID.
+
+An **adaptive "autopilot" free-rider** demonstrates the gap: it trains honestly during a warmup,
+estimates η from its own BER, then re-embeds ("taps") just enough to keep its BER under η.
 
 ---
 
-## 3. Algorithm (FareMark)
-**Honest client, per round:** load global → train `L = CE + λ·BCE(project(softmax,key), bits)`
-on trigger-class images → memory update (Eq.14) `W = β(memory+Δ) + (1−β)·W_global` to keep
-the mark alive through FedAvg → submit.
-**Server, per round:** extract each client's bits on the trigger bank → BER = mean(bits≠target)
-→ η = μ+3σ over honest BERs → flag BER≥η → FedAvg the unflagged.
-**Position** = the (trigger_class, key, bits) triple assigned by `cid`
-(`trigger_class = cid % num_classes`, key/bits seeded from cid). Some positions have an
-irreducible BER floor 0.10–0.20 (hard); others ~0.00 (easy). Floor is like Bayes error for
-the embedding sub-task — effort/scope don't move it (proven by honest-clone).
+## 2. Experimental setup (state on an early slide + every appendix slide)
+
+CIFAR-100 · ResNet-18 · 10 clients · 50 rounds · 5 local epochs · watermark bits m=10 ·
+N_T=50 trigger samples · λ=5 · β=0.6 · α=0.4 · **paper-faithful** (random keys, no exclusion,
+live η = cumulative μ+3σ) · config index 14 (AUTOPILOT_IDX).
+
+**Free-rider schedule = FIXED warmup (default):** forced-honest full-shard training for rounds
+1–11; **calibration window = rounds [8,11]** (η frozen here, all clients honest); free-riding from
+round 12. Fixed (not dynamic) so warmup length is constant across positions and the position effect
+isn't confounded by warmup cost. (A dynamic convergence-based mode exists and was run as a
+robustness cell → the `*_dyn` families.)
+
+**"fair η" in the plots = the offline frozen-window η** (μ+3σ over the round-MEANS inside the
+calibration window). This is the correct yardstick for "caught vs hidden" — NOT the live cumulative
+η (which is inflated by noisy early rounds). Verdicts are judged against this frozen η.
 
 ---
 
-## 4. The attack (autopilot) — schedule & knobs
-```
-warmup (dynamic)    forced-honest: train FULL-SHARD honestly (== honest client) until the
-                    FR's OWN probe BER converges (flat for conv_patience+1 rounds within
-                    conv_eps, after honest_min, capped at warmup_cap). Position-dependent:
-                    hard positions converge later => longer warmup, defect later.
-CALIBRATION window  the next K converged honest rounds: η frozen here (server: all clients;
-                    FR: its own BER). Tagged "calib".
-free-ride           TAP (re-embed, cost = data × scope)  or  COAST (resubmit carried mark,
-                    ~0 cost) when safely under target = η − margin.
-autop_warmup_mode="fixed" (DEFAULT: warmup=[1,W-1], calib=[W-K,W-1], defect@W, W=autop_honest_until=12
--- position-independent, so warmup cost does not confound the position comparison)
-            | "dynamic" (ends at own-BER convergence; position-dependent) -- robustness cell.
-K = autop_calib_rounds (4).
-```
-The FR reuses the honest key/bits/λ/α/β/memory/training loop verbatim; only control flow
-differs. It estimates η from its OWN calibration-window BER (`_own_calib_bers` →
-`_freeze_own_eta` at the end of the window), or is given the oracle η (testing). Trace tags
-each round `honest`/`calib`/`tap`/`coast` so plots read the (dynamic) window from the trace.
+## 3. Results — numbers to put in the body (read off the figures)
 
-Free-rider options (all wired): full/block2 (`autop_scope`) · triggers→+N/class→full shard
-(`autop_common_per_class`) · tap/coast (`autop_stay_min`) · oracle/estimate
-(`autop_oracle_eta`) · hard/easy position (`free_rider_ids`) · IID/non-IID
-(`partition`,`dirichlet_alpha`).
+### 3.1 The headline dilemma (IID)
+- Honest mean BER = **0.057**. Positions split hard vs easy: cls6 ≈ 0.225 (hard), cls0/2/4/5 ≈ 0.10,
+  cls3 ≈ 0.07 (with outliers to 0.40), cls1/7/8/9 ≈ 0.00 (easy).
+- **Tight η (round-mean) = 0.087–0.091 → honest FPR ≈ 41%.**
+- Loose η (per-client) = 0.28–0.31 → FPR ≈ 0–4% (but a free-rider hides under it).
+- Free-rider by training data (posA = hard {3,6}): triggers-only BER 0.63 (overfits → CAUGHT),
+  **+5/class BER 0.10**, full-shard 0.14 — all above fair η 0.087 → **hard position always caught (IID)**.
+- posB = easy {1,7}: +5/class and full-shard reach BER 0.00 → **easy position EVADES from +5/class**.
+- Effort floor: triggers-only ≈ **23% of honest** image-passes (the warmup cost it must pay);
+  +5/class ≈ 31%; full-shard ≈ 100%.
+- `all_thresholds` (IID): SPEC 0.087 (FPR 41%) · longer-window 0.099 (41%) · per-client 0.282 (4%) ·
+  incl-full-warmup 0.614 (0%) · cumulative-live 0.343 (0%) · FR-inflated 0.233 (4%) ·
+  all-honest EASY 0.000 (**FPR 100%**, the degenerate η=0 case) · all-honest HARD 0.315 (0%).
 
----
+### 3.2 Non-IID makes it worse (the money table)
 
-## 5. Thresholds — canonical window + the 7 definitions
-`eta_calib.py` is the single source of truth. Window `[W-K, W-1]` (from `"calib"` trace
-tags, else config). The **7-threshold plot** (`plot_analysis.py all_thresholds`) computes:
-1. **SPEC** — μ+3σ over per-ROUND-MEAN BER of all clients in the calib window (the fair η).
-2. **longer honest window** — same but over the last 20 rounds, honest clients.
-3. **per-client** — μ+3σ over individual client BERs in the window (bigger σ, looser).
-4. **incl. full warmup** — includes non-converged early warmup rounds (inflated).
-5. **cumulative** — μ+3σ over all honest round-means (the swingy live paper-faithful one).
-6. **FR-inflated** — all clients incl. defected free-riders, post-warmup (poisoned).
-7. **all-honest EASY vs HARD** — from the all-honest run, split by per-class mean BER.
-The tight/loose split (1 vs 3) IS the dilemma.
+| partition | seeds | honest mean BER | tight η (SPEC) | FPR@tight | per-client η (FPR) | hard posA @ +5/class | detector status |
+|-----------|-------|-----------------|----------------|-----------|--------------------|----------------------|-----------------|
+| IID       | 1*    | 0.057           | 0.087          | **41%**   | 0.31 (0–4%)        | 0.10 → **caught**    | dilemma present |
+| dir1.0    | 1     | 0.190           | 0.315          | 20%       | 1.11 (0%)          | 0.74 → caught†       | dilemma present |
+| dir0.5    | 3     | 0.106           | 0.270          | 12%       | 0.84 (0%)          | 0.19 → **EVADES**    | weakening       |
+| dir0.1    | 1     | 0.375           | 0.431          | **60%**   | 1.09 (0%)          | 0.41 → **EVADES**    | **fully broken**|
 
----
+\* IID is the quick slice (1 seed).  † dir1.0 posA is caught only because that position is
+pathologically hard for the free-rider too (BER ~0.74, and honest cls6 ≈ 0.87 there) — not because
+detection works.
 
-## 6. Code file map (what each does)
-```
-faremark/
-  client.py           honest FedAvg client (base)
-  server.py           FedAvg + per-round verify hook
-  wm_client.py        WatermarkClient (embed + Eq.14) + build_watermarked_clients factory
-  watermark.py        Eq.1–16: key/bits/project/embed/extract/BER/calibrate_eta
-  attacks.py          paper baselines (previous_models, gaussian) + choose/resolve_free_riders
-  attacks_adaptive.py AUTOPILOT (warmup→calib→tap/coast; the attack under study)
-  wm_verify.py        server extraction + η + per-client BER records (wm_per_client)
-  compute_meter.py    per-client effort (samples, gpu_ms, flops)
-  eta_calib.py        canonical calibration window + frozen_eta + all_thresholds  ★shared
-  datasets.py         IID / Dirichlet shards           utils.py  seed/logger/eval
-  config.py           ExpConfig + CONFIGS (autopilot = idx 14, AUTOPILOT_IDX)
-  models.py           build_model (resnet18/alexnet/smallcnn)     manifest.py  result metadata
-scripts/
-  run_experiment.py   one (config,repeat) → result.json (manifest+compute+history)
-  run_all.sh          THE sweep: matrix over all knobs + PLOT per partition
-  submit_experiment.sh  cluster submit bridge (env → --flags)
-  plot_tests.py       test1_fpr (FPR) + test_data (per-FR/honest BER + effort)
-  plot_analysis.py    timeline · frontier · scorecard · all_thresholds  (uses eta_calib.py)
-  plotstyle.py        shared palette/helpers (C_HONEST blue, C_FR orange, OKABE)
-```
-`result.json` schema the plots read: `manifest.{family,sweep_level}` · `history[t].{round,
-wm_per_client:[{cid,trigger_class,ber,is_free_rider,flagged}], wm_benign_ber, wm_eta_round}`
-· `compute.summary.{honest/fr_mean_gpu_ms, honest/fr_mean_samples, effort_ratio_*}` ·
-`compute.per_client[cid].{is_free_rider, total, trace:[{round,action,...}]}`.
+**The trend that matters:** as data becomes more non-IID, the honest floor rises → fair η rises →
+free-riders hide more easily, while the tight-η false-positive rate stays high or grows. Under
+**dir0.1** the tight η flags **60% of honest clients AND still lets the free-rider hide at
++5/class** — there is no usable threshold.
+
+Per-partition detail (fair η ; FR BER trigonly / +5cls / full ; verdicts):
+- **dir0.1** fair η 0.43: posA 0.65(caught)/0.41(hidden)/0.40(hidden); posB 0.42/0.20/0.25 (mostly hidden). FPR 60%.
+- **dir0.5** fair η 0.27: posA 0.45(caught)/0.19(hidden)/0.21(hidden); posB 0.43(caught)/0.03(hidden)/0.10(hidden). FPR 12%.
+- **dir1.0** fair η 0.32: posA 0.74/0.74/0.73 (all caught, pathological); posB 0.35(caught)/0.00(hidden)/0.02(hidden). FPR 20%.
 
 ---
 
-## 7. All tuning knobs (config.py ExpConfig → CLI `--flag` / env `VAR`)
-| knob | default | meaning |
-|---|---|---|
-| autop_warmup_mode | **fixed** | "fixed" (DEFAULT, headline): warmup ends at W, calib `[W-K,W-1]`, position-independent. "dynamic": ends at own-BER convergence (position-dependent) — run as robustness cell (tier5, `_dyn` families) |
-| autop_honest_min | 6 | dynamic: never defect before this round |
-| autop_warmup_cap | 15 | dynamic: hard stop if never converges |
-| autop_conv_eps / _patience | 0.03 / 2 | dynamic: flat for (patience+1) rounds within eps => converged |
-| autop_honest_until (W) | 12 | fixed-mode warmup end / dynamic fallback |
-| autop_calib_rounds (K) | 4 | K converged rounds calibrate η (dynamic `[conv,conv+K-1]`; fixed `[W-K,W-1]`) |
-| autop_oracle_eta | 0.0 | >0 → FR given η (testing); 0 → FR estimates |
-| autop_eta_k | 3.0 | k in FR's own μ+kσ estimate |
-| autop_margin0 | 0.06 | target = η − margin |
-| autop_floor | 0.05 | "mark good" bar |
-| autop_common_per_class | −1 | data/tap: −1 full shard, 0 triggers-only, N +N/common-class |
-| autop_scope | full | params/tap: full · block2 · block · head |
-| autop_stay_min | False | coast when safe (submarine) vs tap every round |
-| autop_honest_clone | False | DIAGNOSTIC: pure honest every round (floor control) |
-| free_rider_ids | "" | pin FR cids e.g. "3,6" (position control) |
-| partition / dirichlet_alpha | iid / 0.5 | IID vs Dirichlet non-IID skew |
-| calib_on_all | False | calibrate η over ALL clients (η-poisoning) |
-| watermark, wm_lambda, wm_beta, wm_alpha, wm_num_triggers, paper_faithful | on/5/0.6/0.4/50/True | scheme |
+## 4. Caveats / threats to validity (needs its own slide + a line on affected appendix slides)
+1. **IID = quick slice, 1 seed, pre-fix code** (fixed schedule [8,11]; the old inert 0.25 floor —
+   which did NOT affect paper-faithful η, so fair η 0.087 stands). Treat as directionally solid,
+   numbers provisional.
+2. **dir0.1 and dir1.0 are single-seed** (tier3 ran them at SEEDS=0); **dir0.5 has 3 seeds**. This is
+   why honest floor is non-monotonic (dir1.0 0.190 > dir0.5 0.106): a 1-seed artifact. The clean
+   monotonic trend holds across the seeded/extreme points IID < dir0.5 < dir0.1.
+3. **dir1.0 posA flat ≈0.74 regardless of data** is a non-IID shard-imbalance effect (those clients
+   barely have trigger-class samples) — real but seed-sensitive; confirm with more seeds before leaning on it.
+4. **Effort ratios exceed 100%** in some non-IID cells (FR shard larger than the honest average), so
+   keep "cheaper than honest" claims on the **IID** numbers.
+5. block2 (cheaper-scope) and coast-mode cells were not in this batch — the block2 columns are blank
+   in the scorecards. If the user uploads them, add the scope/mode story; else omit.
 
 ---
 
-## 8. Current status
-- ESTABLISHED (IID): position-dependent floor (honest-clone); ~32% honest FPR; data
-  ablation reproduces paper Table V (triggers-only overfits → caught) and the cost/evasion
-  tradeoff; easy-class selection ruled out by threat model (server-assigned).
-- CODE: warmup fixed to full-shard-honest (FR pays honest warmup → cost floor ~24%);
-  canonical calibration window used by attack + plots + FR estimate; 7-threshold plot;
-  full-matrix run_all.sh. All prior runs must be RE-RUN (warmup fix changes effort + η).
-- RUNNING NEXT: the full matrix (§9). Non-IID, coast/submarine, oracle-vs-estimate are new.
+## 5. Approved palette (use verbatim)
+- **Chrome:** ink/headers `#16324F` · accent teal `#2E6E8E` · card paper `#EEF3F8` · rule `#C9D6E3` · body text `#223244`
+- **Data (Okabe–Ito, colour-blind-safe, matches the plots):** honest `#0072B2` · free-rider `#D55E00` ·
+  fair/safe/hidden `#009E73` · caution/limitation `#E69F00` · spare 5th series `#CC79A7`
+- **Fonts:** Cambria (headers) · Calibri (body). (Swatch: `palette_swatch.png`.)
 
 ---
 
-## 9. Experiment matrix (what's being run)
-partition {iid, dir0.1, dir0.5, dir1.0} × η {oracle, estimate} × scope {full, block2} ×
-mode {tap, coast} × data {0,5,10,20,50,−1} × position {posA 3,6 / posB 1,7} × 3 seeds,
-plus one all-honest run per partition. Family names: `{part}_{eta}_{scope}_{stay}_{pos}`,
-all-honest `t1_{part}`, sweep_level = cpc. Commands: `./run_all.sh quick` (sanity),
-`./run_all.sh matrix` (or slice with PARTS=…), `RES=… ./run_all.sh PLOT <partition>`.
+## 6. Proposed slide order (body) — adjust as needed
+1. Title + one-line contribution.
+2. TL;DR: the negative result in 3 bullets (position-dependent floor → no single η works → worse under non-IID).
+3. FareMark in one slide: embed → extract → per-client BER → flag if BER ≥ η=μ+3σ.
+4. The adaptive free-rider: honest warmup → freeze η on calibration window → tap under η.
+5. Core problem: honest floor is position-dependent  → `test1_fpr_iid`.
+6. The dilemma: tight round-mean η (41% FPR) vs loose per-client η (FR hides)  → `all_thresholds_iid`.
+7. What the FR does: effort/BER frontier — triggers-only overfits, +5/class is the cheap hidden point → `frontier_iid` + `scorecard_iid`.
+8. Position matters: hard posA vs easy posB → the two `iid_*_tap_pos{A,B}` sweeps.
+9. Non-IID makes it worse: the §3.2 table + dir0.1 catastrophe → `test1_fpr_dir01`, `all_thresholds_dir01`, `scorecard_dir0*`.
+10. Effort cost: FR pays a ~23% warmup floor then coasts (IID only).
+11. Conclusion / implications for watermark-based FR detection.
+12. Limitations & threats to validity (§4).
 
 ---
 
-## 10. Expected results (to sanity-check plots against)
-- IID all-honest → ~41% FPR tight η (quick slice; was ~32% pre-clean-harness), ~0-4% loose. posA hard → FR 0.11–0.20 above fair η →
-  caught at every cpc. posB easy → FR ≈0.00 from +5/class → passes. triggers-only → ~0.45
-  (overfits, caught). block2 → same BER, ~35% less GPU. coast → cheaper at easy, still
-  caught at hard. Effort floor: triggers-only FR ~24% of honest (NOT ~0 — honest warmup).
-- Non-IID → higher/noisier fair η; non-monotonic in α; calibration-timing matters; report
-  under the frozen-window η, not cumulative.
+## 7. Appendix slide template (one per figure)
+For each plot, one slide covering, in order: **what it shows · setup (§2) · lines/symbols legend ·
+thresholds shown + their values · acronyms (BER, FPR, η, cpc, posA/posB) · why it matters ·
+data/partition choice · units (BER unitless 0–1; effort = image-passes or GPU-ms, ratio to honest) ·
+analysis (what the reader should notice) · conclusion (one sentence)**. Keep verdict language tied
+to the **fair frozen η**.
+
+Figure inventory per partition (naming): `test1_fpr_<p>`, `all_thresholds_<p>`,
+`<p>_estimate_full_tap_posA`, `..._posB` (BER + effort sweeps), `timeline_<p>`, `frontier_<p>`,
+`scorecard_<p>`, where `<p>` ∈ {iid, dir01, dir05, dir10}. Dynamic-warmup robustness = `*_dyn`
+families (figs/iid_dyn). Some slices (coast, oracle, block2) may arrive later — add if uploaded.
 
 ---
 
-## 11. APPENDIX PLOT TEMPLATE (use for EVERY uploaded plot)
-Each plot → one appendix slide: image left, description right with these bold-labeled
-fields (keep ~10pt, ~10 fields; verify no overflow):
-- **What it is** · **Setup** (config, partition, positions, scope, cpc, η mode, seeds)
-- **Lines/symbols** (every colour/marker/band) · **Thresholds** (which η lines, HOW each is
-  computed, and the VALUES) · **Acronyms** (BER, η, cpc, FR, block2)
-- **Why we ran it** · **Data choice** (why these cpc levels / positions)
-- **Units** (x and y; theoretical meaning — e.g. "image-passes TOTAL over the run: honest
-  1.25×10⁶ = 25k/round×50; GPU-ms ×10⁶ ≈ 21 min/client") · **Analysis** · **Conclusion**
-Plot types to expect (from run_all.sh PLOT): test1_fpr, test_data ×4, timeline, frontier,
-scorecard, all_thresholds — per partition. See §10 for expected shapes.
+## 8. What to upload to the new conversation
+Essential: **this file** · `FareMark_attack.pptx` (style reference) · `palette_swatch.png` ·
+all result PNGs you have (IID 5 + non-IID 20 + whatever else you generate) · a few `result.json`
+files per family (lets the new Claude pull exact numbers instead of trusting the read-offs here).
+Helpful: `NEW_CONVERSATION_PLAN.md` (has the appendix template + matrix), `STORYLINE.md`
+(diagrams/pseudocode), `STATUS.md`, `CODE_MAP.md`. Not needed for the deck: the .py/.sh code.
 
-Deck style (pptxgenjs, LAYOUT_WIDE): NAVY 1E2761 headers, ICE EAF0FA cards, honest=BLUE
-0072B2, free-rider/attack=ORANGE D55E00, GREEN 2C7A3F = fair/safe, RED B23A2E = limitation.
-Fonts Cambria (head) + Calibri (body). Validate with the pptx skill, render to check overflow.
-
----
-
-## 12. Files to upload to the new conversation
-**Docs:** this file · `STATUS.md` · `CODE_MAP.md` · `STORYLINE.md` (context).
-**Decks:** `FareMark_attack.pptx` (extend its appendix) · `experiment_rundown.pptx`.
-**Code (the consistent set — deploy/inspect together):** `config.py · attacks_adaptive.py ·
-wm_client.py · attacks.py · watermark.py · wm_verify.py · client.py · server.py ·
-compute_meter.py · eta_calib.py · datasets.py · utils.py · manifest.py · models.py ·
-run_experiment.py · submit_experiment.sh · run_all.sh · plot_tests.py · plot_analysis.py ·
-plotstyle.py`.
-**Reference:** the FareMark paper PDF.
-**Results:** the new `figs/**/*.png` from `run_all.sh PLOT`, and a few `result.json` files
-so the new Claude can read exact numbers for the appendix descriptions.
-
----
-
-## 13. Ground rules (carry over)
-Be honest about negative results (the false-positive limitation IS the finding). Keep the
-free-rider modular (reuses honest modules; only control flow differs). Judge evasion vs the
-frozen calibration-window η, never the cumulative. Distinguish per-round-mean vs per-client η
-(the dilemma). Pin positions + average ≥3 seeds before quoting numbers. Trigger class is
-server-assigned — easy-class selection is off-limits. Every attack stays inside the protocol.
+Tell the new conversation: "Build the FareMark results deck per DECK_HANDOFF.md; here are the
+figures and the existing deck for style. Palette is approved. Ask me before inventing any number
+not in a result.json or the handoff."
