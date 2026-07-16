@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+
+# TODO: remove?
+
 # Turn the full sweep into figures. Skips families with no runs (no error).
 #   RES=/mnt/nfs/home/zu/results ./scripts/make_sweep_figs.sh
 set -uo pipefail

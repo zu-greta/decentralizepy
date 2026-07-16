@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-"""Aggregate result.json files into mean +/- std summaries
+"""
+TODO: remove?
+
+Aggregate result.json files into mean +/- std summaries
 
 One RunAI job writes one result.json into its own timestamped directory. This
 script walks a results root, finds every result.json, and groups them so you

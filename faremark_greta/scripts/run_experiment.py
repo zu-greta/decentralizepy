@@ -68,7 +68,12 @@ def parse_args():
     p.add_argument("--autop_honest_until", type=int, default=None)
     p.add_argument("--autop_calib_rounds", type=int, default=None)
     p.add_argument("--autop_eta_k", type=float, default=None)
+    p.add_argument("--autop_eta_mode", type=str, default=None,
+                   choices=["tight", "loose", "cumulative"])
+    p.add_argument("--autop_num_clients_est", type=int, default=None)
     p.add_argument("--autop_margin0", type=float, default=None)
+    p.add_argument("--autop_safety", type=float, default=None)
+    p.add_argument("--autop_max_coast", type=int, default=None)
     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
     p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
@@ -85,6 +90,7 @@ def parse_args():
     p.add_argument("--wm_lambda", type=float, default=None)
     p.add_argument("--wm_beta", type=float, default=None)
     p.add_argument("--wm_eta_floor", type=float, default=None)
+    p.add_argument("--wm_eta_fixed", type=float, default=None)
     p.add_argument("--paper_faithful", dest="paper_faithful",
                    action="store_true", default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
@@ -106,10 +112,12 @@ _OVERRIDABLE = [
     "autop_oracle_eta", "autop_warmup_mode", "autop_honest_min", "autop_warmup_cap",
     "autop_conv_eps", "autop_conv_patience",
     "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
-    "autop_margin0", "autop_floor", "autop_common_per_class", "autop_scope",
+    "autop_eta_mode", "autop_num_clients_est",
+    "autop_margin0", "autop_safety", "autop_max_coast",
+    "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
     "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",
-    "wm_eta_floor", "paper_faithful", "calib_on_all",
+    "wm_eta_floor", "wm_eta_fixed", "paper_faithful", "calib_on_all",
 ]
 
 
@@ -132,6 +140,8 @@ def collect_compute(clients, free_rider_indices):
                  "total": dict(zero_total), "per_round": {}}
         if getattr(c, "trace", None):
             s["trace"] = c.trace
+        if getattr(c, "wm_stats", None):
+            s["wm_stats"] = c.wm_stats          # per-round cls_loss / wm_loss / trig_train_acc
         per_client[cid] = s
         tot = s["total"]
         (fr_gpu if isfr else honest_gpu).append(tot["gpu_ms"])
@@ -215,7 +225,8 @@ def main():
                                     free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,
                                     paper_faithful=getattr(cfg, "paper_faithful", False),
-                                    calib_on_all=getattr(cfg, "calib_on_all", False))
+                                    calib_on_all=getattr(cfg, "calib_on_all", False),
+                                    eta_fixed=getattr(cfg, "wm_eta_fixed", 0.0))
         server = Server(model, clients, data.test_loader, device, logger,
                         verify_hook=verify_hook)
     else:

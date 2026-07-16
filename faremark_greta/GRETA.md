@@ -159,6 +159,26 @@ July9:
 - write the algorithm - pseudo - schematic diagram => next meeting have a storyline with algorithm and research question
 - double check the block - do exact and check that block code is right -> doesnt make sense that it keeps dipping down instead of submarine
 
+July16
+- current issues
+    - estimation of threshold: 
+        - how to estimate the threshold better - should stay under the actual (maybe adjust the delta?)
+        - how to find the delta
+        - witholding too little for self-probing that its not accurate enough to estimate the threshold
+        - thinks it's safe but its not - not tapping when it should - TO FIX
+        - using the estimated threshold but using probe BER (not enough) to check if it's under and its not - TO FIX
+- next steps
+    - hard/easy position debate
+    - iid vs non-iid
+- TODO
+    - use class id not position
+    - CHECK THE THRESHOLD: double check that 3 standard deviation - should be 99% of all classes, clearly not shwoing that in the plot. the 0.1 line std dev should be much higher since its 3x
+    - check why there is a flat line -> reason for the BER to be flat? plot the function loss (if that is moving but the BER stays flat its a bit suspicious? unless i can proove that it has just reached the best it could and converged). look at the dynamics of a single round. why does each class do something different (harder boundary for some classes? per class accuracy - see losses - see if some classes are harder? plot the model accuracy and loss side by side). check free-rider accuracy too.
+    - check if using CIFAR-10 (only 10 classes?) -> using CIFAR-100 but with 10 clients so 10 trigger classes
+    - focus on iid for now, later collusion and non-iid could make sense if the effort is worth it
+
+repeated prisoner dilemna
+
 ---
 ---
 ## resources

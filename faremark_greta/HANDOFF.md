@@ -1,17 +1,26 @@
-# FareMark results deck — build brief (handoff to a fresh conversation)
+# FareMark limitations
 
 **Your job in the new conversation:** build a fresh slide deck presenting these results, in the
 same visual style/structure as the existing `FareMark_attack.pptx` (which the user will upload as
 the style reference), on the APPROVED palette below. Body slides tell the story; the appendix has
 one slide per figure using the appendix template in §7. Pull exact numbers from any uploaded
-`result.json`; otherwise use the numbers embedded here (they were read off the figures).
+`result.json` or in the plots uploaded.
 
 Read the pptx skill (`/mnt/skills/public/pptx/SKILL.md`) before building. Validate + render to
 check overflow before finishing.
 
 ---
 
-## 1. The contribution (the one thing the deck must land)
+Rules to always follow:
+1. **Do not invent numbers** — only use numbers from the uploaded `result.json` or plots.
+2. **Do not invent plots** — only use plots that are uploaded.
+3. For all plots added, make sure to add details on how to read the plots, how to interpret the plots, what is contained in the plots, and what the reader should notice. every metric, unit, detail should be explained
+4. prefer a shorter presentation with a few plots results that are SOLID rather than many plots that are not, just put the remaining in the appendix
+5. flag the suspicious plots - they should not be presented. only shown in the appendix with a note that they are suspicious and why
+
+---
+
+## 1. The contribution 
 
 FareMark (Li et al., IEEE IoT-J 2025) detects free-riders in federated learning by having honest
 clients embed an m-bit output-space **watermark** on their assigned trigger class; the server

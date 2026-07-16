@@ -56,7 +56,15 @@ class ExpConfig:
                                             # [conv, conv+K-1]; fixed: [W-K, W-1]. Used by the server and by
                                             # the free-rider's own eta estimate. Tagged "calib" in the trace.
     autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
-    autop_margin0: float = 0.06             # safety gap: target BER = eta - margin
+    autop_eta_mode: str = "tight"           # which server threshold the FR reconstructs from its OWN
+                                            # honest BER: "tight" (mu+k*sigma/sqrt(N), the round-mean/strict
+                                            # eta -> stays under EVERY looser one), "loose" (mu+k*sigma,
+                                            # per-client), or "cumulative" (mu+k*sigma over full honest
+                                            # history, mirroring the paper's cumulative calibration).
+    autop_num_clients_est: int = 10         # N for the sqrt(N) shrink in "tight" mode
+    autop_margin0: float = 0.06             # deliberate headroom: target BER = eta - margin0 - safety
+    autop_safety: float = 0.02              # extra guard for the probe(own data)/server(test bank) mismatch
+    autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
     autop_floor: float = 0.05               # "mark is good" bar
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
     autop_scope: str = "full"               # PARAMS per tap: full | block2 | block | head
@@ -78,6 +86,10 @@ class ExpConfig:
     wm_eta_floor: float = 0.05              # small degenerate guard for eta only (not the threshold):
                                             # keeps eta = mu+3sigma strictly positive if every benign BER is
                                             # ~0. The operative threshold is always the computed mu+3sigma
+    wm_eta_fixed: float = 0.0               # >0 => use this PRE-CALIBRATED constant threshold for every
+                                            # round/experiment (from calibrate_eta.py). 0 => live calc.
+                                            # This is the canonical path now: calibrate once on honest-only
+                                            # multi-seed runs, freeze, reuse everywhere.
     wm_verify_every: int = 1
     paper_faithful: bool = True             # random keys, no trigger-class exclusion, cumulative mu+3sigma
     calib_on_all: bool = False              # calibrate eta over all clients (exposes circularity) vs benign-only

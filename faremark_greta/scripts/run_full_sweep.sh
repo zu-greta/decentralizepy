@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+
+# TODO: remove?
+
+
 # run_full_sweep.sh — STAY-UNDER test: given a threshold, CAN the free-rider stay
 # under it with taps, and how cheaply?  (replaces the effort-minimising sweep)
 #

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# TODO: remove?
+
 # make_all_figs.sh — regenerate every figure for the deck from whatever finished.
 # Safe to run repeatedly; missing families are skipped with a warning, not an error.
 #   RES=/mnt/nfs/home/zu/results ./scripts/make_all_figs.sh

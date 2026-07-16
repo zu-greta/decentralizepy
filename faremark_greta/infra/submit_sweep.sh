@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# TODO: remove?
 # ===================================================
 #  Launch a grid of jobs: CONFIG_IDXS x REPEATS
 #  The paper averages over 10 repeats; this fires one job per (config, repeat)

@@ -62,27 +62,24 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 # TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
                   free_rider_indices, eta_floor=0.05, verify_every=1,
-                  paper_faithful=False, calib_on_all=False):
+                  paper_faithful=False, calib_on_all=False, eta_fixed=0.0):
     """Return a verify_hook(server, round, updates) for Server
 
-    The threshold is always the computed eta = mu + 3*sigma over the benign BER
-    distribution (Eq. 16). `eta_floor` is a guard: if every benign BER is ~0, 
-    mu+3sigma collapses to 0 and the rule "flag iff BER >= eta" would flag every 
-    honest client (BER 0 >= 0); the floor keeps eta strictly positive. 
-    It sits well below the honest hard-position band (~0.10-0.20) and the tight 
-    round-mean eta (~0.09), so it never binds
+    THRESHOLD: eta is a pre-calibrated passed in as `eta_fixed` 
+    (from calibrate_eta.py: mu+3sigma over per-round mean-over-clients
+    benign BER, pooled over honest-only seeds, frozen). When eta_fixed > 0 it is
+    used for every round
 
-    paper_faithful=True: cumulative mu+3sigma over all rounds 
-    else: a sliding window of recent rounds so eta can recover after a transient 
-    benign-BER spike; a cumulative mean would stay poisoned forever.
-    calib_on_all=True: calibrate eta over every client's BER (server cannot tell
-    honest from free-rider), exposing the paper's circularity -- free-rider BER
-    ~0.5 poisons mu+3sigma. Default False matches the paper's 'observe legitimate
-    clients' (a trusted pool ?)
+    `eta_floor` stays a tiny degenerate guard (keeps a >0 threshold if eta_fixed
+    is somehow 0). calib_on_all is kept only for the circularity demo.
+
+    NOTE: the old LIVE threshold calculations (paper_faithful cumulative mu+3sigma,
+    and the sliding-window variant) are commented out below -- kept for reference
+    but no longer used. Set eta_fixed=0 to fall back to them if ever needed.
     """
     fr_set = set(free_rider_indices)
-    benign_history = []          # per-round BER means used to calibrate eta
-    CAL_WINDOW = 15              # rounds of recent BER used for mu+3sigma
+    benign_history = []          # per-round BER means (only used by the commented-out live calc)
+    CAL_WINDOW = 15              # rounds of recent BER (commented-out live calc)
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):
@@ -91,6 +88,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         verify_model.to(device).eval()
         # Pass 1: extract every client's watermark and measure BER (no flagging yet)
         measured = []            # (cid, ber, is_free_rider)
+        diag = {}                # cid -> per-class difficulty diagnostics 
         for cid, (state, _n) in enumerate(updates):
             entry = registry.entries.get(cid)
             if entry is None:
@@ -105,43 +103,61 @@ def make_verifier(registry, trigger_bank, verify_model, device,
                                    entry["kind"], entry["alpha"],
                                    exclude=entry.get("exclude", tc))
             ber = wm.bit_error_rate(bits, entry["target_bits"])
+
+            # diagnostics: how hard is this trigger class to classify? (for analysis of BER floors)
+            pmax, pred = probs.max(dim=1)
+            trig_acc = (pred == tc).float().mean().item()      # is the class classified correctly
+            ent = -(probs.clamp_min(1e-9) * probs.clamp_min(1e-9).log()).sum(dim=1).mean().item()
+            dom = wm.dominance_ratio(probs, entry["kind"], entry["alpha"],
+                                     exclude=entry.get("exclude"))   # Eq. 6/10: <0.5 wanted
+            diag[cid] = {"trig_acc": round(trig_acc, 4),
+                         "pmax": round(pmax.mean().item(), 4),
+                         "entropy": round(ent, 4),
+                         "dominance": round(dom, 4)}
             measured.append((cid, ber, cid in fr_set, tc))  # +trigger class
 
-        # Calibrate the threshold from the benign BER distribution (Eq. 16):
-        #   eta = mu + 3*sigma   over the per-round MEAN benign BER.
-        # This is ALWAYS the computed value (no hardcoded floor/cap); `eta_floor`
-        # is only the tiny degenerate guard described in make_verifier's docstring.
-        # paper_faithful -> cumulative over all rounds; else a sliding window so eta
-        # can recover after a transient benign-BER spike.
+        # ================= THRESHOLD =================
+        # a pre-calibrated constant (calibrate_eta.py)
         benign_now = [b for _, b, isfr, _ in measured if not isfr]
-        calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now
-        if calib_now:
-            benign_history.append(sum(calib_now) / len(calib_now))
-        if paper_faithful:
-            eta_round = (wm.calibrate_eta(benign_history, floor=eta_floor)
-                         if benign_history else eta_floor)
+        if eta_fixed and eta_fixed > 0:
+            eta_round = float(eta_fixed)
         else:
-            recent = benign_history[-CAL_WINDOW:]
-            eta_round = (wm.calibrate_eta(recent, floor=eta_floor)
-                         if recent else eta_floor)
+            eta_round = eta_floor        # degenerate fallback only
+
+        # ---- Legacy threhsolds (for reference) ----------
+        # calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now
+        # if calib_now:
+        #     benign_history.append(sum(calib_now) / len(calib_now))
+        # if paper_faithful:
+        #     eta_round = (wm.calibrate_eta(benign_history, floor=eta_floor)
+        #                  if benign_history else eta_floor)          # cumulative mu+3sigma
+        # else:
+        #     recent = benign_history[-CAL_WINDOW:]
+        #     eta_round = (wm.calibrate_eta(recent, floor=eta_floor)
+        #                  if recent else eta_floor)                  # sliding-window mu+3sigma
+        # -------------------------------------------------------------------------
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0
-        # per-client: records so we can see the BER distribution (not just the mean).
-        # This is what exposes a false-positive: an honest client at a hard trigger
-        # class can sit as high as a re-embedding free-rider, so a tight mu+3sigma eta
-        # flags honest clients too. (analysis of the 0.11 floor)
         per_client = []
+        # ================== FLAGGING =================
         for cid, ber, is_fr, tc in measured:
             flagged = not wm.detected(ber, eta_round)    # BER >= eta_round -> free-rider
+            d = diag.get(cid, {})
             per_client.append({"cid": cid, "trigger_class": int(tc),
                                "ber": round(ber, 4), "is_free_rider": bool(is_fr),
-                               "flagged": bool(flagged)})
+                               "flagged": bool(flagged),
+                               # per-class difficulty diagnostics 
+                               "trig_acc": d.get("trig_acc"),
+                               "pmax": d.get("pmax"),
+                               "entropy": d.get("entropy"),
+                               "dominance": d.get("dominance")})
             if is_fr:
-                fr_bers.append(ber); fr_flagged += int(flagged)
+                fr_bers.append(ber); fr_flagged += int(flagged) # count FRs that were flagged
             else:
-                benign_bers.append(ber); benign_flagged += int(flagged)
+                benign_bers.append(ber); benign_flagged += int(flagged) # count honest clients that were flagged (false positives)
 
+        # ================= SUMMARY =================
         n_benign = max(len(benign_bers), 1)
         n_fr = len(fr_bers)
         info = {
@@ -155,6 +171,17 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             "wm_fr_ber_list": [round(b, 4) for b in fr_bers],
             "wm_per_client": per_client,
         }
+        # diagnostics: average trigger-class difficulty for honest clients (for analysis of BER floors)
+        hon_diag = [diag[cid] for cid, _, is_fr, _ in measured
+                    if not is_fr and cid in diag]
+        if hon_diag:
+            def _m(k):
+                vs = [d[k] for d in hon_diag if d.get(k) is not None]
+                return round(sum(vs) / len(vs), 4) if vs else None
+            info["wm_benign_trig_acc"] = _m("trig_acc")
+            info["wm_benign_pmax"] = _m("pmax")
+            info["wm_benign_entropy"] = _m("entropy")
+            info["wm_benign_dominance"] = _m("dominance")
         total = len(benign_bers) + n_fr
         correct = (len(benign_bers) - benign_flagged) + fr_flagged
         info["wm_detect_acc"] = round(correct / max(total, 1), 4)
