@@ -122,8 +122,14 @@ def eta_from_round_means(ms):
 
 
 def frozen_eta(runs, tail=20):
-    """Canonical eta recomputed from `runs`"""
-    return mu3s(round_means(runs, tail=tail, honest_only=True))
+    """Canonical eta recomputed from `runs`: AVERAGE of per-seed etas
+    (each run/seed -> eta_s = mu_s + 3*sigma_s over its round-means)."""
+    etas = []
+    for r in runs:
+        e, _, _ = eta_from_round_means(round_means([r], tail=tail, honest_only=True))
+        if e is not None:
+            etas.append(e)
+    return float(np.mean(etas)) if etas else None
 
 
 def all_thresholds(runs, tail=20):
@@ -160,25 +166,37 @@ def calibrate(inp, honest_family=None, tail=20, out=None):
     if not runs:
         raise SystemExit("no honest-only runs found (check --in / --honest-family).")
 
-    pooled, per_seed = [], []
+    # PER-SEED first. For seed s: mu_s = mean over its last `tail` round-means,
+    # sigma_s = std of those round-means, eta_s = mu_s + 3*sigma_s.
+    pooled, per_seed, etas, mus, sds = [], [], [], [], []
     for f, r in runs:
-        ms = round_means([r], tail=tail, honest_only=True)
+        ms = round_means([r], tail=tail, honest_only=True)     # this seed's round-means
         pooled += ms
-        e, mu, sd = eta_from_round_means(ms)
+        e, mu_s, sd_s = eta_from_round_means(ms)
+        if e is not None:
+            etas.append(e); mus.append(mu_s); sds.append(sd_s)
         per_seed.append({"file": os.path.basename(os.path.dirname(f)), "seed": r.get("seed"),
                          "n_rounds": len(ms), "eta": None if e is None else round(e, 5),
-                         "mu": None if mu is None else round(mu, 5), "sigma": round(sd, 5)})
+                         "mu": None if mu_s is None else round(mu_s, 5), "sigma": round(sd_s, 5)})
 
-    eta, mu, sigma = eta_from_round_means(pooled)
+    # FINAL eta = AVERAGE of the per-seed etas (== mean(mu_s) + 3*mean(sigma_s)).
+    eta = float(np.mean(etas)) if etas else None
+    eta_std = float(np.std(etas)) if len(etas) > 1 else 0.0     # seed-to-seed variability
+    grand_mean = float(np.mean(mus)) if mus else None           # mean over seeds of mu_s
+    grand_std = float(np.mean(sds)) if sds else None            # mean over seeds of sigma_s
+    eta_pooled, _, _ = eta_from_round_means(pooled)             # reference: pooled mu+3sigma
     eta_all, _, _ = eta_from_round_means(round_means([r for _, r in runs], tail=0))
 
     result = {
         "eta": round(eta, 5),
-        "definition": "mu+3sigma over per-round (mean-over-clients) benign BER",
+        "definition": "mean over seeds of (mu_s + 3*sigma_s); "
+                      "mu_s,sigma_s over per-round mean-over-clients benign BER",
         "window": f"tail:{tail}" if tail else "all_rounds",
-        "grand_mean": round(mu, 5), "grand_std": round(sigma, 5),
+        "eta_std_across_seeds": round(eta_std, 5),
+        "grand_mean": round(grand_mean, 5), "grand_std": round(grand_std, 5),
         "n_seeds": len(runs), "n_round_means_pooled": len(pooled),
         "honest_family": honest_family, "per_seed": per_seed,
+        "eta_pooled_for_reference": round(eta_pooled, 5) if eta_pooled is not None else None,
         "eta_all_rounds_for_reference": round(eta_all, 5) if eta_all is not None else None,
     }
     if out is None:
@@ -202,14 +220,15 @@ def verify(inp, honest_family=None, tail=20, eta_file=None):
     frozen = load_fixed(eta_file) if eta_file else None
     ok = True
 
-    print("== 1. recompute eta from honest runs ==")
+    print("== 1. recompute eta from honest runs (avg of per-seed etas) ==")
     if not honest:
         print("  (no honest runs found)"); ok = False
     else:
-        pooled = round_means([r for _, r in honest], tail=tail, honest_only=True)
-        eta_re, mu, sd = eta_from_round_means(pooled)
-        print(f"  recomputed eta = {eta_re:.5f}  (mu={mu:.5f}, sigma={sd:.5f}, "
-              f"n_round_means={len(pooled)}, seeds={len(honest)})")
+        eta_re = frozen_eta([r for _, r in honest], tail=tail)
+        per = [eta_from_round_means(round_means([r], tail=tail, honest_only=True))[0]
+               for _, r in honest]
+        print(f"  recomputed eta = {eta_re:.5f}  (avg over {len(honest)} seeds; "
+              f"per-seed etas = {[round(p,4) for p in per if p is not None]})")
         if frozen is not None:
             match = abs(eta_re - frozen) < 1e-4
             print(f"  eta_calibrated.json eta = {frozen:.5f}  -> "
@@ -258,13 +277,13 @@ def _cli():
         _s.exit(0 if verify(a.inp, a.honest_family, a.tail, a.eta_file) else 1)
     if a.cmd == "calibrate":
         res = calibrate(a.inp, a.honest_family, a.tail, a.out)
-        print(f"CANONICAL eta = {res['eta']:.5f}   "
-              f"(mu={res['grand_mean']:.4f} + 3*sigma={res['grand_std']:.4f})")
-        print(f"  window={res['window']}  seeds={res['n_seeds']}  "
-              f"round-means pooled={res['n_round_means_pooled']}")
-        print(f"  ALL-rounds eta (reference) = {res['eta_all_rounds_for_reference']} "
-              f"(inflated by warmup)")
+        print(f"CANONICAL eta = {res['eta']:.5f} +/- {res['eta_std_across_seeds']:.5f}  "
+              f"(avg over {res['n_seeds']} seeds of mu_s+3*sigma_s; "
+              f"mean mu={res['grand_mean']:.4f}, mean sigma={res['grand_std']:.4f})")
+        print(f"  window={res['window']}")
         print(f"  per-seed etas: {[s['eta'] for s in res['per_seed']]}")
+        print(f"  reference: pooled eta={res['eta_pooled_for_reference']}, "
+              f"all-rounds eta={res['eta_all_rounds_for_reference']} (warmup-inflated)")
         print(f"wrote {res['_out']}")
         print(f"\nUse it downstream:  WM_ETA_FIXED={res['eta']:.5f}  (or --wm_eta_fixed)")
 

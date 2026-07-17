@@ -1257,8 +1257,72 @@ def class_difficulty(a):
         print("  per-class acc:", [(c, round(np.mean(acc_by[c]), 1)) for c in ts])
 
 
+def sanity(a):
+    """TEXT report (no figure) that flags suspicious/degenerate runs BEFORE you
+    trust any plot -- the failure modes you hit before: flat or zero BER, an FR that
+    never taps, a non-frozen eta, or missing loss logging. Prints WARN/OK per run and
+    points you at the loss plot when a BER looks fishy."""
+    runs = pick(load(a.inp), a.family)
+    if not runs:
+        print("no runs for", a.family); return
+    for r in runs:
+        tag = (r.get("manifest", {}) or {}).get("family", "?")
+        seed = r.get("seed")
+        hist = r.get("history", [])
+        tail = hist[-TAIL:]
+        ho = [p["ber"] for h in tail for p in (h.get("wm_per_client") or []) if not p.get("is_free_rider")]
+        fr = [p["ber"] for h in tail for p in (h.get("wm_per_client") or []) if p.get("is_free_rider")]
+        etas = [h.get("wm_eta_round") for h in hist if h.get("wm_eta_round") is not None]
+        msgs = []
+        # honest degeneracy
+        if ho and max(ho) == 0:
+            msgs.append("WARN honest BER == 0 everywhere (watermark trivial or extraction bug?)")
+        if ho and float(np.std(ho)) == 0 and max(ho) > 0:
+            msgs.append(f"WARN honest BER perfectly flat at {ho[0]} (no per-position spread?)")
+        # free-rider suspicion
+        if fr:
+            if float(np.std(fr)) < 1e-9:
+                msgs.append(f"WARN free-rider BER perfectly FLAT at {fr[0]:.3f} "
+                            "(is it actually tapping/coasting? -> inspect loss)")
+            if max(fr) == 0:
+                msgs.append("WARN free-rider BER == 0 everywhere (no embedding cost? check taps)")
+            if min(fr) >= 0.45:
+                msgs.append("WARN free-rider BER ~0.5 everywhere (never embeds -> not a real submarine)")
+        # frozen-eta check
+        if etas and (max(etas) - min(etas)) > 1e-6:
+            msgs.append(f"WARN wm_eta_round NOT flat ({min(etas):.3f}..{max(etas):.3f}) "
+                        "-> this run did NOT use the frozen constant (WM_ETA_FIXED)")
+        # taps / coasts from the FR trace
+        traces = [c.get("trace", []) for c in ((r.get("compute", {}) or {}).get("per_client", {}) or {}).values()
+                  if c.get("is_free_rider")]
+        for t in traces:
+            acts = [x.get("action") for x in t]
+            n_tap = acts.count("tap"); n_coast = acts.count("coast")
+            if t and n_tap == 0 and n_coast > 0:
+                msgs.append(f"NOTE FR coasted {n_coast}x, tapped 0x (stay_min coasting only)")
+            if t and n_tap == 0 and n_coast == 0 and "honest_clone" not in acts:
+                msgs.append("WARN FR trace has no tap/coast actions (did free-riding start?)")
+        # loss logging present?
+        has_ws = any(c.get("wm_stats") for c in ((r.get("compute", {}) or {}).get("per_client", {}) or {}).values())
+        if not has_ws:
+            msgs.append("NOTE no client wm_stats (loss/acc) logged -> class_dynamics loss panels blank")
+        if r.get("per_class") is None:
+            msgs.append("NOTE no per_class (acc/loss) -> class_difficulty needs the updated run_experiment")
+        head = f"[{tag} seed={seed}] honest_meanBER={np.mean(ho):.3f} " + \
+               (f"fr_meanBER={np.mean(fr):.3f} " if fr else "(all-honest) ") + \
+               (f"eta={etas[-1]:.3f}" if etas else "eta=?")
+        print(head)
+        for m in msgs:
+            print("   ", m)
+        if not msgs:
+            print("    OK")
+        if any("free-rider BER" in m for m in msgs):
+            print(f"    -> inspect: python plots.py class_dynamics --in '<glob>' --family {tag}")
+
+
 CMDS = {
     # canonical / current
+    "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
     "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)
     "thresholds": thresholds,          # intuitive derivation of the ONE eta
     "class_dynamics": class_dynamics,  # loss/acc per class -> hard classes

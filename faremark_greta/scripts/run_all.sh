@@ -49,22 +49,22 @@ honest(){
 
 tap_every(){
   local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
-  echo "== TAP_EVERY (+5/common, full scope, taps every round), eta=$eta, seeds: $SEEDS"
+  echo "== TAP_EVERY (+5/common, full scope), class ids=$POS -> family tap_every_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
     env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS \
         AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
-        FAMILY="tap_every_iid" SWEEP_LEVEL=5 NOTE="tap every +5/cls full eta=$eta" \
+        FAMILY="tap_every_iid_c${POS//,/}" SWEEP_LEVEL=5 NOTE="tap every +5/cls full pos=$POS eta=$eta" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
   done
 }
 
 tap_stay(){
   local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
-  echo "== TAP_STAY (coast + tap only to stay under eta), eta=$eta, seeds: $SEEDS"
+  echo "== TAP_STAY (coast), class ids=$POS -> family tap_stay_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
     env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS AUTOP_STAY_MIN=1 \
         AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
-        FAMILY="tap_stay_iid" SWEEP_LEVEL=5 NOTE="tap-to-stay full eta=$eta" \
+        FAMILY="tap_stay_iid_c${POS//,/}" SWEEP_LEVEL=5 NOTE="tap-to-stay full pos=$POS eta=$eta" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
   done
 }
@@ -79,23 +79,27 @@ calibrate(){
 # 1) timelines (per family)   2) class difficulty + dynamics (harder class ids)
 # 3) canonical threshold derivation (+ fidelity)
 plotall(){
+  # MINIMAL plot set -- only what proves the two claims + catches suspicious runs.
   local ALL="$RES/*/result.json"
   local OUT="${OUT:-$RES/figs}"; mkdir -p "$OUT"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
 
-  for fam in honest_iid tap_every_iid tap_stay_iid; do
-    # 1. timeline (prefix out: the fn appends .png)
-    run $PL timeline       --in "'$ALL'" --family $fam --out "$OUT/timeline_${fam}"
-    # 2. hard-class evidence (dir out)
-    run $PL class_dynamics --in "'$ALL'" --family $fam --out "$OUT"
-    run $PL positions      --in "'$ALL'" --family $fam --out "$OUT"
-    # 3. canonical threshold derivation + fidelity (dir out)
-    run $PL thresholds     --in "'$ALL'" --family $fam --out "$OUT"
-    run $PL fidelity       --in "'$ALL'" --family $fam --out "$OUT"
+  # --- 0. sanity FIRST (text): flag flat/zero BER, non-frozen eta, missing loss ---
+  run $PL sanity --in "'$ALL'" --out "$OUT"
+
+  # --- 1. CLAIM A: some class ids are harder to embed (all-honest) ---
+  run $PL class_difficulty --in "'$ALL'" --family honest_iid --out "$OUT"   # per-class acc/loss vs BER
+  run $PL thresholds       --in "'$ALL'" --family honest_iid --out "$OUT"   # the frozen eta + honest FPR
+
+  # --- 2. CLAIM B: free-riding is possible in IID (+5/common and coast) ---
+  # auto-discover every tap_* family present (each = one class-id assignment)
+  FAMS="${FAMS:-$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and x.startswith('tap_'))))" 2>/dev/null)}"
+  for fam in $FAMS; do
+    run $PL timeline      --in "'$ALL'" --family $fam --out "$OUT/timeline_${fam}"  # BER vs eta, taps/coasts
+    run $PL fidelity      --in "'$ALL'" --family $fam --out "$OUT"                  # FR vs honest BER + effort
+    run $PL class_dynamics --in "'$ALL'" --family $fam --out "$OUT"                 # loss curves (diagnostic)
   done
-  # honest FPR against the frozen eta (prefix out)
-  run $PL honest_fpr --in "'$ALL'" --family honest_iid --out "$OUT/honest_fpr"
-  echo "PLOTALL done -> $OUT"
+  echo "PLOTALL (minimal) done -> $OUT"
 }
 
 # =============================== DISPATCH ===============================

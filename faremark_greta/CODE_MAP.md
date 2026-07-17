@@ -34,10 +34,12 @@ to `eta_calibrated.json`, and passed into every experiment as `WM_ETA_FIXED`.
 
 Threshold definition:
 ```
-m_r   = mean BER over all honest clients IN round r      (mean over clients)
-mu    = mean_r(m_r)   over the converged tail            (mean over rounds)
-sigma = std_r(m_r)
-eta   = mu + 3*sigma
+per seed s (one run, 10 honest clients, last `tail`=20 rounds):
+   m_r   = mean BER over the 10 clients IN round r     (mean over clients)
+   mu_s  = mean_r(m_r)                                 (mean over the 20 rounds)
+   sigma_s = std_r(m_r)
+   eta_s = mu_s + 3*sigma_s
+final:  eta = AVERAGE of eta_s over the seeds        (+ eta_std_across_seeds reported)
 ```
 
 ---
@@ -191,6 +193,7 @@ Subcommand CLI (`python plots.py <cmd> --in '<glob>' [--family F] [--out DIR|PRE
 |---|---|---|
 | `thresholds` | intuitive derivation of the ONE eta + where it lands (FPR/recall) | dir |
 | `class_dynamics` | per-class L_wm / trig acc / BER-vs-confidence / loss curves | dir |
+| `sanity` | TEXT report: flag flat/zero BER, non-frozen eta, missing loss | - |
 | `class_difficulty` | confirm harder class ids: per-class acc/loss vs BER (+ Pearson r) | dir |
 | `positions` | per-trigger-class-id BER (easy vs hard) + BER-vs-p_max panel | dir |
 | `fidelity` | global accuracy + per-client BER (honest vs FR) + effort | dir |

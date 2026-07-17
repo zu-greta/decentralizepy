@@ -42,12 +42,12 @@ class _AdaptiveMixin:
     _local_train_wm, _memory_update)."""
 
     def _ensure_triggers(self, n_probe: int = 64):   # TODO hardcoded: probe-image count (steadier self-BER); tie to N_T?
-        """Gather this shard's trigger-class samples once; reserve a held-out
-        probe slice (the FR's only view of its own BER)"""
+        """trigger samples, probe samples, and reduced loader for a tap (data-ablation)"""
         if getattr(self, "_prepared", False): 
             return
         self._prepared = True 
         self._enr_loader = None                     
+        orig_bs = getattr(self.loader, "batch_size", 16) or 16
         trig, comm_x, comm_y = [], [], [] 
         # gather trigger-class samples and common-class samples for the reduced loader
         for x, y in self.loader: 
@@ -65,14 +65,31 @@ class _AdaptiveMixin:
         allt = torch.cat(trig) # all trigger samples in this shard
         hr = getattr(self, "autop_holdout_ratio", 0.5) # fraction of trigger samples to hold out for probing
         k = min(n_probe, max(1, int(len(allt) * hr))) # number of probe samples
-        self._probe_x = allt[:k].clone()            # held-out for probing
-        trig_train = allt # train the mark on all trigger images (like an honest client) 
+        # probe holdout: first k trigger images are probe - not trained on
+        self._probe_x = allt[:k].clone()            # held out for probing ONLY
+        trig_train = allt[k:]                        # train the mark on the REST
+        if len(trig_train) == 0:                     # tiny shard: keep >=1 for training
+            trig_train = allt[-1:].clone(); self._probe_x = allt[:-1].clone()
 
-        # reduced shard for a tap (data-ablation): trigger samples + N images from each common class
+        # FR training loader = whole shard - held-out probe images
+        # NOTE: rebuilt from in-memory tensors -> data augmentation is frozen for the FR.
+        self._full_loader = self.loader
+        if comm_x:
+            cx_all = torch.cat(comm_x); cy_all = torch.cat(comm_y)
+            X_tr = torch.cat([trig_train, cx_all])
+            Y_tr = torch.cat([torch.full((len(trig_train),), self.trigger_class,
+                                          dtype=torch.long), cy_all])
+        else:
+            X_tr = trig_train
+            Y_tr = torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)
+        self.loader = DataLoader(TensorDataset(X_tr, Y_tr),
+                                 batch_size=min(orig_bs, len(X_tr)), shuffle=True)
+
+        # reduced shard for a tap (data-ablation): trigger-TRAIN samples + N images from each common class
         # autop_common_per_class = -1 -> use full shard instead
         ncpc = getattr(self, "autop_common_per_class", -1)
         self._reduced_loader = None
-        if ncpc >= 0: # reduced loader: trigger + N common-class samples
+        if ncpc >= 0: # reduced loader: (held-out) trigger + N common-class samples
             xs = [trig_train]
             ys = [torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)]
             if ncpc > 0 and comm_x:
@@ -372,9 +389,13 @@ def make_submarine_attack(base_cls):
         def produce_update(self, global_state, prev_global_state, round_idx):
             self._ensure_triggers()
 
-            # honest mode: purely honest (full shard, full scope)
+            # honest mode: purely honest (FULL shard incl. probe imgs, full scope).
+            # Uses _full_loader so this floor-control is pixel-exact honest.
             if self.autop_honest_clone:
+                saved = self.loader
+                self.loader = getattr(self, "_full_loader", self.loader)
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
+                self.loader = saved
                 self._update_mark_delta(global_state)
                 self.trace.append({"round": round_idx, "action": "honest_clone",
                                    "ber_after": self._probe_ber_state(submit)})
