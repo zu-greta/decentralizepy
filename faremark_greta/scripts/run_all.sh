@@ -27,6 +27,11 @@ ETA_FILE="${ETA_FILE:-$RES/eta_calibrated.json}"
 PL="python scripts/plots.py"   # all plotting consolidated
 TH="python threshold.py"  # all threshold code consolidated
 
+# ---------- hardcoded fallback eta ----------
+FIXED_ETA=0.06397                  # use this value if USE_FIXED_ETA is set
+USE_FIXED_ETA="${USE_FIXED_ETA:-}" # set to non-empty to skip reading from file
+# ------------------------------------------------
+
 # common env for one autopilot run
 COMMON_E="ROUNDS=50 AUTOP_WARMUP_MODE=fixed AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
 AUTOP_ETA_MODE=tight AUTOP_NUM_CLIENTS_EST=10 AUTOP_MARGIN0=0.06 AUTOP_SAFETY=0.02 AUTOP_MAX_COAST=4"
@@ -38,6 +43,16 @@ except Exception: print("")
 PY
 }
 
+# ---------- get eta (either fixed or from file) ----------
+get_eta(){
+  if [ -n "$USE_FIXED_ETA" ]; then
+    echo "$FIXED_ETA"
+  else
+    read_eta
+  fi
+}
+# --------------------------------------------------------------
+
 # =============================== EXPERIMENTS ===============================
 honest(){
   echo "== HONEST (all-honest, seeds: $SEEDS) -> calibration + baseline"
@@ -48,7 +63,8 @@ honest(){
 }
 
 tap_every(){
-  local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
+  local eta="$(get_eta)"   # <-- changed from read_eta
+  [ -z "$eta" ] && { echo "!! no eta available (file missing and USE_FIXED_ETA not set)"; return 1; }
   echo "== TAP_EVERY (+5/common, full scope), class ids=$POS -> family tap_every_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
     env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS \
@@ -59,7 +75,8 @@ tap_every(){
 }
 
 tap_stay(){
-  local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
+  local eta="$(get_eta)"   # <-- changed from read_eta
+  [ -z "$eta" ] && { echo "!! no eta available (file missing and USE_FIXED_ETA not set)"; return 1; }
   echo "== TAP_STAY (coast), class ids=$POS -> family tap_stay_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
     env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS AUTOP_STAY_MIN=1 \
@@ -113,5 +130,6 @@ case "${1:-}" in
   PLOTALL)    plotall ;;
   *) echo "usage: ./run_all.sh [honest|calibrate|tap_every|tap_stay|attacks|PLOTALL]
   typical order:  honest  ->(wait)->  calibrate  ->  attacks  ->(wait)->  PLOTALL
-  vars: CFG=$CFG RES=$RES SEEDS='$SEEDS' POS=$POS ETA_FILE=$ETA_FILE"; exit 1 ;;
+  vars: CFG=$CFG RES=$RES SEEDS='$SEEDS' POS=$POS ETA_FILE=$ETA_FILE
+  env USE_FIXED_ETA=1 to use hardcoded eta=$FIXED_ETA instead of reading from ETA_FILE"; exit 1 ;;
 esac
