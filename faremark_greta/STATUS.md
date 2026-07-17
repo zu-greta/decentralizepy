@@ -1,9 +1,6 @@
-# STATUS — analysis, results, conclusions (with provenance)
+# STATUS — analysis, results, conclusions 
 
-Standard setup unless noted: **CIFAR-100, ResNet-18, 10 clients, 50 rounds,
-5 local epochs, batch 16, m=10 watermark bits, N_T=50, lambda=5, beta=0.6,
-alpha=0.4, config 14 (`submarine_resnet18_cifar100`).** Detector flags client i iff
-`BER_i >= eta`.
+Standard setup unless noted: **CIFAR-100, ResNet-18, 10 clients, 50 rounds, 5 local epochs, batch 16, m=10 watermark bits, N_T=50, lambda=5, beta=0.6, alpha=0.4, config 14 (`submarine_resnet18_cifar100`).** Detector flags client i iff `BER_i >= eta`.
 
 **THRESHOLD (canonical, frozen):** `eta = mu + 3*sigma` where `m_r` = mean BER over
 clients in round r, `mu = mean_r(m_r)`, `sigma = std_r(m_r)`, over the converged tail.
@@ -13,21 +10,13 @@ per-round calc in the server is commented out.
 
 ---
 
-## The finding (one paragraph)
+## The finding - TODO
 
-FareMark's detector cannot separate an adaptive free-rider from an honest client at
-a "hard" trigger position, because **eta is calibrated on the per-round MEAN honest
-BER (tight) but applied to individual clients (whose BER is position-dependent).**
-A free-rider that trains identically to an honest client lands on its position's BER
-floor; if that floor is above eta it is flagged — and so is an honest client at the
-same position. **Any eta tight enough to catch an embedding free-rider also
-false-positives honest hard-position clients; any eta loose enough to spare them lets
-the free-rider pass.** With the single canonical (tight, round-mean) eta we now use,
-the visible symptom is the **honest false-positive rate at hard positions**.
+...
 
 ---
 
-## Concepts
+## Concepts - TODO
 
 - **BER floor** = lowest BER a client can reach for its assigned watermark, no matter
   how much it trains. Set by the (trigger_class, key, bits) "position", not by effort.
@@ -40,7 +29,7 @@ the visible symptom is the **honest false-positive rate at hard positions**.
 
 ---
 
-## Results and provenance
+## Results and provenance - TODO
 
 - **R1. Floor is structural, not the embedder** — `autop_honest_clone=1` control:
   an FR embedding via the exact honest path plateaus at the same floor as the submarine.
@@ -70,12 +59,18 @@ All IID, config 14, from `scripts/`. Run the block, wait for jobs, then plot.
   # wait for all jobs, then:
   ./run_all.sh calibrate                        # -> $RES/eta_calibrated.json
   RES=$RES ./run_all.sh PLOTALL                 # (or just the honest-family plots)
+  # confirm the numbers + the assumption BEFORE any submarine run:
+  python scripts/threshold.py verify --in "$RES/*/result.json" --honest-family honest_iid --eta-file "$RES/eta_calibrated.json"
+  python scripts/plots.py class_difficulty --in "$RES/*/result.json" --family honest_iid --out "$RES/figs"
   ```
 - **For:** produce the ONE frozen eta + prove it's the right line.
 - **Expect:** `eta_calibrated.json` with `eta` ~0.09-0.12 (tail); per-seed etas within
   a few thousandths; `thresholds_honest_iid.png` shows the derivation and the honest
   FPR at that eta; `positions`/`class_dynamics` show which classes are hard and WHY
-  (high `pmax`/`wm_loss`).
+  (high `pmax`/`wm_loss`). `class_difficulty` correlates BER with per-class test
+  accuracy/loss (Pearson r) -> confirms harder class ids are fuzzier-boundary classes.
+
+> ALWAYS use >=3 seeds for every experiment (run_all.sh default SEEDS="0 1 2").
 
 ### KNOB 1 — position (hard vs easy)  [start here after Step 0]
 - **Setup:** submarine, tap every round, +5/common, full scope; vary only the FR's

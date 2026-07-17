@@ -34,6 +34,8 @@ To contribute effectively to this project, we highly value:
 | June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
 | July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples |
 | July 7 | [1] no working results yet - needs more tuning for the new attacks | [1] testing how much training is needed to start with (cannot just do trigger samples, need a full shard to warm up) <br> testing some autopilot dynamic way |
+| July 16 | [x] threshold and different knobs experiments for submarine attack to be refined | - |
+| July 21 | [] threshold fixed <br> [] baseline submarine attack results for iid, full scope, tap/coast, and +5/common <br> [] have basic plots for results - just prove that on iid, with the harsh threshold, free-riding is possible with either tap/coast or +5/common | - |
 
 ---
 
@@ -45,11 +47,11 @@ To contribute effectively to this project, we highly value:
 | June 16 | [X] setup GPU clusters (Milos instructions) <br> [x] get Claude pro |
 | June 23 | [x] implement the FareMark paper and reproduce the results <br> [x] run all basic experiments from the paper and obtain proof that code is good <br> [x] deep dive into code - documentation and compare with algorithm in paper to make sure everything is correct <br> [x] short presentation for JSM  to prove everything is working <br> [x] deep dive into the paper and code |
 | July 2 | [x] finish up code <br> [x] play around with settings and figure out new attacks <br> [x] create plots and graphs for next JSM presentation |
-| July 7 | [] send a follow up email to authors <br> [] cleanup codebase (including documentations) and results - get clean results and only keep necessary ones in a summary <br> [] explore better attacks <br> [] explore theoretical approach |
-| July 14 | [] |
-| July 21 | [] start writing report ? |
+| July 7 | [x] send a follow up email to authors <br> [x] cleanup codebase (including documentations) and results - get clean results and only keep necessary ones in a summary <br> [] explore better attacks <br> [] explore theoretical approach |
+| July 14 | [] broad submarine attacks |
+| July 21 | [] fix all the code issues <br> [] review all code and be up to date <br> [] run baseline attack experiments <br> [] analyse results and figure out next steps and feasibility of project |
 | July 28 | [] |
-| August 4 | [] |
+| August 4 | [] start writing report ? |
 | August 11 | [] |
 | August 18 | [] |
 
@@ -278,29 +280,3 @@ to sync it with the original repo
 3. presentation 
     - ?
 ---
-
-### update — canonical threshold + submarine (current)
-
-- **Threshold is now ONE pre-calibrated constant.** `eta = mu+3sigma` over per-round
-  (mean-over-clients) honest BER on the converged tail, calibrated once on honest-only
-  multi-seed runs via `scripts/threshold.py calibrate` -> `eta_calibrated.json`, reused
-  everywhere through `WM_ETA_FIXED`. The live per-round calc in `wm_verify` is commented
-  out. All the old eta variants (per-client/loose, cumulative, 7-way `all_thresholds`)
-  are gone.
-- **Code consolidated:** all threshold code -> `threshold.py`; all plotting -> `plots.py`.
-  The `autopilot` attack is renamed **`submarine`** (alias kept). `paper_faithful`
-  removed (its True-behaviour is now the only mode).
-- **Attack fixes:** the submarine now estimates the *tight* (round-mean) eta from its own
-  BER as `mu + k*sigma/sqrt(N)`, taps when the coast BER would exceed
-  `target = eta - margin0 - safety`, and force-re-taps after `autop_max_coast` coasts
-  (fixes the "coasts while drifting over the threshold" bug).
-- **New logging:** server-side `pmax`/`entropy`/`dominance`/`trig_acc` per client
-  (wm_verify) and client-side `wm_loss`/`trig_train_acc` per round (wm_client.wm_stats)
-  -> proves *why* some trigger classes are hard.
-- **Next:** run STEP 0 (honest -> calibrate -> plots), then one knob at a time
-  (position -> data/tap -> coast). See STATUS.md "EXPERIMENTS TO RUN".
-
-- **Open questions being tracked:**
-  - the safety `delta = margin0 + safety` is two fixed constants (0.06 + 0.02); it should
-    be DERIVED from estimation uncertainty (marked TODO in config.py / attacks_adaptive).
-  - converged-tail length: paper Fig.8 saturates ~round 30, so tail=20 for a 50-round run.

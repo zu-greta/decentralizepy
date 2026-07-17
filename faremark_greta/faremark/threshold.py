@@ -190,6 +190,53 @@ def calibrate(inp, honest_family=None, tail=20, out=None):
     return result
 
 
+def verify(inp, honest_family=None, tail=20, eta_file=None):
+    """Double-check the pipeline:
+      1. RECOMPUTE eta from the honest runs and compare to eta_calibrated.json.
+      2. Confirm every NON-honest run actually USED the frozen constant, i.e. its
+         wm_eta_round is flat and == the frozen eta (post-warmup rounds).
+    Prints a PASS/FAIL report. Returns True iff all checks pass."""
+    runs = load(inp)
+    honest = [(f, r) for f, r in runs if is_honest_run(r)
+              and (honest_family is None or fam(r) == honest_family)]
+    frozen = load_fixed(eta_file) if eta_file else None
+    ok = True
+
+    print("== 1. recompute eta from honest runs ==")
+    if not honest:
+        print("  (no honest runs found)"); ok = False
+    else:
+        pooled = round_means([r for _, r in honest], tail=tail, honest_only=True)
+        eta_re, mu, sd = eta_from_round_means(pooled)
+        print(f"  recomputed eta = {eta_re:.5f}  (mu={mu:.5f}, sigma={sd:.5f}, "
+              f"n_round_means={len(pooled)}, seeds={len(honest)})")
+        if frozen is not None:
+            match = abs(eta_re - frozen) < 1e-4
+            print(f"  eta_calibrated.json eta = {frozen:.5f}  -> "
+                  f"{'MATCH' if match else 'MISMATCH'}")
+            ok &= match
+
+    print("== 2. attack runs used the frozen constant (flat wm_eta_round) ==")
+    attack = [(f, r) for f, r in runs if not is_honest_run(r)]
+    if not attack:
+        print("  (no attack runs found yet)")
+    for f, r in attack:
+        etas = [h.get("wm_eta_round") for h in r.get("history", [])
+                if h.get("wm_eta_round") is not None]
+        tag = os.path.basename(os.path.dirname(f))
+        if not etas:
+            print(f"  {tag}: no wm_eta_round logged"); continue
+        flat = (max(etas) - min(etas)) < 1e-6
+        val = etas[-1]
+        near = frozen is None or abs(val - frozen) < 1e-4
+        status = "OK" if (flat and near) else "CHECK"
+        print(f"  {tag}: wm_eta_round={val:.4f} flat={flat} "
+              f"matches_frozen={near} -> {status}")
+        ok &= (flat and near)
+    print("== RESULT:", "PASS" if ok else "FAIL", "==")
+    return ok
+
+
 # --------------------------------------------------------------------- CLI
 def _cli():
     ap = argparse.ArgumentParser(description="calibrate the canonical detection threshold eta")
@@ -200,7 +247,15 @@ def _cli():
                    help="restrict to this manifest family (e.g. honest_iid).")
     c.add_argument("--tail", type=int, default=20, help="last N rounds (0 = ALL rounds).")
     c.add_argument("--out", default=None)
+    v = sub.add_parser("verify")
+    v.add_argument("--in", dest="inp", nargs="+", required=True)
+    v.add_argument("--honest-family", default=None)
+    v.add_argument("--tail", type=int, default=20)
+    v.add_argument("--eta-file", default=None, help="eta_calibrated.json to compare against")
     a = ap.parse_args()
+    if a.cmd == "verify":
+        import sys as _s
+        _s.exit(0 if verify(a.inp, a.honest_family, a.tail, a.eta_file) else 1)
     if a.cmd == "calibrate":
         res = calibrate(a.inp, a.honest_family, a.tail, a.out)
         print(f"CANONICAL eta = {res['eta']:.5f}   "

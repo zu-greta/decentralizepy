@@ -22,12 +22,12 @@
 set -uo pipefail
 CFG="${CFG:-14}"; RES="${RES:-/mnt/nfs/home/zu/results}"
 SEEDS="${SEEDS:-0 1 2}"
-POS="${POS:-3,6}"                 # free-rider trigger positions (hard cls 3 & 6)
+POS="${POS:-3,6}"                 # free-rider trigger CLASS IDs (hard cls 3 & 6)
 ETA_FILE="${ETA_FILE:-$RES/eta_calibrated.json}"
 PL="python scripts/plots.py"   # all plotting consolidated
 TH="python scripts/threshold.py"  # all threshold code consolidated
 
-# common env for one submarine run
+# common env for one autopilot run
 COMMON_E="ROUNDS=50 AUTOP_WARMUP_MODE=fixed AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
 AUTOP_ETA_MODE=tight AUTOP_NUM_CLIENTS_EST=10 AUTOP_MARGIN0=0.06 AUTOP_SAFETY=0.02 AUTOP_MAX_COAST=4"
 
@@ -76,7 +76,7 @@ calibrate(){
 }
 
 # =============================== PLOTALL ===============================
-# 1) timelines (per family)   2) class dynamics + positions (hard classes)
+# 1) timelines (per family)   2) class difficulty + dynamics (harder class ids)
 # 3) canonical threshold derivation (+ fidelity)
 plotall(){
   local ALL="$RES/*/result.json"

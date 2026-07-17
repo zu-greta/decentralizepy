@@ -41,7 +41,8 @@ try:
     C_HONEST = ps.C_HONEST; C_FR = ps.C_FR
     C_BAD = getattr(ps, "C_BAD", "#B23A2E"); C_GOOD = getattr(ps, "C_GOOD", "#009E73")
     OK = ps.OKABE
-    def finish(fig, path): ps.finish(fig, path)
+    def finish(fig, path):
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True); ps.finish(fig, path)
     def stacked_panels(n, **kw): return ps.stacked_panels(n, **kw)
 except Exception:
     OK = {"black": "#000000", "grey": "#888888", "orange": "#E69F00",
@@ -286,7 +287,7 @@ def threshold(a):
 
 
 # ============================================================================
-# 2. HARDER TRIGGER CLASSES / POSITIONS
+# 2. HARDER TRIGGER CLASS IDS
 # ============================================================================
 def positions(a):
     runs = pick(load(a.inp), a.family)
@@ -985,7 +986,7 @@ def scorecard(a):
     ax.set_xticks(range(len(fams))); ax.set_xticklabels(fams, rotation=20, ha="right", fontsize=8)
     ax.set_yticks(range(len(all_lv))); ax.set_yticklabels([lvl_label(v).replace("\n"," ") for v in all_lv])
     ax.set_title(a.title or f"Scorecard — green = below fair η ({et:.3f}) = hidden. Cheapest hidden cell wins.")
-    ax.set_xlabel("setting (scope × position)"); ax.set_ylabel("training data / round")
+    ax.set_xlabel("setting (scope × trigger-class-id set)"); ax.set_ylabel("training data / round")
     ps.finish(fig, a.out + ".png")
     print("eta_tight:", et)
 
@@ -1045,10 +1046,10 @@ def honest_fpr(a):
                label=f"η = μ+3σ over PER-CLIENT BERs = {eta_perclient:.3f}")
     ax.set_xticks(range(len(classes)))
     ax.set_xticklabels([f"cls {c}" for c in classes])
-    ax.set_xlabel("trigger class (position)")
+    ax.set_xlabel("trigger class id")
     ax.set_ylabel("honest bit-error-rate (converged rounds)")
     ax.set_title("TEST 1 — honest clients vs η.  Points above a line = that η flags honest clients.\n"
-                 "round-mean η catches hard positions AND false-positives; per-client η spares them but is looser")
+                 "round-mean η catches hard class ids AND false-positives; per-client η spares them but is looser")
     ax.legend(loc="upper right", fontsize=8)
     ps.finish(fig, a.out + ".png")
     print(f"eta_roundmean={eta_roundmean:.4f} FPR={fpr_rm:.3f}")
@@ -1153,8 +1154,112 @@ def test_data(a):
 
 
 # =====================================================================
+def class_difficulty(a):
+    """CONFIRM the assumption "some trigger-class IDs are harder" using the
+    watermark-INDEPENDENT per-class test accuracy + loss (result['per_class']),
+    correlated against per-trigger-class watermark BER. If hard-to-embed classes
+    (high BER) are also the low-accuracy / high-loss classes, the boundary-fuzziness
+    explanation holds."""
+    runs = pick(load(a.inp), a.family)
+    if not runs:
+        print("no runs for", a.family); return
+
+    # per-class test acc/loss (final model), averaged over seeds
+    acc_by, loss_by = defaultdict(list), defaultdict(list)
+    have_pc = False
+    for r in runs:
+        pc = r.get("per_class")
+        if not pc or not pc.get("by_class"):
+            continue
+        have_pc = True
+        for c, d in pc["by_class"].items():
+            acc_by[int(c)].append(d["acc"]); loss_by[int(c)].append(d["loss"])
+
+    # per-trigger-class converged watermark BER (only classes some client holds)
+    ber_by = defaultdict(list)
+    for r in runs:
+        n = len(r.get("history", []))
+        for i, h in enumerate(r["history"]):
+            if i < n - TAIL:
+                continue
+            for p in (h.get("wm_per_client") or []):
+                if not p.get("is_free_rider"):
+                    ber_by[int(p["trigger_class"])].append(p["ber"])
+
+    trig = sorted(ber_by)                         # the trigger classes clients hold
+    ber = np.array([np.mean(ber_by[c]) for c in trig])
+    if not have_pc:
+        print("  NOTE: result['per_class'] absent -> re-run with the updated "
+              "run_experiment.py to log per-class acc/loss. Plotting BER only.")
+
+    fig, ax = plt.subplots(2, 2, figsize=(13.5, 9.5))
+
+    order = np.argsort(ber)
+    ts = [trig[i] for i in order]
+
+    # (a) per-trigger-class BER
+    axA = ax[0, 0]
+    axA.bar(range(len(ts)), [ber_by and np.mean(ber_by[c]) for c in ts], color=C_FR, alpha=0.85)
+    axA.set_xticks(range(len(ts))); axA.set_xticklabels([f"cls {c}" for c in ts])
+    axA.set_ylabel(f"watermark BER (last {TAIL} rounds)")
+    axA.set_xlabel("trigger class id (sorted easy -> hard)")
+    axA.set_title("(a) Watermark difficulty per trigger class id")
+
+    # (b) per-class test accuracy
+    axB = ax[0, 1]
+    if have_pc:
+        accs = [np.mean(acc_by[c]) if acc_by.get(c) else np.nan for c in ts]
+        axB.bar(range(len(ts)), accs, color=C_HONEST, alpha=0.85)
+        axB.set_xticks(range(len(ts))); axB.set_xticklabels([f"cls {c}" for c in ts])
+        axB.set_ylabel("per-class TEST accuracy (%)")
+        axB.set_xlabel("trigger class id (same order as (a))")
+        axB.set_title("(b) Classification accuracy per class id\n(low here + high BER in (a) = fuzzy boundary)")
+    else:
+        axB.axis("off"); axB.text(0.5, 0.5, "no per_class in result.json", ha="center", color=GREY)
+
+    # (c) BER vs per-class ERROR (100-acc), with correlation
+    axC = ax[1, 0]
+    if have_pc:
+        err = np.array([100 - np.mean(acc_by[c]) if acc_by.get(c) else np.nan for c in trig])
+        good = ~np.isnan(err)
+        axC.scatter(err[good], ber[good], s=80, color=OK["purple"], edgecolor=BLACK, zorder=3)
+        for c, x_, y_ in zip(trig, err, ber):
+            axC.annotate(f"cls {c}", (x_, y_), fontsize=8, textcoords="offset points", xytext=(5, 3))
+        if good.sum() >= 2:
+            rho = float(np.corrcoef(err[good], ber[good])[0, 1])
+            axC.set_title(f"(c) BER vs classification error  (Pearson r = {rho:.2f})")
+        axC.set_xlabel("per-class test error = 100 - acc (%)")
+        axC.set_ylabel("watermark BER")
+    else:
+        axC.axis("off")
+
+    # (d) BER vs per-class LOSS
+    axD = ax[1, 1]
+    if have_pc:
+        lo = np.array([np.mean(loss_by[c]) if loss_by.get(c) else np.nan for c in trig])
+        good = ~np.isnan(lo)
+        axD.scatter(lo[good], ber[good], s=80, color=OK["orange"], edgecolor=BLACK, zorder=3)
+        for c, x_, y_ in zip(trig, lo, ber):
+            axD.annotate(f"cls {c}", (x_, y_), fontsize=8, textcoords="offset points", xytext=(5, 3))
+        if good.sum() >= 2:
+            rho = float(np.corrcoef(lo[good], ber[good])[0, 1])
+            axD.set_title(f"(d) BER vs classification loss  (Pearson r = {rho:.2f})")
+        axD.set_xlabel("per-class test cross-entropy loss")
+        axD.set_ylabel("watermark BER")
+    else:
+        axD.axis("off")
+
+    fig.suptitle(f"Assumption check: harder class ids - {a.family or 'all runs'}",
+                 fontsize=13, y=1.01)
+    finish(fig, os.path.join(a.out, f"class_difficulty_{a.family or 'all'}.png"))
+    print("  per-trigger-class BER (easy->hard):", [(c, round(np.mean(ber_by[c]), 3)) for c in ts])
+    if have_pc:
+        print("  per-class acc:", [(c, round(np.mean(acc_by[c]), 1)) for c in ts])
+
+
 CMDS = {
     # canonical / current
+    "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)
     "thresholds": thresholds,          # intuitive derivation of the ONE eta
     "class_dynamics": class_dynamics,  # loss/acc per class -> hard classes
     "positions": positions,            # per-class BER (easy vs hard)
@@ -1188,7 +1293,7 @@ if __name__ == "__main__":
     # finish() creates the needed directory for both dir-style and prefix-style out
     # "all" = the current headline set
     if a.cmd == "all":
-        for name in ("thresholds", "class_dynamics", "positions", "fidelity"):
+        for name in ("thresholds", "class_difficulty", "class_dynamics", "positions", "fidelity"):
             print(f"== {name} =="); CMDS[name](a)
     else:
         CMDS[a.cmd](a)

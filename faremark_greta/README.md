@@ -1,20 +1,13 @@
 # FareMark — reproduction + limitations study
 
-Re-implementation of **FareMark: Model-Watermark-Driven Free-Rider Detection in
-Federated Learning** (Li et al., IEEE IoT-J 2025), extended into a limitations study.
+Re-implementation of FareMark: Model-Watermark-Driven Free-Rider Detection in
+Federated Learning (Li et al., IEEE IoT-J 2025), extended into a limitations study.
 Centralized FedAvg simulated on one GPU + a per-client watermark loss, a
 memory-enhanced update, and server-side verification.
 
-**Headline finding (a negative result):** the honest watermark BER floor is
-**position-dependent** (which trigger class a client is assigned). The detection
-threshold `eta` is calibrated on the per-round MEAN honest BER (tight) but applied to
-INDIVIDUAL clients (wide). No single scalar `eta` both catches an embedding free-rider
-AND spares honest hard-position clients — a false-positive / threshold-calibration
-limitation, demonstrated with an adaptive **submarine** free-rider.
-
 ---
 
-## Current layout (what actually exists)
+## Current layout 
 
 ```
 faremark/
@@ -37,17 +30,9 @@ scripts/
   submit_experiment.sh one RunAI job (env -> CLI flags)
 ```
 
-> **Deleted/renamed:** `eta_calib.py`+`calibrate_eta.py` -> `threshold.py`;
-> `plot_diag.py`+`plot_analysis.py`+`plot_tests.py` -> `plots.py`; the `autopilot`
-> attack is now **`submarine`** ("autopilot" kept as a back-compat alias); the
-> `paper_faithful` flag is **removed** (its True-behaviour — random keys, full softmax,
-> m=n//10 — is now the only mode).
-
-See **CODE_MAP.md** for the full technical reference (every module, formula, method).
-
 ---
 
-## The threshold (do this first)
+## The threshold 
 
 One canonical, pre-calibrated constant:
 `eta = mu + 3*sigma` over per-round (mean-over-clients) honest BER, on the converged
@@ -60,19 +45,35 @@ SEEDS="0 1 2 3 4 5 6 7 8 9" ./run_all.sh honest    # all-honest, multi-seed
 python scripts/plots.py thresholds --in "$RES/*/result.json" --family honest_iid \
     --out "$RES/figs"                               # prove the line is right
 ```
-Attack runs read it automatically (`WM_ETA_FIXED`); no hardcoding.
+Attack runs read it automatically (`WM_ETA_FIXED`)
+
+### Where files live
+- **per run:** `$MOUNT/home/zu/results/<RUN_TAG>/result.json` (+ `run.log`, `pod.log`),
+  `RUN_TAG = cfg14_rep<seed>_<timestamp>`.
+- **calibration:** `$RES/eta_calibrated.json`.
+- **REQUIRED:** set `RES = $MOUNT/home/zu/results` (submit writes under `$MOUNT/...`,
+  run_all/calibrate read from `$RES/...`). With `.env` `MOUNT=/mnt/nfs` the default
+  `RES=/mnt/nfs/home/zu/results` already matches.
+
+### Double-check the numbers
+```bash
+python scripts/threshold.py verify --in "$RES/*/result.json" \
+    --honest-family honest_iid --eta-file "$RES/eta_calibrated.json"
+```
+PASS = recomputed eta matches the file and every attack run used the frozen constant
+(flat `wm_eta_round` == eta). Also inspect `eta_calibrated.json` (per-seed etas should
+agree) and `result["per_class"]` (per-class acc/loss).
 
 ---
 
-## Experiments (one knob at a time)
+## Experiments 
 
 ```bash
 ./run_all.sh attacks     # tap_every (+5/common, full) + tap_stay (coast-to-stay)
 ./run_all.sh PLOTALL     # timeline + class_dynamics + positions + thresholds + fidelity + honest_fpr
 ```
-Vary ONE knob per batch — position (`POS=3,6` vs `1,7`), data-per-tap
-(`AUTOP_COMMON_PER_CLASS`), coast (`AUTOP_STAY_MIN`). Full plan + expected results in
-**STATUS.md -> EXPERIMENTS TO RUN**. Story + pseudocode in **STORYLINE.md**.
+Vary one knob per batch — class index (`POS=3,6` vs `1,7`), data-per-tap
+(`AUTOP_COMMON_PER_CLASS`), coast (`AUTOP_STAY_MIN`)
 
 ---
 

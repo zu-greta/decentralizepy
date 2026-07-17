@@ -57,7 +57,7 @@ def parse_args():
                    help="pin which cids free-ride, e.g. '3,6' (overrides the seeded choice)")
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
-    # ---- submarine overrides ----
+    # ---- autopilot overrides ----
     p.add_argument("--autop_oracle_eta", type=float, default=None)
     p.add_argument("--autop_warmup_mode", type=str, default=None,
                    choices=["dynamic", "fixed"])
@@ -117,6 +117,36 @@ _OVERRIDABLE = [
     "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
 ]
+
+
+@torch.no_grad()
+def evaluate_per_class(model, loader, num_classes, device):
+    """Per-class TEST accuracy and mean cross-entropy loss of the (final global)
+    model. This is the watermark-INDEPENDENT evidence that some class indexes have
+    fuzzier decision boundaries: a hard class shows low acc / high loss here, and
+    (separately) a high watermark BER. Returns ({class: {acc, loss, n}}, overall_acc)."""
+    import torch.nn.functional as F
+    model.eval()
+    correct = [0] * num_classes
+    total = [0] * num_classes
+    loss_sum = [0.0] * num_classes
+    for x, y in loader:
+        x, y = x.to(device), y.to(device)
+        logits = model(x)
+        losses = F.cross_entropy(logits, y, reduction="none")
+        pred = logits.argmax(1)
+        for c in range(num_classes):
+            m = (y == c)
+            n = int(m.sum())
+            if n:
+                total[c] += n
+                correct[c] += int((pred[m] == c).sum())
+                loss_sum[c] += float(losses[m].sum())
+    by_class = {c: {"acc": round(100.0 * correct[c] / total[c], 3),
+                    "loss": round(loss_sum[c] / total[c], 5), "n": total[c]}
+                for c in range(num_classes) if total[c]}
+    overall = 100.0 * sum(correct) / max(sum(total), 1)
+    return by_class, overall
 
 
 def collect_compute(clients, free_rider_indices):
@@ -272,6 +302,20 @@ def main():
                 "wm_unembeddable_frac": registry.unembeddable_frac,
             }
 
+    # per-class test accuracy + loss of the final global model 
+    per_class = None
+    try:
+        by_class, overall = evaluate_per_class(model, data.test_loader,
+                                               data.num_classes, device)
+        matches = abs(overall - final_acc) <= 1.0
+        if not matches:
+            logger.info(f"WARN per-class overall {overall:.2f}% != final_acc "
+                        f"{final_acc:.2f}% (model may not hold final global weights)")
+        per_class = {"overall_acc": round(overall, 3),
+                     "matches_final_acc": bool(matches), "by_class": by_class}
+    except Exception as e:
+        logger.info(f"per-class eval skipped: {e}")
+
     compute = collect_compute(clients, free_rider_indices)
     manifest = build_manifest(cfg, args)
 
@@ -292,6 +336,7 @@ def main():
         "elapsed_sec": round(elapsed, 1),
         "watermark": getattr(cfg, "watermark", False),
         "flops_per_sample_fwd": fps,
+        "per_class": per_class,          # per-class test acc/loss of the final model
         **wm_summary,
         "compute": compute,
         "history": history,
