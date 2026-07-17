@@ -133,18 +133,15 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     Honest slots embed; free-rider slots are the submarine attack (watermark-capable) or
     a crude baseline. Returns (clients, free_rider_indices)."""
     from .attacks import ATTACKS, GaussianNoiseFreeRider, resolve_free_riders
-    from .attacks_adaptive import make_autopilot_attack
+    from .attacks_adaptive import make_submarine_attack
 
-    pf = getattr(cfg, "paper_faithful", False) # paper-faithful mode: full softmax, no trigger-class exclusion
-    PF_GROUP = 10
-    if pf:
-        m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
-        l = wm.grouping(num_classes, m)
-        exclude_col = None                         # paper-exact: full softmax
-    else:
-        m = cfg.wm_bits or (num_classes - 1) // 2
-        l = wm.grouping(num_classes - 1, m)
-        exclude_col = "trigger"
+    # Watermark construction is LOCKED to the former paper_faithful=True behaviour:
+    # random (unbalanced) keys, FULL softmax (no trigger-class exclusion), m = n//10.
+    # (paper_faithful flag removed; this is the only mode we run now.)
+    PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
+    m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
+    l = wm.grouping(num_classes, m)
+    exclude_col = None                             # full softmax (no trigger-class exclusion)
 
     attack = getattr(cfg, "attack", "none")
     fr_idx = resolve_free_riders(cfg, len(client_loaders), seed)   # honours cfg.free_rider_ids
@@ -155,10 +152,10 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
         trigger_class = cid % num_classes # assign trigger class in round-robin fashion
-        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=not pf) # balanced keys avoid same-sign rows
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=False)  # random keys (former paper_faithful)  # TODO hardcoded seed offset 1000*cid+1
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
-        reg_exclude = None if pf else trigger_class 
+        reg_exclude = None                     # full softmax
         registry.register(cid, trigger_class, key, bits,
                           kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude) # register the client's watermark parameters in the registry
 
@@ -174,8 +171,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
                 exclude=exclude_col)
-            if attack == "autopilot": # TODO rename to submarine
-                cls = make_autopilot_attack(WatermarkClient)
+            if attack in ("submarine", "autopilot"):   # "autopilot" kept as a back-compat alias
+                cls = make_submarine_attack(WatermarkClient)
                 clients.append(cls(
                     autop_oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0),
                     autop_honest_until=getattr(cfg, "autop_honest_until", 12),
@@ -210,7 +207,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             else:
                 raise ValueError(
                     f"attack='{attack}' not supported in the watermark path "
-                    f"(use 'autopilot', 'previous_models', 'gaussian', or 'none')")
+                    f"(use 'submarine', 'previous_models', 'gaussian', or 'none')")
         else:
             clients.append(WatermarkClient(
                 trigger_class=trigger_class, key=key, target_bits=bits,

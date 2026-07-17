@@ -4,7 +4,7 @@ set -euo pipefail
 # ===================================================
 #  Usage:
 #     ./submit_experiment.sh [CONFIG_IDX] [REPEAT]
-#     ./submit_experiment.sh 14 0                       # autopilot, seed 0
+#     ./submit_experiment.sh 14 0                       # submarine, seed 0
 #     ATTACK=none FAMILY=t1_all_honest ./submit_experiment.sh 14 0
 #  Set DEBUG_HOLD=1 to keep the pod alive 1h after the run for inspection.
 # ===================================================
@@ -39,7 +39,7 @@ PY_EXTRA=""
 [ -n "${FREE_RIDER_IDS:-}" ]  && PY_EXTRA="$PY_EXTRA --free_rider_ids ${FREE_RIDER_IDS}"
 [ -n "${NOISE_SIGMA:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_sigma ${NOISE_SIGMA}"
 [ -n "${NOISE_DECAY:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_decay ${NOISE_DECAY}"
-# autopilot
+# submarine / autopilot
 [ -n "${AUTOP_ORACLE_ETA:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_oracle_eta ${AUTOP_ORACLE_ETA}"
 [ -n "${AUTOP_WARMUP_MODE:-}" ]     && PY_EXTRA="$PY_EXTRA --autop_warmup_mode ${AUTOP_WARMUP_MODE}"
 [ -n "${AUTOP_HONEST_MIN:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_honest_min ${AUTOP_HONEST_MIN}"

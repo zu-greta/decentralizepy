@@ -51,13 +51,13 @@ def parse_args():
     p.add_argument("--dirichlet_alpha", type=float, default=None)
     # ---- free-rider selection ----
     p.add_argument("--attack", type=str, default=None,
-                   choices=["none", "previous_models", "gaussian", "autopilot"])
+                   choices=["none", "previous_models", "gaussian", "submarine", "autopilot"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--free_rider_ids", type=str, default=None,
                    help="pin which cids free-ride, e.g. '3,6' (overrides the seeded choice)")
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
-    # ---- autopilot overrides ----
+    # ---- submarine overrides ----
     p.add_argument("--autop_oracle_eta", type=float, default=None)
     p.add_argument("--autop_warmup_mode", type=str, default=None,
                    choices=["dynamic", "fixed"])
@@ -91,8 +91,6 @@ def parse_args():
     p.add_argument("--wm_beta", type=float, default=None)
     p.add_argument("--wm_eta_floor", type=float, default=None)
     p.add_argument("--wm_eta_fixed", type=float, default=None)
-    p.add_argument("--paper_faithful", dest="paper_faithful",
-                   action="store_true", default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
                    action="store_true", default=None,
                    help="calibrate eta over ALL clients (free-riders poison it)")
@@ -117,7 +115,7 @@ _OVERRIDABLE = [
     "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
     "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",
-    "wm_eta_floor", "wm_eta_fixed", "paper_faithful", "calib_on_all",
+    "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
 ]
 
 
@@ -224,7 +222,6 @@ def main():
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
                                     free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,
-                                    paper_faithful=getattr(cfg, "paper_faithful", False),
                                     calib_on_all=getattr(cfg, "calib_on_all", False),
                                     eta_fixed=getattr(cfg, "wm_eta_fixed", 0.0))
         server = Server(model, clients, data.test_loader, device, logger,

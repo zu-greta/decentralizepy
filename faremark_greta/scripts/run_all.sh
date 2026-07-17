@@ -27,7 +27,7 @@ ETA_FILE="${ETA_FILE:-$RES/eta_calibrated.json}"
 PL="python scripts/plots.py"   # all plotting consolidated
 TH="python scripts/threshold.py"  # all threshold code consolidated
 
-# common env for one autopilot run
+# common env for one submarine run
 COMMON_E="ROUNDS=50 AUTOP_WARMUP_MODE=fixed AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
 AUTOP_ETA_MODE=tight AUTOP_NUM_CLIENTS_EST=10 AUTOP_MARGIN0=0.06 AUTOP_SAFETY=0.02 AUTOP_MAX_COAST=4"
 
@@ -51,7 +51,7 @@ tap_every(){
   local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
   echo "== TAP_EVERY (+5/common, full scope, taps every round), eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
-    env $COMMON_E ATTACK=autopilot FREE_RIDER_IDS=$POS \
+    env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS \
         AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
         FAMILY="tap_every_iid" SWEEP_LEVEL=5 NOTE="tap every +5/cls full eta=$eta" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
@@ -62,7 +62,7 @@ tap_stay(){
   local eta="$(read_eta)"; [ -z "$eta" ] && { echo "!! no $ETA_FILE -- run calibrate first"; return 1; }
   echo "== TAP_STAY (coast + tap only to stay under eta), eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
-    env $COMMON_E ATTACK=autopilot FREE_RIDER_IDS=$POS AUTOP_STAY_MIN=1 \
+    env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS AUTOP_STAY_MIN=1 \
         AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
         FAMILY="tap_stay_iid" SWEEP_LEVEL=5 NOTE="tap-to-stay full eta=$eta" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"

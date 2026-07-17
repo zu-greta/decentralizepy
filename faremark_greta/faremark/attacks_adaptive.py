@@ -41,7 +41,7 @@ class _AdaptiveMixin:
     weight_decay, wm_lambda, label_smoothing, local_epochs, memory,
     _local_train_wm, _memory_update)."""
 
-    def _ensure_triggers(self, n_probe: int = 64):   # more probe imgs -> steadier self-BER
+    def _ensure_triggers(self, n_probe: int = 64):   # TODO hardcoded: probe-image count (steadier self-BER); tie to N_T?
         """Gather this shard's trigger-class samples once; reserve a held-out
         probe slice (the FR's only view of its own BER)"""
         if getattr(self, "_prepared", False): 
@@ -84,7 +84,7 @@ class _AdaptiveMixin:
             X, Y = torch.cat(xs), torch.cat(ys)
             self._reduced_data_n = len(X)
             self._reduced_loader = DataLoader(
-                TensorDataset(X, Y), batch_size=min(32, len(X)), shuffle=True) # small batch for the reduced loader
+                TensorDataset(X, Y), batch_size=min(32, len(X)), shuffle=True) # TODO hardcoded batch=32 for reduced loader
 
     # Probe the FR's own watermark BER on its held-out trigger samples (self._probe_x).
     @torch.no_grad()
@@ -108,7 +108,7 @@ class _AdaptiveMixin:
         self.model.load_state_dict(state)
         return self._probe_ber_current_model()
 
-    _PROBE_EVERY = 3      # probe cadence when early-stop is active (warmup only)
+    _PROBE_EVERY = 3      # TODO hardcoded: probe cadence (batches) when early-stop is active (warmup only)
 
     def _embed_loop(self, global_state, max_batches, floor, scope=None,
                     early_stop=True, use_full=False, round_idx=None):
@@ -220,7 +220,7 @@ class _AdaptiveMixin:
         }
 
 
-def make_autopilot_attack(base_cls):
+def make_submarine_attack(base_cls):
     """submarine adaptive free-rider factory. `base_cls` is WatermarkClient
 
     schedule:
@@ -236,9 +236,9 @@ def make_autopilot_attack(base_cls):
     """
     _ETA_FALLBACK = 0.35 # TODO adjust the fallback eta
 
-    class AutopilotFreeRider(_AdaptiveMixin, base_cls):
+    class SubmarineFreeRider(_AdaptiveMixin, base_cls):
         is_free_rider = True
-        attack_name = "autopilot"
+        attack_name = "submarine"
 
         def __init__(self, *a,
                      autop_oracle_eta: float = 0.0,
@@ -456,4 +456,4 @@ def make_autopilot_attack(base_cls):
                                "ber_after": None if ber is None else round(ber, 4)})
             return submit, self.num_samples
 
-    return AutopilotFreeRider
+    return SubmarineFreeRider

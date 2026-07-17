@@ -1,32 +1,51 @@
-# CODE_MAP — technical reference
+# CODE_MAP — complete technical reference
+
+Everything: where it lives, the formula it implements, the exact line, and how the
+pieces connect. Matches the current tree (post threshold/plotting consolidation).
 
 ```
 faremark/
-  client.py           honest FedAvg client (base class)
-  server.py           FedAvg aggregation + round loop + verify hook
-  datasets.py         IID / Dirichlet shards + trigger test set
-  watermark.py        the watermark math (Eq. 1-16): key/bits/embed/extract/BER/eta
-  wm_client.py        WatermarkClient (honest embed + Eq.14 memory) + client factory
-  attacks.py          crude paper baselines (previous_models, gaussian) + FR selection
-  attacks_adaptive.py AUTOPILOT adaptive free-rider (the attack under study)
-  wm_verify.py        server: extract each client's mark -> BER -> calibrate eta -> flag
-  compute_meter.py    per-client effort (samples, gpu_ms, flops, duty cycle)
-  eta_calib.py        offline eta variants for the plots (frozen-window / per-client /
-                      cumulative / all_thresholds) -- reads the DYNAMIC calib window
-                      from the free-rider's 'calib' trace tags. (Replaces thresholds.py,
-                      which is unused by every current plotter and can be deleted.)
-  manifest.py         self-describing run metadata block for result.json
-  models.py           build_model (resnet18/alexnet/smallcnn)   [not reviewed here]
-  robustness.py       finetune/prune/quantize ops (Figs 9-10)   [not reviewed here]
-  utils.py            set_seed, get_logger, evaluate_accuracy
-  plotstyle.py        shared matplotlib style (colour-blind palette, stacked panels)
+  client.py           honest FedAvg client (base class)                 [not shown here]
+  server.py           FedAvg aggregation + round loop + verify hook     [not shown here]
+  datasets.py         IID / Dirichlet shards + trigger test set         [not shown here]
+  models.py           build_model (resnet18/alexnet/smallcnn)           [not shown here]
+  robustness.py       finetune/prune/quantize ops                       [not shown here]
+  manifest.py         self-describing run metadata for result.json      [not shown here]
+  utils.py            set_seed, get_logger, evaluate_accuracy           [not shown here]
+  watermark.py        the watermark math (Eq. 1-16): key/bits/embed/extract/BER   §1
+  wm_client.py        WatermarkClient (honest embed + Eq.14 memory) + factory      §2
+  attacks.py          crude baselines (previous_models, gaussian) + FR selection   §3a
+  attacks_adaptive.py SUBMARINE adaptive free-rider (the attack under study)        §3
+  wm_verify.py        server: extract mark -> BER -> FROZEN eta -> flag + diagnostics §4
+  compute_meter.py    per-client effort (samples, gpu_ms, flops, duty cycle)       §6
+  plotstyle.py        shared matplotlib style (colour-blind palette, panels)
 scripts/
-  run_experiment.py   orchestrates one (config, repeat); writes result.json
-  run_tests.py? -> run_tests.sh / submit_experiment.sh   cluster submit + the 3-test sweep
-  plot_tests.py       the 3-test figures (FPR + per-FR/per-honest BER + effort)
-  aggregate_results.py   mean+/-std tables over seeds (reproduction)
-  submit_sweep.sh     generic configs x repeats launcher (reproduction)
-  run_robustness.py   robustness driver (Figs 9-10)             [optional]
+  run_experiment.py   orchestrates one (config, repeat); writes result.json        §6
+  threshold.py        ALL threshold code: canonical eta + calibration CLI          §5
+  plots.py            ALL plotting: derivation, class dynamics, timeline, ...       §7
+  run_all.sh          honest -> calibrate -> attacks -> PLOTALL                     §9
+  submit_experiment.sh  one RunAI job (env -> CLI flags)
+```
+
+> **DELETE these (superseded):** `eta_calib.py` + `calibrate_eta.py` (-> `threshold.py`);
+> `plot_diag.py` + `plot_analysis.py` + `plot_tests.py` (-> `plots.py`);
+> `thresholds.py` (old, unused). Grep the tree first: `grep -rn "eta_calib\|plot_diag\|plot_analysis\|plot_tests\|calibrate_eta" .`
+
+---
+
+## 0. The one architectural fact to hold in your head
+
+**The detection threshold eta is now a PRE-CALIBRATED CONSTANT.** It is computed
+**once**, offline, on honest-only multi-seed runs (`threshold.py calibrate`), frozen
+to `eta_calibrated.json`, and passed into every experiment as `WM_ETA_FIXED`. The
+old live per-round mu+3sigma calc in the server is commented out.
+
+Canonical definition (the only one):
+```
+m_r   = mean BER over all honest clients IN round r      (mean over clients)
+mu    = mean_r(m_r)   over the converged tail            (mean over rounds)
+sigma = std_r(m_r)
+eta   = mu + 3*sigma
 ```
 
 ---
@@ -48,195 +67,235 @@ mark, extracted from its trigger-class softmax.
 | extract: `mean over N_T`, sign | `extract_bits` | 170 | Eq. 15 |
 | `BER = mean(bits != B)` | `bit_error_rate` | 178 | Eq. 16 |
 | flag test `BER < eta` | `detected` | 183 | Eq. 16 |
-| `**eta = mu + 3*sigma**` | `calibrate_eta` | 188 | §IV-D-3 |
+| `mu + 3*sigma` helper | `calibrate_eta` | 188 | §IV-D-3 |
 | anti-dominance ratio | `dominance_ratio` | 202 | Eq. 6/10 |
 
-**Key fact:** `calibrate_eta(benign_bers, floor)` takes `μ+3σ` over **whatever list you
-pass it**. In the live server that list is the per-round *mean* honest BER (see §4).
+**Changed:** `calibrate_eta` (line 188) is now only a generic mu+3sigma helper. The
+**live server no longer calls it** — eta comes from the frozen constant (§4). The
+canonical calibration lives in `threshold.py` (§5).
+
+**Why some positions are "hard" (the whole project):** the watermark is carried by
+the SHAPE of the smoothed softmax tail (`project_logits`). A class the model predicts
+very confidently (peaky softmax, `p_max ~ 1`, low entropy) leaves almost no tail to
+shape -> some bits stay stuck -> BER floors above 0. `dominance_ratio` (Eq. 6/10) is
+the diagnostic for "the max probability is swamping the projection".
 
 ---
 
-## 2. Honest client — `faremark/client.py` (64) + `faremark/wm_client.py` (186)
+## 2. Honest client — `faremark/wm_client.py` (218 lines)
 
-- `client.Client` (26): plain FedAvg. `produce_update` (42) = load global -> `_local_train` (53) -> submit.
-- `wm_client.WatermarkClient` (19): honest + watermark.
-  - `produce_update` (42): load global -> `_local_train_wm` -> `_memory_update` -> submit.
-  - `_local_train_wm` (52): `L = CE + wm_lambda * watermark_loss` on trigger images; meters each batch.
-  - `_memory_update` (76): Eq. 14 blend `W = beta*(memory+delta) + (1-beta)*global`, persists `self.memory`.
-- `build_watermarked_clients` (94): **the factory**. Assigns per-cid
-  `trigger_class = cid % num_classes`, key & bits seeded by cid (this is the
-  client's "position"), registers them, and dispatches free-rider slots to the
-  autopilot or a baseline. Honours `cfg.free_rider_ids` via `resolve_free_riders`.
+- `WatermarkClient(Client)` (19): honest client that also embeds.
+  - `produce_update` (42): load global -> `_local_train_wm(round)` -> `_memory_update` -> submit.
+  - `_local_train_wm(round_idx)` (52): `L = CE + wm_lambda * watermark_loss` on trigger
+    images; meters each batch. **NEW: logs per-round `self.wm_stats[round]` =
+    {`cls_loss`, `wm_loss`, `total_loss`, `trig_train_acc`, `trigger_class`}** — the
+    client-side evidence for "which classes are hard to embed / have fuzzy boundaries".
+  - `_memory_update` (105): Eq. 14 blend `W = beta*(memory+delta) + (1-beta)*global`; persists `self.memory`.
+- `build_watermarked_clients` (123): **the factory**. `trigger_class = cid % num_classes`,
+  key & bits seeded by cid (the client's "position"), registers them, and dispatches
+  free-rider slots to the autopilot or a baseline. `paper_faithful` chooses m/l/exclude
+  (random keys, full softmax) vs our balanced-key/excluded-column variant. Honours
+  `cfg.free_rider_ids`. Passes ALL `autop_*` knobs (incl. the new
+  `autop_eta_mode`/`autop_num_clients_est`/`autop_safety`/`autop_max_coast`) into the attack.
 
 ---
 
-## 3. The attack: AUTOPILOT — `faremark/attacks_adaptive.py` (374)
+## 3. The attack: SUBMARINE — `faremark/attacks_adaptive.py` (467 lines)
 
-`AutopilotFreeRider(_AdaptiveMixin, WatermarkClient)` — an honest client with a
-different control flow. Reuses key/bits/lambda/alpha/beta/memory/`_local_train_wm` verbatim.
+`SubmarineFreeRider(_AdaptiveMixin, WatermarkClient)` — an honest client with a
+different control flow. Reuses key/bits/lambda/alpha/beta/memory/`_local_train_wm`.
 
-**`_AdaptiveMixin` (38):**
-- `_ensure_triggers` (44): gather this shard's trigger images once; hold out a probe
-  slice; build the reduced (data-ablation) tap loader from `autop_common_per_class`.
-- `_probe_ber_current_model` (91) / `_probe_ber_state` (104): the FR's private BER self-probe.
-- `_embed_loop` (112): the training loop for a tap. `scope` picks params
+**`_AdaptiveMixin` (53):**
+- `_ensure_triggers` (59): gather this shard's trigger images once; hold out a probe
+  slice (**now n_probe=64** for a steadier self-BER estimate); build the reduced
+  (data-ablation) tap loader from `autop_common_per_class`.
+- `_probe_ber_current_model` (105) / `_probe_ber_state` (118): the FR's private BER
+  self-probe (its own held-out trigger images — NOT the server's test bank).
+- `_embed_loop` (126): the tap training loop. `scope` picks params
   (full/block2/block/head -> freezes backbone tensors); loader = reduced shard
-  (cpc>=0) else full shard; `early_stop` gates the probe (off in taps -> effort fix).
+  (cpc>=0) else full shard; `early_stop` gates the probe. **NEW: accumulates and logs
+  per-tap `cls_loss`/`wm_loss`/`trig_train_acc` via `_log_tap_stats` (206).**
 
-**`make_autopilot_attack` (176) -> `AutopilotFreeRider` (181):**
-- `__init__` (185): all `autop_*` knobs (see §7).
-- `_eta_est` (235): ORACLE (if `autop_oracle_eta>0`) -> FROZEN (set after honest phase)
-  -> best estimate μ+kσ over converged forced-honest BERs (trimmed) -> fallback.
-- `_record_clean` (255): keep post-embed BERs (<=0.30) as the eta anchor.
-- `_coast_state` (260): fresh global + frozen mark-direction (re-inject mark ~free).
-- `_update_mark_delta` (275): memory - global = the mark direction.
-- `produce_update` (283): **the controller** —
-  1. `autop_honest_clone` bypass -> pure honest every round (control).
-  2. WARMUP -> CALIB (a state machine, `autop_warmup_mode`):
-     - "dynamic" (default): train honestly, probe own BER; once BER is flat for
-       `autop_conv_patience`+1 rounds within `autop_conv_eps` (after `autop_honest_min`,
-       hard-capped at `autop_warmup_cap`) -> CONVERGED. The next `autop_calib_rounds` (K)
-       honest rounds are the calibration window (tagged "calib"); freeze eta, then defect.
-       Warmup length is thus position-dependent (hard positions converge later).
-     - "fixed": end warmup at round `autop_honest_until` (W); calib window `[W-K, W-1]`
-       (the old deterministic schedule; a position-independent control).
-  3. POST-WARMUP: if `autop_stay_min` and coast probe safely under target -> COAST
-     (no training); else TAP = `_embed_loop` at fixed budget (cost = data x scope).
+**`make_submarine_attack` (222) -> `AutopilotFreeRider` (238):**
+- `__init__` (242): all `autop_*` knobs (§8), incl. the NEW
+  `autop_eta_mode`, `autop_num_clients_est`, `autop_safety`, `autop_max_coast`.
+- `_converged` (315): FR's own-BER convergence test (dynamic warmup).
+- `_eta_target` (325): ORACLE (if `autop_oracle_eta>0`) -> the FR's FROZEN estimate.
+- **`_freeze_own_eta` (330): reconstruct the SERVER'S threshold from the FR's OWN honest
+  BER stream (valid in IID). `autop_eta_mode` selects which:**
+  - `"tight"` (default) = `mu + k*sigma/sqrt(N)` — the round-mean (strict) eta; staying
+    under it keeps the FR under EVERY looser threshold. `N = autop_num_clients_est`.
+  - `"loose"` = `mu + k*sigma` (per-client).
+  - `"cumulative"` = `mu + k*sigma` over the FULL honest history (mirrors the paper's
+    cumulative calibration).
+- `_coast_state` (366): fresh global + frozen mark-direction (re-inject the mark ~free).
+- `_update_mark_delta` (374): `memory - global` = the mark direction.
+- **`produce_update` (381): the controller.**
+  1. `autop_honest_clone` -> pure honest every round (floor control).
+  2. WARMUP -> CALIB (state machine, `autop_warmup_mode` fixed|dynamic): train honestly,
+     probe own BER; at convergence (dynamic) or round W (fixed) enter the K-round
+     calibration window, freeze eta, defect.
+  3. FREE-RIDE: `target = max(floor, eta - margin0 - safety)`.
+     - **COAST** iff `autop_stay_min` AND predicted coast BER `<= target` AND the coast
+       streak `< autop_max_coast`. **FIX: the safety term + forced re-tap
+       (`autop_max_coast`) stop the old bug where it coasted while drifting over the
+       server's BER.**
+     - else **TAP** = `_embed_loop` (cost = data x scope); trace records `tap_reason`.
 
-**Baselines — `faremark/attacks.py` (143):** `PreviousModelsFreeRider` (51, Eq. 17),
-`GaussianNoiseFreeRider` (63, Eq. 18), `choose_free_riders` (93),
-`resolve_free_riders` (107, honours `free_rider_ids`), `build_clients` (116, non-wm path).
+Per-round decisions are recorded in `self.trace` (action, eta, target, tap_reason,
+coast_streak, ber_after) for the timeline plot.
 
----
-
-## 4. The detector — `faremark/wm_verify.py` (157)
-
-- `WatermarkRegistry` (22): cid -> (trigger_class, key, bits, kind, alpha, exclude).
-- `build_trigger_bank` (47): N_T test-set images per trigger class (held-out).
-- `make_verifier` (65) -> `verify_hook` (81), per round:
-  1. Extract every client's mark on the trigger bank -> **one BER per client** (`measured`).
-  2. `benign_now` = this round's honest BERs; **append their MEAN to `benign_history`**
-     (the round-mean series). `calib_on_all=True` includes free-riders in the pool.
-  3. `eta_round = calibrate_eta(benign_history, floor=wm_eta_floor)` = μ+3σ over the
-     round-MEAN series -- ALWAYS the computed value (paper_faithful=cumulative; else a
-     sliding window so eta can recover after a spike). `wm_eta_floor` (0.05) is only a
-     degenerate guard so eta can't collapse to 0; it never binds in the studied regime.
-  4. Flag each client individually iff `ber >= eta_round`.
-  5. Emit `wm_benign_ber`, `wm_fr_ber`, `wm_eta_round`, `wm_fpr`, `wm_fr_recall`,
-     `wm_benign_ber_list`, `wm_fr_ber_list`, and `wm_per_client`
-     = `[{cid, trigger_class, ber, is_free_rider, flagged}]`.
-
-> This is the crux of the whole project: eta is built from **per-round means** (tight)
-> but applied to **individual clients** (spread). See STATUS.md §Finding.
+### 3a. Baselines — `faremark/attacks.py`
+`PreviousModelsFreeRider` (Eq. 17), `GaussianNoiseFreeRider` (Eq. 18),
+`resolve_free_riders` (honours `free_rider_ids`), `build_clients` (non-wm path).
 
 ---
 
-## 5. Orchestration + effort — `scripts/run_experiment.py` (304), `compute_meter.py` (168)
+## 4. The detector — `faremark/wm_verify.py` (204 lines)
 
-- `parse_args` (34): CLI overrides (all `--autop_*`, `--free_rider_ids`, `--attack`,
-  partition, watermark, `--calib_on_all`, manifest). `_OVERRIDABLE` (99) applies them onto cfg.
-- `main` (149): build data -> model -> clients (wm or baseline path) -> Server.run ->
-  assemble `result.json` (config, manifest, wm summary, compute, history).
-- `collect_compute` (112): per-client + summarized effort ->
-  `honest_mean_gpu_ms/samples`, `fr_mean_gpu_ms/samples`, `effort_ratio_gpu/samples`.
-- `compute_meter.ComputeMeter` (43): `record_batch` (82, training = samples+fwd+bwd+opt),
-  `record_forward_only` (89, probe = fwd only, NOT counted as training samples -> the
-  effort-inflation fix), `end_round` (95, gpu_ms via CUDA events), `summary` (117).
+- `WatermarkRegistry` (20): cid -> (trigger_class, key, bits, kind, alpha, exclude).
+- `build_trigger_bank` (44): N_T test-set images per trigger class (held-out).
+- `make_verifier` (63) -> `verify_hook` (86), per round:
+  1. Extract every client's mark on the trigger bank -> **one BER per client**, PLUS the
+     **NEW per-client diagnostics** `pmax`, `entropy`, `dominance` (Eq.6/10), `trig_acc`.
+  2. **THRESHOLD = the frozen constant `eta_fixed`** (from `WM_ETA_FIXED`). The old live
+     calcs (paper_faithful cumulative mu+3sigma; sliding-window) are **commented out**.
+     `wm_eta_floor` (0.05) is only a degenerate guard if `eta_fixed` is 0.
+  3. Flag each client individually iff `ber >= eta_round`.
+  4. Emit `wm_benign_ber`, `wm_fr_ber`, `wm_eta_round`, `wm_fpr`, `wm_fr_recall`,
+     `wm_benign_ber_list`, `wm_fr_ber_list`, `wm_per_client`
+     = `[{cid, trigger_class, ber, is_free_rider, flagged, pmax, entropy, dominance, trig_acc}]`,
+     and round-level means `wm_benign_pmax/entropy/dominance/trig_acc`.
 
----
-
-## 6. Server, data, plots
-
-- `server.Server.run` (53): each round calls every client's `produce_update`, runs the
-  verify hook, then `Aggregator.aggregate` (19, weighted FedAvg), evaluates test acc.
-- `datasets.build_data` (101): `iid_partition` (63) or `dirichlet_partition` (70, Hsu 2019).
-- `eta_calib.py`: offline eta variants for plots — `frozen_eta` (the HEADLINE: μ+3σ over
-  the round-MEANS *in the calibration window*), per-client, cumulative, and `all_thresholds`.
-  `calib_window`/`freeride_start` read the DYNAMIC window straight from the free-rider's
-  `calib` trace tags (config fallback for all-honest runs). **Note:** these are for plotting;
-  the LIVE detector uses `watermark.calibrate_eta` over the round-mean series.
-  (`thresholds.py` is the old, now-unused version — safe to delete after a tree-wide grep.)
-- `plot_tests.py`: `test1_fpr` (58) — per-client honest BER vs two eta definitions + FPR;
-  `test_data` (140) — per-FR & per-honest BER + GPU/samples effort over the data sweep.
-- `plotstyle.py`: `apply` (46), `stacked_panels` (76), `finish` (87).
-- `manifest.build_manifest` (25): family/note/sweep_var/sweep_level + interpretation key.
+> **The crux:** eta is built from **per-round means** (tight) but applied to
+> **individual clients** (position-dependent spread). A tight eta flags honest
+> hard-position clients; a loose one lets the free-rider pass. See STATUS.md.
 
 ---
 
-## 7. TUNABLES / HYPERPARAMETERS — all in `config.py` `ExpConfig` (lines 16-77)
+## 5. ALL threshold code — `scripts/threshold.py` (217 lines)
 
-Override any of them at run time via `--flag` (run_experiment) or `ENV=val`
-(submit_experiment.sh); defaults live in the dataclass.
+Merges the old `eta_calib.py` + `calibrate_eta.py`. Library + CLI.
 
-### FL / training (17-26)
+| purpose | function | line |
+|---|---|---|
+| mu+3sigma helper | `mu3s` | 24 |
+| load result.json globs | `load` | 37 |
+| honest-only run test | `is_honest_run` | 52 |
+| calibration window [lo,hi] (dynamic tags / config) | `calib_window` | 74 |
+| first free-riding round W | `freeride_start` | 84 |
+| m_r = mean-over-clients per round (converged tail) | `round_means` | 97 |
+| (eta, mu, sigma) from round-means | `eta_from_round_means` | 113 |
+| canonical eta recomputed from runs (plots) | `frozen_eta` | 123 |
+| read the frozen constant | `load_fixed` | 134 |
+| find eta_calibrated.json near a dir | `find_fixed` | 142 |
+| **calibrate once, write eta_calibrated.json** | `calibrate` | 153 |
+| CLI (`python threshold.py calibrate ...`) | `_cli` | 193 |
+
+`calibrate(inp, honest_family, tail, out)` pools per-round means across seeds, applies
+mu+3sigma once, and writes `{eta, grand_mean, grand_std, window, n_seeds, per_seed,
+eta_all_rounds_for_reference}`. Default window = converged tail (last 20); `tail=0` =
+all rounds (prints the warmup-inflated value for reference).
+
+---
+
+## 6. Orchestration + effort — `scripts/run_experiment.py`, `compute_meter.py` (168)
+
+- `parse_args` (34): CLI overrides. **NEW flags:** `--autop_eta_mode`,
+  `--autop_num_clients_est`, `--autop_safety`, `--autop_max_coast`, `--wm_eta_fixed`.
+- `_OVERRIDABLE` (108): applies the flags onto cfg (all the above included).
+- `collect_compute` (124): per-client + summarized effort; **now also copies each
+  client's `wm_stats`** (per-round loss/acc) into `result.json` under
+  `compute.per_client[cid].wm_stats`, alongside `trace`.
+- `main` (163): build data -> model -> clients -> Server.run -> assemble result.json;
+  passes `cfg.wm_eta_fixed` into `make_verifier(eta_fixed=...)`.
+- `compute_meter.ComputeMeter` (43): `record_batch` (82, training), `record_forward_only`
+  (89, probe = fwd only, NOT counted as training -> effort-inflation fix),
+  `end_round` (95, gpu_ms via CUDA events), `summary` (117).
+
+---
+
+## 7. ALL plotting — `scripts/plots.py` (~1200 lines)
+
+Merges `plot_diag.py` + `plot_analysis.py` + `plot_tests.py`. Imports `threshold as th`;
+falls back to a built-in palette if `plotstyle` is absent. Subcommand CLI
+(`python plots.py <cmd> --in '<glob>' [--family F] [--out DIR|PREFIX]`):
+
+| cmd | shows | out style |
+|---|---|---|
+| `thresholds` | intuitive derivation of the ONE eta + where it lands (FPR/recall) | dir |
+| `class_dynamics` | per-class L_wm / trig acc / BER-vs-confidence / loss curves | dir |
+| `positions` | per-trigger-class BER (easy vs hard) + BER-vs-p_max panel | dir |
+| `fidelity` | global accuracy + per-client BER (honest vs FR) + effort | dir |
+| `timeline` | BER over rounds, taps/coasts, eta lines, calib window | prefix (+.png) |
+| `honest_fpr` | honest false-positive rate vs the frozen eta | prefix |
+| `threshold` | (legacy) two-distribution soundness view | dir |
+| `frontier`/`scorecard`/`test_data` | legacy sweep plots (kept for reuse) | prefix/dir |
+
+`all` runs the headline set (thresholds, class_dynamics, positions, fidelity).
+
+---
+
+## 8. TUNABLES — `faremark/config.py` `ExpConfig`
+
+Override via `--flag` (run_experiment) or `ENV=val` (submit_experiment.sh).
+
+### FL / training
+| field | line | default |
+|---|---|---|
+| rounds / local_epochs / batch_size | 16/17/19 | 50 / 5 / 16 |
+
+### Free-rider selection
 | field | line | default | meaning |
 |---|---|---|---|
-| rounds | 21 | 50 | communication rounds |
-| local_epochs | 22 | 5 | local passes/round |
-| lr / momentum / weight_decay | 23/25/26 | 0.01 / 0.9 / 5e-4 | SGD |
-| batch_size | 24 | 16 | local batch |
-| base_seed | 27 | 1000 | seed = base_seed + repeat |
+| attack | 26 | none | none / previous_models / gaussian / autopilot |
+| num_free_riders | 27 | 0 | how many FRs |
+| **free_rider_ids** | 28 | "" | pin cids, e.g. "3,6" |
+| partition / dirichlet_alpha | 32/33 | iid / 0.5 | non-IID skew |
 
-### Free-rider selection (31-38)
+### Autopilot
 | field | line | default | meaning |
 |---|---|---|---|
-| attack | 31 | none | none / previous_models / gaussian / autopilot |
-| num_free_riders | 32 | 0 | how many FRs |
-| **free_rider_ids** | 33 | "" | pin cids, e.g. "3,6" (overrides seeded choice) |
-| noise_sigma / noise_decay | 35/36 | 0.1 / 0.0 | gaussian baseline |
-| partition | 37 | iid | iid / dirichlet |
-| dirichlet_alpha | 38 | 0.5 | non-IID skew (small=severe) |
+| autop_oracle_eta | 41 | 0.0 | >0 => FR GIVEN eta (testing) |
+| autop_warmup_mode | 43 | fixed | fixed = warmup ends at W; dynamic = at own-BER convergence |
+| autop_honest_min / warmup_cap / conv_eps / conv_patience | 48/49/50/53 | 6/15/0.03/2 | dynamic-warmup controls |
+| autop_honest_until (W) / autop_calib_rounds (K) | 54/55 | 12 / 4 | fixed window `[W-K,W-1]` |
+| autop_eta_k | 58 | 3.0 | k in the FR's mu+k*sigma estimate |
+| **autop_eta_mode** | 59 | **tight** | which server eta the FR reconstructs: tight/loose/cumulative |
+| **autop_num_clients_est** | 64 | 10 | N for the sqrt(N) shrink in tight mode |
+| autop_margin0 | 65 | 0.06 | deliberate headroom below eta |
+| **autop_safety** | 66 | 0.02 | guard for probe(own)/server(test) mismatch |
+| **autop_max_coast** | 67 | 4 | force a re-tap after this many coasts |
+| autop_floor | 68 | 0.05 | "mark is good" bar |
+| **autop_common_per_class** | 69 | -1 | DATA/tap: -1=full, 0=triggers-only, N=+N/common |
+| **autop_scope** | 70 | full | PARAMS/tap: full/block2/block/head |
+| autop_stay_min | 71 | False | coast-when-safe (else tap every round) |
+| autop_holdout_ratio | 73 | 0.5 | probe holdout fraction |
+| autop_honest_clone | 74 | False | DIAGNOSTIC: pure honest every round |
 
-### Autopilot (46-62)
+### Watermark
 | field | line | default | meaning |
 |---|---|---|---|
-| autop_oracle_eta | 41 | 0.0 | >0 => FR is GIVEN eta (testing). 0 => estimate. |
-| autop_warmup_mode | 43 | **fixed** | "fixed" (DEFAULT) = warmup ends at W, calib `[W-K,W-1]`; position-INDEPENDENT so the position comparison is unconfounded. "dynamic" = end at own-BER convergence (position-dependent) -- robustness cell |
-| autop_honest_min | 46 | 6 | dynamic: never defect before this round (protect window) |
-| autop_warmup_cap | 47 | 15 | dynamic: hard stop -- defect by here even if never converges |
-| autop_conv_eps | 48 | 0.03 | dynamic: flat if last (patience+1) probe BERs within this (BER is coarse => "unchanged") |
-| autop_conv_patience | 51 | 2 | dynamic: consecutive flat rounds to declare convergence |
-| autop_honest_until | 52 | 12 | W: fixed-mode warmup end / dynamic fallback |
-| autop_calib_rounds | 53 | 4 | K: converged honest rounds that calibrate eta (tagged "calib") |
-| autop_eta_k | 56 | 3.0 | k in the FR's own frozen estimate mu+k*sigma |
-| autop_margin0 | 57 | 0.06 | target BER = eta - margin |
-| autop_floor | 58 | 0.05 | "mark is good" bar |
-| **autop_common_per_class** | 59 | -1 | DATA/tap: -1=full shard, 0=triggers-only, N=+N/common-class |
-| **autop_scope** | 60 | full | PARAMS/tap: full / block2 / block / head |
-| autop_stay_min | 61 | False | coast when safe, tap only when needed (else tap every round) |
-| autop_holdout_ratio | 63 | 0.5 | probe holdout fraction |
-| autop_honest_clone | 64 | False | DIAGNOSTIC: pure honest every round (the floor control) |
-
-### Watermark (66-77)
-| field | line | default | meaning |
-|---|---|---|---|
-| watermark | 66 | False | enable the scheme |
-| wm_bits (m) | 67 | 0=auto | number of bits |
-| wm_lambda | 68 | 5.0 | embed-loss weight (Eq. 11) |
-| wm_alpha | 69 | 0.4 | smoothing exponent (Eq. 8) |
-| wm_beta | 71 | 0.6 | memory coefficient (Eq. 14) |
-| wm_num_triggers (N_T) | 75 | 50 | extraction trigger count (Eq. 15) |
-| wm_eta_floor | 76 | 0.05 | degenerate GUARD only (keeps eta>0); threshold is ALWAYS mu+3sigma |
-| paper_faithful | 81 | True | random keys, no exclusion, cumulative mu+3sigma |
-| **calib_on_all** | 82 | False | calibrate eta over ALL clients (poisoning) vs benign-only |
-
-Sweep grids live in the runners: `CPC_HOPS="0 5 10 20 50 -1"`, `POS_A/POS_B`,
-`SEEDS`, `ORACLE=0.09` in `run_tests.sh`.
+| watermark / wm_bits (m) | 78/79 | False / 0=auto | enable / bit count |
+| wm_lambda / wm_alpha / wm_beta | 80/81/83 | 5.0 / 0.4 / 0.6 | embed weight / smoothing / memory |
+| wm_num_triggers (N_T) | 85 | 50 | extraction trigger count |
+| wm_eta_floor | 86 | 0.05 | degenerate guard only |
+| **wm_eta_fixed** | 89 | 0.0 | **>0 => use this PRE-CALIBRATED constant threshold** |
+| calib_on_all | 95 | False | (circularity demo) calibrate over all clients |
 
 ---
 
-## 8. EXPERIMENTS -> where they live
+## 9. EXPERIMENTS — `scripts/run_all.sh`
 
-| experiment | driver | config | key flags |
-|---|---|---|---|
-| Test 1: all-honest FPR | run_tests.sh (TEST 1) | 14 | `ATTACK=none` |
-| Test 2: full-scope data sweep x2 positions | run_tests.sh (TEST 2) | 14 | `AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS in CPC_HOPS FREE_RIDER_IDS=POS_{A,B}` |
-| Test 3: block2 data sweep x2 positions | run_tests.sh (TEST 3) | 14 | `AUTOP_SCOPE=block2 ...` |
-| floor control (honest-clone) | any | 14 | `AUTOP_HONEST_CLONE=1` |
-| eta-poisoning | any | 14 | `CALIB_ON_ALL=1 NUM_FREE_RIDERS=5` |
-| non-IID | any | 14 | `PARTITION=dirichlet DIRICHLET_ALPHA=...` |
-| reproduction (Table I / Fig 7) | submit_sweep.sh | 1-13 | see config names |
-| robustness (Figs 9-10) | run_robustness.py | 11 | finetune/prune/quantize |
+One canonical threshold, three focused experiments (no more big sweeps). See the
+"EXPERIMENTS TO RUN" section in STATUS.md for setup/purpose/expected-results.
 
-Plot: `RES=/path ./run_tests.sh PLOT` -> figs/test1_fpr.png, test2_full_pos{A,B}.png,
-test3_block2_pos{A,B}.png.
+```
+./run_all.sh honest      # all-honest, multi-seed (calibration + baseline)
+./run_all.sh calibrate   # -> $RES/eta_calibrated.json  (threshold.py calibrate)
+./run_all.sh attacks     # tap_every (+5/common, full) + tap_stay (coast-to-stay)
+./run_all.sh PLOTALL      # timeline + class_dynamics + positions + thresholds + fidelity + honest_fpr
+```
+Families: `honest_iid`, `tap_every_iid`, `tap_stay_iid`. Attack runs read the frozen
+eta via `read_eta` and pass it as `WM_ETA_FIXED`. `POS` (default `3,6`) pins the FR
+positions (hard classes); `SEEDS` controls seed count.

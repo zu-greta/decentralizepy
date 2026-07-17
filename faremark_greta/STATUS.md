@@ -1,124 +1,127 @@
 # STATUS — analysis, results, conclusions (with provenance)
 
-Dated snapshot. Each claim lists where it comes from and the setup that produced it.
+Standard setup unless noted: **CIFAR-100, ResNet-18, 10 clients, 50 rounds,
+5 local epochs, batch 16, m=10 watermark bits, N_T=50, lambda=5, beta=0.6,
+alpha=0.4, config 14 (`submarine_resnet18_cifar100`).** Detector flags client i iff
+`BER_i >= eta`.
 
-Standard setup unless noted: **CIFAR-100, ResNet-18, 10 clients, 2 free-riders,
-50 rounds, 5 local epochs, batch 16, paper-faithful (random keys, full softmax,
-cumulative μ+3σ), 3 seeds.** Detector flags client i iff BER_i >= η, with η = μ+3σ.
+**THRESHOLD (canonical, frozen):** `eta = mu + 3*sigma` where `m_r` = mean BER over
+clients in round r, `mu = mean_r(m_r)`, `sigma = std_r(m_r)`, over the converged tail.
+Calibrated ONCE on honest-only multi-seed runs (`threshold.py calibrate`), written to
+`eta_calibrated.json`, and reused for every experiment via `WM_ETA_FIXED`. The live
+per-round calc in the server is commented out.
 
 ---
 
 ## The finding (one paragraph)
 
 FareMark's detector cannot separate an adaptive free-rider from an honest client at
-a "hard" trigger position, because **η is calibrated on the per-round MEAN honest
-BER (tight, ~0.09) but applied to individual clients (whose BER is position-
-dependent and ranges ~0.00-0.20).** A free-rider that trains identically to an
-honest client lands on its position's BER floor; if that floor is above η it is
-flagged — and so is an honest client at the same position. This is a dilemma, not a
-tuning issue: **any η tight enough to catch an embedding free-rider also false-
-positives honest hard-position clients; any η loose enough to spare them lets the
-free-rider pass.**
+a "hard" trigger position, because **eta is calibrated on the per-round MEAN honest
+BER (tight) but applied to individual clients (whose BER is position-dependent).**
+A free-rider that trains identically to an honest client lands on its position's BER
+floor; if that floor is above eta it is flagged — and so is an honest client at the
+same position. **Any eta tight enough to catch an embedding free-rider also
+false-positives honest hard-position clients; any eta loose enough to spare them lets
+the free-rider pass.** With the single canonical (tight, round-mean) eta we now use,
+the visible symptom is the **honest false-positive rate at hard positions**.
 
 ---
 
 ## Concepts
 
-- **BER floor** = the lowest bit-error-rate a client can reach for its assigned
-  watermark, no matter how much it trains. Analogous to irreducible/Bayes error, but
-  for the embedding sub-task. Immovable by effort.
-- **Position** = the (trigger_class, key, target_bits) triple assigned to a client
-  slot: `trigger_class = cid % num_classes`, key & bits seeded from `cid`
-  (wm_client.build_watermarked_clients). Different position -> different floor
-  (easy ~0.00, hard ~0.10-0.20). Server-assigned; the attacker cannot choose it.
-- **Per-round mean honest BER** = average of the honest clients' BERs in one round
-  (one number/round). Tight, because averaging smooths the position spread.
-- **Per-client BER** = the individual grid of (client, round) BERs. Wide, because it
-  contains the hard-position clients.
-- η = μ+3σ over the **round-mean series** => ~0.09 (as implemented, wm_verify.py).
-  η = μ+3σ over the **per-client pool** => much higher (σ inflated by hard positions).
+- **BER floor** = lowest BER a client can reach for its assigned watermark, no matter
+  how much it trains. Set by the (trigger_class, key, bits) "position", not by effort.
+- **Why a position is hard:** the watermark lives in the smoothed softmax TAIL. A class
+  the model predicts confidently (high `pmax`, low `entropy`) has no tail to shape ->
+  some bits stuck -> BER floors above 0. Logged now via `pmax`/`entropy`/`dominance`
+  (server, wm_verify) and `wm_loss`/`trig_train_acc` (client, wm_client.wm_stats).
+- **Round-mean vs per-client BER:** eta is built from round-means (tight, sigma shrunk
+  by ~sqrt(N)); it is applied to individual clients (wide). That mismatch is the flaw.
 
 ---
 
 ## Results and provenance
 
-### R1. The floor is structural, not the attacker's embedder — ESTABLISHED
-- **Evidence:** `seedband_clone_full` (honest-clone control): a free-rider embedding
-  via the exact honest path plateaus at ~0.10-0.11, same as the autopilot.
-- **Setup:** config 14, `AUTOP_HONEST_CLONE=1`, oracle η, full scope, 3 seeds.
-- **Conclusion:** effort/data/scope do not move the floor.
+- **R1. Floor is structural, not the embedder** — `autop_honest_clone=1` control:
+  an FR embedding via the exact honest path plateaus at the same floor as the submarine.
+- **R2. Honest false positives at hard positions (headline)** — all-honest run
+  (`honest_iid`): a tight round-mean eta flags honest clients at hard trigger classes.
+  Strongest, most defensible result. Measure with `plots.py honest_fpr` / `thresholds`.
+- **R3. Effort meter fixed** — probe forward-passes counted via `record_forward_only`,
+  not `record_batch`, so effort ratios are ~100% for full-shard taps, not inflated.
+- **R4. Data ablation** — triggers-only overfits (BER ~0.5), +5/class reaches the floor
+  cheaply, full shard = 100% effort. `autop_common_per_class in {0,5,-1}`.
+- **R5. The dilemma** — with the canonical tight eta, honest hard-position FPR is high;
+  loosening eta to fix FPR lets the FR pass. Show both sides with `thresholds` panel (b).
+- **R6. Easy-class selection off the table** — `trigger_class = cid % num_classes`
+  (server-assigned); the FR inherits its position.
 
-### R2. Honest false positives at hard positions — ESTABLISHED (headline)
-- **Evidence:** `fpr_all_honest` (attack=none): ~30% of honest client-rounds flagged
-  under η=0.090; honest clients at classes 0/2/3/4/5 sit ~0.10 and class 6 ~0.20,
-  while 1/7/8/9 sit ~0.00.
-- **Setup:** config 14, `ATTACK=none`, 3 seeds.
-- **Conclusion:** the tight η flags honest hard-position clients. This is the
-  strongest, most defensible result.
+---
 
-### R3. Effort meter fixed — ESTABLISHED
-- **Evidence:** submarine/timeline arms show effort ~100-105% (probe forward-passes
-  no longer counted as training samples).
-- **Setup:** oracle, full scope, 3 seeds.
-- **Provenance:** compute_meter.record_forward_only vs record_batch;
-  _embed_loop probes only when early_stop=True.
+## EXPERIMENTS TO RUN (TODO) — one knob at a time
 
-### R4. Data ablation reproduces paper Table V — ESTABLISHED
-- **Evidence:** `data_oracle_full`: triggers-only -> BER ~0.5 (overfits, fails);
-  +5/class -> ~0.10 at ~14% cost; full shard -> ~0.09 at 100% cost.
-- **Setup:** config 14, oracle, full scope, `autop_common_per_class in {0,5,10,20,50,-1}`.
-- **Conclusion:** the mark generalizes with a few common images; floor reached cheaply.
+All IID, config 14, from `scripts/`. Run the block, wait for jobs, then plot.
 
-### R5. The eta-calibration dilemma — ANALYZED, not yet MEASURED both ways
-- **Evidence:** code path in wm_verify.py (round-mean calibration) + the fpr plot.
-  The per-client-η arm has NOT been run yet.
-- **Status:** OPEN. `plot_tests.test1_fpr` computes BOTH η definitions and both FPRs
-  from one all-honest run — running Test 1 closes this.
+### STEP 0 — Threshold (do this first)
+- **Setup:** all-honest, multi-seed (10 recommended), no free-riders.
+- **CLI:**
+  ```
+  SEEDS="0 1 2 3 4 5 6 7 8 9" ./run_all.sh honest
+  # wait for all jobs, then:
+  ./run_all.sh calibrate                        # -> $RES/eta_calibrated.json
+  RES=$RES ./run_all.sh PLOTALL                 # (or just the honest-family plots)
+  ```
+- **For:** produce the ONE frozen eta + prove it's the right line.
+- **Expect:** `eta_calibrated.json` with `eta` ~0.09-0.12 (tail); per-seed etas within
+  a few thousandths; `thresholds_honest_iid.png` shows the derivation and the honest
+  FPR at that eta; `positions`/`class_dynamics` show which classes are hard and WHY
+  (high `pmax`/`wm_loss`).
 
-### R6. Easy-class selection is off the table — ESTABLISHED (threat model)
-- **Evidence:** `trigger_class = cid % num_classes` (server-assigned); paper §IV-D /
-  Fig. 4 Stage I. The free-rider inherits its class and never reassigns it.
-- **Conclusion:** the attacker cannot pick a low-floor position under the paper's model.
+### KNOB 1 — position (hard vs easy)  [start here after Step 0]
+- **Setup:** submarine, tap every round, +5/common, full scope; vary only the FR's
+  trigger positions. Everything else fixed. Uses the frozen eta.
+- **CLI:**
+  ```
+  POS=3,6 ./run_all.sh tap_every      # hard positions
+  POS=1,7 ./run_all.sh tap_every      # easy positions   (re-run same family or tag it)
+  RES=$RES ./run_all.sh PLOTALL
+  ```
+- **For:** the central hypothesis — evasion is position-dependent.
+- **Expect:** hard-position FR sits near its floor (may be >= eta -> caught, but an
+  honest client at that class is ALSO flagged); easy-position FR reaches BER ~0 -> hides.
 
-### R7. Non-IID — REVISED (weaker than first thought)
-- **Evidence:** seedband_noniid_a{0.1,0.5,1.0} vs the two η definitions.
-- **Status:** the α=0.5 "evasion" depends on which η you read (frozen-on-early-window
-  ~0.23 vs converged ~0.11). Under converged η the FR is caught at α=0.5 and α=1.0;
-  only severe α=0.1 gives genuine cover, and there honest watermarks also fail.
-- **Action:** report under BOTH η definitions; do not headline α=0.5.
+### KNOB 2 — data per tap (`autop_common_per_class`)
+- **Setup:** submarine, tap every round, full scope, fixed hard positions; sweep the
+  data used per tap.
+- **CLI:** `CPC_HOPS="0 5 -1"` style — run three families or:
+  ```
+  for cpc in 0 5 -1; do
+    env AUTOP_COMMON_PER_CLASS=$cpc ATTACK=submarine FREE_RIDER_IDS=3,6 \
+        AUTOP_SCOPE=full WM_ETA_FIXED=$(python threshold.py ... ) \
+        FAMILY=tap_cpc${cpc}_iid ROUNDS=50 ./submit_experiment.sh 14 0
+  done
+  ```
+  (or add a `tap_data` function to run_all.sh mirroring `tap_every`).
+- **For:** the effort floor — how little data reaches the mark.
+- **Expect:** triggers-only (0) overfits -> high BER -> caught; +5/class reaches the
+  floor at ~a third of honest effort; full shard (-1) = floor at 100% effort.
 
-### R8. eta-poisoning (calib_on_all) — PRELIMINARY
-- **Evidence:** seedband_poison_eta: FR converges under η with 5 FRs + calib_on_all,
-  but the FRs sat near ~0.06 (below the usual floor) -> success partly position luck.
-- **Action:** re-run logging each FR's position to separate "η rose" from "easy position".
+### KNOB 3 — coast vs tap-every (`autop_stay_min`)
+- **Setup:** submarine, +5/common, full scope, fixed positions; toggle coasting.
+- **CLI:** `./run_all.sh tap_stay` (coast) vs `./run_all.sh tap_every` (tap always).
+- **For:** validate the submarine coast mechanism + measure the effort saving.
+- **Expect:** `tap_stay` shows `coast` actions in the timeline between `tap`s, lower
+  total image-passes, BER held just under `target = eta - margin0 - safety`.
+
+> Later knobs (park for now): `autop_scope` (block2/head), `autop_warmup_mode`
+> (dynamic), non-IID (`PARTITION=dirichlet`), `calib_on_all` (eta poisoning).
 
 ---
 
 ## Current conclusion
 
-Under plain IID with a fair η, the adaptive free-rider does not evade — but that
-"failure" is the result: it is indistinguishable from an honest client at a hard
-position, and the threshold that catches one flags the other. FareMark's security
-reduces to η-calibration, which is fragile in specific ways (tight vs loose dilemma;
-poisoned/untrusted pool; slow honest convergence under heterogeneity). The
-attacker-side knobs (effort, data, scope, oracle) are exhausted; the remaining
-exploitable levers are all on the threshold/pool side.
-
----
-
-## Caveats on the current numbers
-
-- The specific figures above (0.09, ~0.11, ~30%) come from runs BEFORE the cleaned,
-  position-pinned harness. Position luck (which cids were free-riders) confounded
-  them. Re-run the cleaned `run_tests.sh` (pinned POS_A/POS_B, 3 seeds) before
-  quoting any number in a writeup.
-- The per-client-η arm (R5) has not been run; the dilemma is currently argued from
-  code + the FPR plot, not measured end-to-end.
-
-## What to run next (in order)
-
-1. Cleaned Test 1/2/3 (pinned positions, 3 seeds) -> confirm R2, R4 and MEASURE R5.
-2. eta-poisoning with position logging -> firm up R8.
-3. Non-IID reported under both η definitions -> correct R7.
-4. (Design direction) a per-position / per-client-calibrated threshold as the
-   "fix" that resolves the dilemma — the natural next contribution.
+Under IID with the fair frozen eta, the submarine free-rider is indistinguishable from
+an honest client at a hard position — and the threshold that catches one flags the
+other. FareMark's security reduces to eta-calibration, which is fragile (tight-vs-loose
+dilemma; untrusted pool; slow convergence under heterogeneity). The next contribution
+is a per-position / per-client-calibrated threshold that resolves the dilemma.

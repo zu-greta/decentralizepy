@@ -124,7 +124,7 @@ def build_clients(cfg, client_loaders, model, device, seed):
             if attack not in ATTACKS:
                 raise ValueError(
                     f"num_free_riders>0 but attack='{attack}' is not one of "
-                    f"{list(ATTACKS)} (the autopilot uses the watermark path)")
+                    f"{list(ATTACKS)} (the submarine uses the watermark path)")
             cls = ATTACKS[attack]
             if cls is GaussianNoiseFreeRider:
                 clients.append(cls(noise_sigma=getattr(cfg, "noise_sigma", 0.1),

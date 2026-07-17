@@ -279,27 +279,28 @@ to sync it with the original repo
     - ?
 ---
 
-### update — adaptive/effort attacks running on the cluster
+### update — canonical threshold + submarine (current)
 
-- Built the effort-minimizing attackers (submarine, memory_exploit) + a compute
-  meter + self-describing manifests + adaptive plots. Pipeline runs end-to-end on
-  the A100 (config 14/15).
-- First smoke test (10 rounds, CIFAR-100, paper-faithful): the attack was cheap
-  (3% GPU) but still caught (recall 0.65). Diagnosis from the traces: a burst over
-  the general shard barely touches the trigger class (~1% of the shard) so the
-  mark never embeds; the adaptive η-estimate then mirrored its own failing BER and
-  it coasted on nothing. Fixed: trigger-enriched bursts + a warmup + η anchored to
-  clean post-embed BER. Also fixed the earlier paper-faithful `exclude`-column
-  crash for watermark-capable free-riders.
-- Next: 50-round validation (V) then the effort/eta/iid/bit-budget sweeps
-  (E1–E6). See ADAPTIVE_ATTACKS.md for the plan + per-experiment analysis.
-- For meetings: threat model + implementation Q&A is in ADAPTIVE_ATTACKS.md §2–3.
+- **Threshold is now ONE pre-calibrated constant.** `eta = mu+3sigma` over per-round
+  (mean-over-clients) honest BER on the converged tail, calibrated once on honest-only
+  multi-seed runs via `scripts/threshold.py calibrate` -> `eta_calibrated.json`, reused
+  everywhere through `WM_ETA_FIXED`. The live per-round calc in `wm_verify` is commented
+  out. All the old eta variants (per-client/loose, cumulative, 7-way `all_thresholds`)
+  are gone.
+- **Code consolidated:** all threshold code -> `threshold.py`; all plotting -> `plots.py`.
+  The `autopilot` attack is renamed **`submarine`** (alias kept). `paper_faithful`
+  removed (its True-behaviour is now the only mode).
+- **Attack fixes:** the submarine now estimates the *tight* (round-mean) eta from its own
+  BER as `mu + k*sigma/sqrt(N)`, taps when the coast BER would exceed
+  `target = eta - margin0 - safety`, and force-re-taps after `autop_max_coast` coasts
+  (fixes the "coasts while drifting over the threshold" bug).
+- **New logging:** server-side `pmax`/`entropy`/`dominance`/`trig_acc` per client
+  (wm_verify) and client-side `wm_loss`/`trig_train_acc` per round (wm_client.wm_stats)
+  -> proves *why* some trigger classes are hard.
+- **Next:** run STEP 0 (honest -> calibrate -> plots), then one knob at a time
+  (position -> data/tap -> coast). See STATUS.md "EXPERIMENTS TO RUN".
 
----
-
-### update — trilemma + reembed (read STATUS.md)
-
-- Built + ran three coast attacks at 50 rounds. Preliminary: none is cheap AND evasive AND harmless. memory_exploit (frozen replay) evades eta but POISONS (acc 72->55, honest BER->0.5); submarine blend stays healthy but the mark decays -> caught; transplant (global+mark-delta) healthy but the mark doesn't transfer (nonlinear) -> caught. This is the 'trilemma': pick two of {cheap, keep-mark, don't-poison}.
-- Clean supporting result (E7): a generalizing mark needs the full shard; trigger-only overfits (fr_ber 0.55-0.63).
-- Implemented `reembed` (config 16): fine-tune only the head on the fresh global backbone -> the theoretically-motivated attack that targets the real weak point (output layer is cheap to shape on the free backbone). NOT yet run.
-- Next: `./scripts/run_full_sweep.sh` -> `make_sweep_figs.sh` -> find the weak point on the fr_ber-vs-effort map. Read fr_ber + acc, not recall (eta swings).
+- **Open questions being tracked:**
+  - the safety `delta = margin0 + safety` is two fixed constants (0.06 + 0.02); it should
+    be DERIVED from estimation uncertainty (marked TODO in config.py / attacks_adaptive).
+  - converged-tail length: paper Fig.8 saturates ~round 30, so tail=20 for a 50-round run.

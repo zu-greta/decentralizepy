@@ -23,7 +23,7 @@ class ExpConfig:
     expected_acc: tuple = (0.0, 100.0)      # correctness band
 
     # ---- free-rider selection / paper baselines ----
-    attack: str = "none"                    # "none" | "previous_models" | "gaussian" | "autopilot"
+    attack: str = "none"                    # "none" | "previous_models" | "gaussian" | "submarine"
     num_free_riders: int = 0                # how many of num_clients are free-riders
     free_rider_ids: str = ""                # NEW: "3,6" pins which cids free-ride (overrides the
                                             # seeded choice). Empty => choose_free_riders(seed).
@@ -32,7 +32,7 @@ class ExpConfig:
     partition: str = "iid"                  # 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
 
-    # ---- autopilot adaptive free-rider ----
+    # ---- submarine adaptive free-rider ----
     # Acts exactly like an honest client, except: 
     # (1) it estimates the detection threshold eta (or is given it for testing), 
     # (2) it behaves honestly until the server's eta is calibrated (the forced-honest window), then defects, 
@@ -62,8 +62,8 @@ class ExpConfig:
                                             # per-client), or "cumulative" (mu+k*sigma over full honest
                                             # history, mirroring the paper's cumulative calibration).
     autop_num_clients_est: int = 10         # N for the sqrt(N) shrink in "tight" mode
-    autop_margin0: float = 0.06             # deliberate headroom: target BER = eta - margin0 - safety
-    autop_safety: float = 0.02              # extra guard for the probe(own data)/server(test bank) mismatch
+    autop_margin0: float = 0.06             # TODO hardcoded guard: deliberate headroom (target = eta - margin0 - safety)
+    autop_safety: float = 0.02              # TODO hardcoded guard: should be DERIVED from estimation uncertainty, not fixed
     autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
     autop_floor: float = 0.05               # "mark is good" bar
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
@@ -91,7 +91,6 @@ class ExpConfig:
                                             # This is the canonical path now: calibrate once on honest-only
                                             # multi-seed runs, freeze, reuse everywhere.
     wm_verify_every: int = 1
-    paper_faithful: bool = True             # random keys, no trigger-class exclusion, cumulative mu+3sigma
     calib_on_all: bool = False              # calibrate eta over all clients (exposes circularity) vs benign-only
 
     def to_dict(self):
@@ -147,20 +146,21 @@ CONFIGS = [
               attack="previous_models", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
     # 13: paper-faithful detection target, CIFAR-100
-    ExpConfig("paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+    ExpConfig("wm_fr_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="previous_models", num_free_riders=2,
-              paper_faithful=True, expected_acc=(0.0, 100.0)),
+              expected_acc=(0.0, 100.0)),
 
-    # 14: autopilot submarine free-rider
+    # 14: submarine free-rider
     #     Override autop_* / free_rider_ids / attack via CLI (see run_tests.sh)
-    ExpConfig("autopilot_paper_faithful_resnet18_cifar100", "resnet18", "cifar100",
+    ExpConfig("submarine_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
-              attack="autopilot", num_free_riders=2, paper_faithful=True,
+              attack="submarine", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
 ]
 
-AUTOPILOT_IDX = 14   # convenience for scripts
+SUBMARINE_IDX = 14   # convenience for scripts
+AUTOPILOT_IDX = SUBMARINE_IDX   # back-compat alias
 
 
 def get_config(idx: int) -> ExpConfig:

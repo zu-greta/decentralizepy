@@ -62,7 +62,7 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 # TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
                   free_rider_indices, eta_floor=0.05, verify_every=1,
-                  paper_faithful=False, calib_on_all=False, eta_fixed=0.0):
+                  calib_on_all=False, eta_fixed=0.0):
     """Return a verify_hook(server, round, updates) for Server
 
     THRESHOLD: eta is a pre-calibrated passed in as `eta_fixed` 
@@ -79,7 +79,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
     """
     fr_set = set(free_rider_indices)
     benign_history = []          # per-round BER means (only used by the commented-out live calc)
-    CAL_WINDOW = 15              # rounds of recent BER (commented-out live calc)
+    CAL_WINDOW = 15              # TODO hardcoded (dead): sliding-window length for the commented-out live calc
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):

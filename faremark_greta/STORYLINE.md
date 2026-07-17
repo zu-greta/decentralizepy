@@ -1,183 +1,116 @@
 # STORYLINE — goals, diagrams, pseudocode
 
 ## 0. Goal
-
-FareMark (Li et al., IEEE IoT-J 2025) detects **free-riders** in federated learning
-by having honest clients embed a private **watermark** into the global model's
-softmax on a trigger class; free-riders can't reproduce it, so their bit-error-rate
-(BER) is high and they're flagged. **Our goal: characterize when FareMark can be
-evaded and where it fails** — not to break it blindly, but to map its limits and
-motivate a better detector.
-
-The result flipped from "we built a cheap evader" to "the detector cannot separate an
+FareMark (Li et al., IEEE IoT-J 2025) detects free-riders in FL by having honest
+clients embed a private watermark into the global model's softmax on a trigger class;
+free-riders can't reproduce it, so their bit-error-rate (BER) is high and they're
+flagged. **Goal: characterize when FareMark can be evaded and where it fails.** The
+result flipped from "we built a cheap evader" to "the detector cannot separate an
 embedding free-rider from an honest client at a hard trigger position" — a
 false-positive / threshold-calibration limitation.
 
----
-
 ## 1. The system (FareMark)
-
 ```
-                          ┌─────────────────────── SERVER ───────────────────────┐
-   client i               │  for each submitted model W_i:                        │
-   ┌────────────┐  W_i     │    bits = extract(W_i, trigger_bank[t_i], key_i)      │
-   │ trigger t_i│ ───────► │    BER_i = mean(bits != target_bits_i)                │
-   │ key   M_i  │          │  eta = mu + 3*sigma  over honest BERs                 │
-   │ bits  B_i  │          │  flag client i  iff  BER_i >= eta                     │
-   │ embed W_wm │ ◄─────── │  FedAvg aggregate the (unflagged) models -> W_global  │
-   └────────────┘  W_global└───────────────────────────────────────────────────────┘
+   client i               SERVER (each submitted model W_i):
+   trigger t_i            bits   = extract(W_i, trigger_bank[t_i], key_i)   (Eq.15)
+   key   M_i   --W_i-->   BER_i  = mean(bits != target_bits_i)              (Eq.16)
+   bits  B_i             flag i  iff  BER_i >= eta            (eta = FROZEN constant)
+   embed W_wm <--W_g--   FedAvg aggregate -> W_global
 ```
-
-- Each client is assigned a **position**: `t_i = cid % num_classes`, and key/bits
-  seeded from `cid`. Honest clients embed with `L = CE + lambda*BCE(z, B)` and keep
-  the mark alive through aggregation with a **memory update** (Eq. 14):
-  `W = beta*(memory + delta) + (1-beta)*global`.
-- Detection is a single scalar threshold η applied per client.
-
----
+- Position: `t_i = cid % num_classes`; key/bits seeded from cid.
+- Honest embed: `L = CE + lambda*BCE(z,B)`; memory update (Eq.14)
+  `W = beta*(memory+delta) + (1-beta)*global` keeps the mark through aggregation.
+- Detection = ONE scalar eta, **now a pre-calibrated constant** (threshold.py).
 
 ## 2. The watermark pipeline (one client)
-
 ```
- trigger images ─► model ─► softmax P ─► f(p)=p^alpha (smooth tail)
-      │                                     │
-      │                        group into m blocks of size l
-      │                                     │
-      │                        z_k = sum_j f(p) * M[k,j]        (project, Eq.1/13)
-      │                                     │
-   embed: minimize BCE(z, B)         extract: bits_k = sign(mean_over_N_T z_k)  (Eq.15)
-      (drives sign(z_k) -> B_k)             │
-                                      BER = mean(bits != B)      (Eq.16)
-                                      honest -> ~0 ; no mark -> ~0.5
+ trigger imgs -> softmax P -> f(p)=p^alpha (smooth tail) -> group into m blocks of l
+   -> z_k = sum_j f(p)*M[k,j]           (project, Eq.1/13)
+   embed: minimize BCE(z,B)             extract: bits_k = sign(mean_over_N_T z_k) (Eq.15)
+                                        BER = mean(bits != B)  (honest ~0; no mark ~0.5)
 ```
+**Why some positions are hard:** a confidently-predicted class has a peaky softmax
+(high `pmax`, low `entropy`) -> almost no tail to bend -> some bits stuck -> BER floors
+at ~0.10-0.20. Diagnostics now logged: server `pmax`/`entropy`/`dominance`/`trig_acc`
+(wm_verify), client `wm_loss`/`trig_train_acc` (wm_client.wm_stats).
 
-**Why some positions are "hard":** for certain (class, key, bits) the softmax tail
-can't be bent far enough to flip every bit without hurting classification, so a few
-bits stay wrong -> BER floors at ~0.10-0.20. That irreducible value is the **floor**.
-
----
-
-## 3. The attack: AUTOPILOT free-rider
-
-Idea: be an honest client while the server calibrates η, then coast/tap to hold the
-mark just where it needs to be — at minimum cost.
-
+## 3. The attack: SUBMARINE free-rider  (`attacks_adaptive.make_submarine_attack`)
+Be an honest client while the server calibrates eta, then coast/tap to hold the mark
+just under eta at minimum cost.
 ```
- rounds:   1 ....... ~12            13 ................................ 50
-          │ FORCED HONEST │        │ FREE-RIDE (coast / tap)            │
-          │ train fully,  │        │ coast: submit carried mark (~free) │
-          │ watch honest  │        │ tap:   re-embed on fresh global,   │
-          │ BER converge, │        │        cost = data x scope         │
-          │ FREEZE eta    │        │ target = eta - margin              │
-          └───────────────┘        └────────────────────────────────────┘
+ rounds:   1 ...... W                W+1 .............................. 50
+          | WARMUP + CALIB |        | FREE-RIDE (coast / tap)            |
+          | train fully,   |        | coast: submit global+mark_delta    |
+          | watch own BER  |        |        (re-inject mark, no train)   |
+          | converge,      |        | tap:   re-embed on fresh global,    |
+          | FREEZE eta     |        |        cost = data x scope          |
+          └────────────────┘        | target = eta - margin0 - safety     |
 ```
 
-### Pseudocode (autopilot `produce_update`)
-
+### Pseudocode (`SubmarineFreeRider.produce_update`)
 ```
-ensure_triggers()                          # probe holdout + reduced tap loader (once)
+ensure_triggers()                       # probe holdout + reduced tap loader (once)
+if honest_clone:  return honest.produce_update()          # DIAGNOSTIC control
 
-if honest_clone:                           # DIAGNOSTIC control
-    return honest.produce_update()         # pure honest every round
-
-eta    = oracle_eta if given else estimate()
-target = max(floor, eta - margin)
-
-# ---- WARMUP -> CALIB: honest until own BER converges, calibrate, then defect ----
-# warmup_mode="dynamic" (default): window is DYNAMIC & position-dependent.
+# WARMUP -> CALIB: honest until own probe BER converges, then K calib rounds, freeze eta
 if phase in ("warmup","calib"):
-    train honestly (full model, full shard)         # like an honest client
-    ber = probe(submit); honest_ber_hist.append(ber)
-    if phase == "warmup":
-        # converged = last (conv_patience+1) probe BERs within conv_eps, after honest_min
-        if (round >= honest_min and converged()) or round >= warmup_cap:
-            phase = "calib"; calib_start = round
-    if phase == "calib":                            # tag "calib"; collect BERs
+    submit = honest.produce_update(); ber = probe(submit); honest_hist.append(ber)
+    if phase=="warmup" and (round>=honest_min and converged()) or round>=warmup_cap:
+        phase="calib"; calib_start=round
+    if phase=="calib":
         own_calib.append(ber)
-        if round - calib_start + 1 >= calib_rounds:  # K converged rounds
-            eta_frozen = estimate(); phase = "freeride"
+        if round-calib_start+1 >= K:  freeze_own_eta(); phase="freeride"
     return submit
-# warmup_mode="fixed": reproduces warmup=[1,W-1], calib=[W-K,W-1], defect at W.
+# fixed mode forces the transition at round W-K (deterministic [W-K,W-1] window).
 
-# ---- POST-WARMUP: coast when safe, else tap ----
-if stay_min and probe(coast_state) <= target:
-    return coast_state                     # COAST: no training, re-inject mark
-else:
-    _embed_loop(scope=autop_scope,         # TAP: cost = data (common_per_class) x params (scope)
-                data=reduced or full,       #   -1=full shard, 0=triggers-only, N=+N/common-class
-                early_stop=False)
-    return memory_update(global, trained)
+# FREE-RIDE
+eta    = oracle_eta if given else eta_frozen
+target = max(floor, eta - margin0 - safety)          # safety gap below eta
+if stay_min:
+    coast = global + mark_delta                      # mark_delta = memory - global
+    if probe(coast) <= target and coast_streak < max_coast:
+        coast_streak++; return coast                 # COAST (no training, ~free)
+    coast_streak = 0                                 # else fall through to TAP
+tap = embed_loop(scope=autop_scope, data=reduced|full, early_stop=False)  # cost=data x scope
+return memory_update(global, tap)
 ```
 
-### eta estimate (`_eta_est`)
-
+### eta estimate (`_freeze_own_eta`) — reconstruct the SERVER's threshold from own BER
 ```
-if oracle_eta > 0:              return oracle_eta          # testing shortcut
-if eta_frozen is not None:      return eta_frozen          # frozen after honest phase
-if >=2 converged honest BERs:   return mu + k*sigma (trimmed)   # the FR's estimate of the fair eta
-else:                           fall back to recent post-embed BERs / 0.35
-```
-
----
-
-## 4. The detector's flaw (the story's turn)
-
-```
- per-(client,round) BER grid (converged):
-                r1    r2    r3
-   client0    0.10  0.10  0.10   ┐
-   client1    0.00  0.00  0.00   │  DOWN a column: wide spread (position floors)
-   client6    0.20  0.20  0.20   │
-   client7    0.00  0.00  0.00   ┘
-   round mean 0.055 0.055 0.055  <- ACROSS a row of means: tight
-
- eta = mu+3sigma over {0.055, 0.055, ...}  ->  ~0.09   (built from MEANS: tight)
- decision: flag client i iff BER_i >= 0.09  (applied to INDIVIDUALS: spread)
-
- => client6 (0.20) and client0 (0.10) flagged though HONEST  (false positives)
- => a free-rider on a hard position (~0.11) also flagged
+src = own_calib (tight/loose)  or  full honest history (cumulative)
+mu, sd = mean(src), pstdev(src)
+tight (default):  eta = mu + k*sd/sqrt(N)     # server averages N clients -> sd shrinks by sqrt(N)
+loose:            eta = mu + k*sd
+cumulative:       eta = mu + k*sd over all honest rounds
+eta_frozen = max(eta, floor)
 ```
 
-The dilemma:
-
+## 4. The detector's flaw (the turn)
 ```
- tight eta (over round-means, ~0.09):  catches the free-rider  BUT flags honest hard positions
- loose eta (over per-client BERs, ~0.28-0.31): spares honest clients BUT the free-rider passes too
+ per-(client,round) BER (converged):        round-mean
+   client0  0.10 0.10 0.10                    |
+   client1  0.00 0.00 0.00   wide DOWN a col  |  tight ACROSS the row of means
+   client6  0.20 0.20 0.20                     -> eta = mu+3sigma over MEANS ~ 0.09
+   client7  0.00 0.00 0.00
+ decision: flag iff BER_i >= eta  (applied to INDIVIDUALS: spread)
+   => client6 (0.20) and client0 (0.10) flagged though HONEST (false positives)
+   => a free-rider on a hard position (~0.10) also flagged
 ```
+No single scalar eta separates an embedding free-rider from an honest hard-position
+client, because after the FR embeds, both live in the same BER band.
 
-No single scalar η separates an *embedding* free-rider from an honest hard-position
-client, because after the free-rider embeds, the two live in the same BER band.
-
----
-
-## 5. The three experiments (evidence)
-
+## 5. The three experiments (see STATUS.md "EXPERIMENTS TO RUN")
 ```
- TEST 1  10 honest, no FR ─► per-client BER vs TWO eta defs ─► FPR under each
-         goal: show the tight eta flags honest hard positions (and the dilemma)
-
- TEST 2  2 FRs, full scope ─► sweep data (triggers-only -> +N/class -> full shard)
-         x TWO pinned positions ─► per-FR & per-honest BER + GPU/samples effort
-         goal: FR = honest at same position; floor reached cheaply; effort scales with data
-
- TEST 3  same as TEST 2 but scope=block2 (backbone frozen)
-         goal: samples flat, GPU drops -> separate "data cost" from "param cost"
+ STEP 0  honest (multi-seed) -> calibrate the ONE eta -> plots prove it
+ KNOB 1  position (hard {3,6} vs easy {1,7})   -> evasion is position-dependent
+ KNOB 2  data/tap (cpc 0/5/-1)                 -> effort floor
+ KNOB 3  coast vs tap-every (stay_min)         -> submarine coasting saves effort
 ```
-
----
 
 ## 6. Contribution arc
-
 ```
- reproduce FareMark  ->  build adaptive free-rider  ->  observe it "fails" under IID
-        │                                                     │
-        └─────────────────────────────►  realize the failure = FALSE POSITIVE  ◄──┘
-                                                 │
-             FareMark security reduces to eta-calibration, which is fragile:
-               (a) tight vs loose dilemma (this project's core result)
-               (b) poisoned / untrusted calibration pool
-               (c) slow honest convergence under heterogeneity
-                                                 │
-                          NEXT: a per-position / per-client-calibrated
-                          threshold that resolves the dilemma (a better detector)
+ reproduce FareMark -> build submarine FR -> it "fails" under IID
+        -> realize the failure = FALSE POSITIVE (position-dependent floor)
+        -> FareMark security reduces to eta-calibration (fragile)
+        -> NEXT: per-position / per-client-calibrated threshold (a better detector)
 ```

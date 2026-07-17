@@ -95,7 +95,7 @@ def last_round(runs):
 
 
 # ------------------------------------------------------ eta
-def round_means(runs, tail=20, honest_only=True):
+def round_means(runs, tail=20, honest_only=True):   # TODO hardcoded tail=20 (~converged region of a 50-round run; paper Fig.8 saturates ~round 30)
     """m_r = mean BER over clients per round, pooled across runs (converged tail)
     tail>0 keeps the last N rounds; tail=0 uses all rounds."""
     ms = []

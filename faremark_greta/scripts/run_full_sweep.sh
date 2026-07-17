@@ -70,12 +70,12 @@ if [ "${1:-}" = "PLOT" ]; then
   run $PT knob --in "'$ALL'" --family data_oracle_full   --sweep_var autop_common_per_class --out "$OUT/data_oracle_full"
   run $PT knob --in "'$ALL'" --family data_oracle_block2 --sweep_var autop_common_per_class --out "$OUT/data_oracle_block2"
 
-  # ============ DIAGNOSTIC: honest-clone vs the autopilot embedder ============
+  # ============ DIAGNOSTIC: honest-clone vs the submarine embedder ============
   # If clone_full's FR band sits at the honest floor (~0.04) while oracle_full sits at
-  # ~0.11, the gap was the autopilot embedder (attack revivable). If clone_full ALSO
+  # ~0.11, the gap was the submarine embedder (attack revivable). If clone_full ALSO
   # plateaus ~0.11, the gap is fundamental (late-join / dynamics).
   run $SB --in "'$ALL'" --note "'clone full stayunder 3seed'" --title "'DIAGNOSTIC: honest-clone embed · full scope (3 seeds)'" --out "$OUT/seedband_clone_full"
-  run $PT evade_bars --in "'$ALL'" --family oracle_full clone_full --out "$OUT/diag_clone_vs_autopilot"
+  run $PT evade_bars --in "'$ALL'" --family oracle_full clone_full --out "$OUT/diag_clone_vs_submarine"
 
   # ============ NON-IID: one seedband per α, plus an IID-vs-α evasion comparison ============
   for A in $ALPHAS; do
