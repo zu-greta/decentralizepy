@@ -25,7 +25,7 @@ SEEDS="${SEEDS:-0 1 2}"
 POS="${POS:-3,6}"                 # free-rider trigger CLASS IDs (hard cls 3 & 6)
 ETA_FILE="${ETA_FILE:-$RES/eta_calibrated.json}"
 PL="python scripts/plots.py"   # all plotting consolidated
-TH="python scripts/threshold.py"  # all threshold code consolidated
+TH="python threshold.py"  # all threshold code consolidated
 
 # common env for one autopilot run
 COMMON_E="ROUNDS=50 AUTOP_WARMUP_MODE=fixed AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \

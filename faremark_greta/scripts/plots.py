@@ -545,15 +545,15 @@ def thresholds(a):
     axA.axhline(mu, color=BLACK, lw=2, label=f"grand mean mu = {mu:.3f}")
     for k, al in [(1, 0.18), (2, 0.12), (3, 0.07)]:
         axA.axhspan(mu - k * sigma, mu + k * sigma, color=OK["orange"], alpha=al, lw=0)
-    axA.axhline(eta, color=C_BAD, lw=2.4, ls="--",
-                label=f"eta = mu + 3 sigma = {eta:.3f}")
+    axA.axhline(eta, color=C_BAD, lw=1.8, ls=":",
+                label=f"POOLED mu+3sigma (reference) = {eta:.3f}")
     if frozen is not None:
-        axA.axhline(frozen, color=C_GOOD, lw=2, ls="-",
-                    label=f"FROZEN constant (used) = {frozen:.3f}")
+        axA.axhline(frozen, color=C_GOOD, lw=2.6, ls="-",
+                    label=f"eta USED = avg of per-seed etas = {frozen:.3f}")
     axA.set_xlabel(f"round index within converged tail (last {tail}, pooled over seeds)")
     axA.set_ylabel("bit-error-rate")
-    axA.set_title("(a) How eta is built: average clients within each round -> dots,\n"
-                  "then mu + 3 sigma OF THOSE DOTS across rounds")
+    axA.set_title("(a) dots = per-round mean BER (pooled over seeds). The USED eta (green)\n"
+                  "is the AVERAGE of each seed's own (mu_s+3sigma_s); pooled (dotted) is looser")
     axA.legend(fontsize=8, loc="upper right")
 
     # (b) where eta lands vs honest & free-rider
@@ -563,9 +563,9 @@ def thresholds(a):
     if len(fr):
         axB.hist(fr, bins=np.arange(-0.05, max(fr.max(), 0.5) + 0.15, 0.1),
                  color=C_FR, alpha=0.55, density=True, label=f"free-rider per-client (n={len(fr)})")
-    axB.axvline(eta, color=C_BAD, lw=2.4, ls="--", label=f"eta = {eta:.3f}")
+    axB.axvline(eta, color=C_BAD, lw=1.8, ls=":", label=f"pooled (ref) = {eta:.3f}")
     if frozen is not None:
-        axB.axvline(frozen, color=C_GOOD, lw=2, label=f"frozen = {frozen:.3f}")
+        axB.axvline(frozen, color=C_GOOD, lw=2.4, label=f"eta USED = {frozen:.3f}")
     axB.set_xlabel("converged per-client BER")
     axB.set_ylabel("density")
     fp = 100 * np.mean(ho >= (frozen if frozen is not None else eta)) if len(ho) else 0
@@ -1320,8 +1320,84 @@ def sanity(a):
             print(f"    -> inspect: python plots.py class_dynamics --in '<glob>' --family {tag}")
 
 
+def eta_stability(a):
+    runs = [r for r in pick(load(a.inp), a.family) if th.is_honest_run(r)]
+    if not runs:
+        print("no honest runs for", a.family); return
+    tail = TAIL
+
+    series, etas, seeds = [], [], []
+    for r in runs:
+        hist = r.get("history", [])
+        mr = []
+        for h in hist:
+            vals = [p["ber"] for p in (h.get("wm_per_client") or []) if not p.get("is_free_rider")]
+            mr.append(np.mean(vals) if vals else np.nan)
+        e = th.frozen_eta([r], tail=tail)
+        series.append(np.array(mr)); seeds.append(r.get("seed"))
+        if e is not None:
+            etas.append(e)
+
+    if not etas:
+        print("no eta values computed; skipping")
+        return
+
+    eta_final = float(np.mean(etas)); eta_std = float(np.std(etas))
+    maxlen = max(len(m) for m in series)
+    M = np.full((len(series), maxlen), np.nan)
+    for i, m in enumerate(series):
+        M[i, :len(m)] = m
+    mean_mr = np.nanmean(M, axis=0); std_mr = np.nanstd(M, axis=0)
+    x = np.arange(1, maxlen + 1)
+
+    # ---- Figure 1: BER over rounds ----
+    fig1, axA = plt.subplots(figsize=(12, 5.5))
+    for m in series:
+        axA.plot(range(1, len(m) + 1), m, lw=0.8, alpha=0.4, color=C_HONEST)
+    axA.plot(x, mean_mr, color=BLACK, lw=2.6, label="mean over seeds")
+    axA.fill_between(x, mean_mr - std_mr, mean_mr + std_mr, color=GREY, alpha=0.25,
+                     label="+/- std across seeds")
+    axA.axvspan(maxlen - tail + 1, maxlen, color=OK["orange"], alpha=0.08,
+                label=f"converged tail ({tail} rounds)")
+    for e in etas:
+        axA.axhline(e, color=C_HONEST, lw=0.7, alpha=0.35)
+    axA.axhline(eta_final, color=C_GOOD, lw=2.6, label=f"eta final = {eta_final:.3f}")
+    axA.axhspan(eta_final - eta_std, eta_final + eta_std, color=C_GOOD, alpha=0.13,
+                label=f"eta +/- std = {eta_std:.3f}")
+    axA.set_xlabel("communication round")
+    axA.set_ylabel("honest mean-over-clients BER  (m_r)")
+    axA.set_title(f"Honest BER over rounds – {a.family or 'honest'}  "
+                  f"(faint lines = per-seed, blue h-lines = per-seed etas)")
+    axA.legend(fontsize=8, loc="upper right")
+    finish(fig1, os.path.join(a.out, f"eta_stability_ber_{a.family or 'honest'}.png"))
+
+    # ---- Figure 2: Per‑seed eta spread ----
+    fig2, axB = plt.subplots(figsize=(6, 5))
+    rng = np.random.RandomState(0)
+    axB.scatter(rng.rand(len(etas)) * 0.3 - 0.15, etas, s=55, color=C_HONEST,
+                edgecolor=BLACK, lw=0.5, zorder=3)
+    for e, sd in zip(etas, seeds):
+        axB.annotate(str(sd), (0.16, e), fontsize=7, va="center", color=GREY)
+    axB.axhline(eta_final, color=C_GOOD, lw=2.4, label=f"final = {eta_final:.3f}")
+    axB.axhspan(eta_final - eta_std, eta_final + eta_std, color=C_GOOD, alpha=0.15,
+                label=f"+/- std = {eta_std:.3f}")
+    axB.set_xlim(-0.4, 0.5); axB.set_xticks([])
+    axB.set_ylabel("per-seed eta")
+    rng_lo, rng_hi = min(etas), max(etas)
+    axB.set_title(f"Per‑seed eta spread\n{rng_lo:.3f}..{rng_hi:.3f}  "
+                  f"({rng_hi/max(rng_lo,1e-9):.1f}x)")
+    axB.legend(fontsize=8, loc="upper right")
+    finish(fig2, os.path.join(a.out, f"eta_stability_eta_{a.family or 'honest'}.png"))
+
+    print(f"  eta_final={eta_final:.4f} +/- {eta_std:.4f}  "
+          f"per-seed range {rng_lo:.4f}..{rng_hi:.4f} ({rng_hi/max(rng_lo,1e-9):.1f}x), "
+          f"n_seeds={len(etas)}")
+    print(f"  saved BER plot and eta spread plot to {a.out}")
+
+
 CMDS = {
     # canonical / current
+    "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
     "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)
     "thresholds": thresholds,          # intuitive derivation of the ONE eta
