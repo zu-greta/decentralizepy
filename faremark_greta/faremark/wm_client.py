@@ -134,6 +134,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     a crude baseline. Returns (clients, free_rider_indices)."""
     from .attacks import ATTACKS, GaussianNoiseFreeRider, resolve_free_riders
     from .attacks_adaptive import make_submarine_attack
+    from .attacks_simple import make_reduced_attack, make_tap_attack   
 
     # Watermark construction is LOCKED to the former paper_faithful=True behaviour:
     # random (unbalanced) keys, FULL softmax (no trigger-class exclusion), m = n//10.
@@ -194,6 +195,21 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     autop_warmup_cap=getattr(cfg, "autop_warmup_cap", 15),
                     autop_conv_eps=getattr(cfg, "autop_conv_eps", 0.03),
                     autop_conv_patience=getattr(cfg, "autop_conv_patience", 2),
+                    **wm_args, **common))
+            elif attack == "reduced":
+                cls = make_reduced_attack(WatermarkClient)
+                clients.append(cls(
+                    common_per_class=max(0, getattr(cfg, "autop_common_per_class", 5)),
+                    honest_rounds=getattr(cfg, "autop_honest_until", 12),
+                    calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
+                    **wm_args, **common))
+            elif attack == "tap_oracle":
+                cls = make_tap_attack(WatermarkClient)
+                clients.append(cls(
+                    oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0) or getattr(cfg, "wm_eta_fixed", 0.0),
+                    honest_rounds=getattr(cfg, "autop_honest_until", 12),
+                    calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
+                    common_per_class=max(0, getattr(cfg, "autop_common_per_class", 5)),
                     **wm_args, **common))
             elif attack in ATTACKS:
                 # paper baselines (previous_models / gaussian) - no embedding

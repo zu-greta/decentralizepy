@@ -1,40 +1,46 @@
 #!/usr/bin/env bash
-# run_all.sh -- focused experiments (no more big sweeps).
+# run_all.sh -- focused & cleaned.  CIFAR-100, IID, paper-faithful (trigger class INCLUDED).
 #
-# THREE experiments, all IID, CIFAR-100, paper-faithful:
-#   honest    all-honest, multiple seeds. Used to CALIBRATE the one threshold,
-#             and reported as its own (free-rider-free) baseline.
-#   tap_every free-rider taps EVERY round on +5/common-class at FULL scope.
-#   tap_stay  free-rider taps ONLY when needed to stay under the frozen eta
-#             (coast otherwise). Uses the fixed coast/estimate logic.
+# Difficulty is already CONFIRMED (softmax peakiness, not class accuracy) from the
+# honest runs via class_difficulty_probe.py -- no new "difficulty" runs needed.
 #
-# THRESHOLD: one canonical, pre-calibrated constant eta (calibrate_eta.py):
-#   mean-over-clients per round -> mu+3*sigma over rounds, honest-only, multi-seed.
-#   Frozen to eta_calibrated.json, then passed to every attack run as WM_ETA_FIXED.
+# Targets:
+#   honest            all-honest seeds -> (a) eta calibration set, (b) baseline.
+#   calibrate         freeze eta = avg over seeds of (mu_s + 3*sigma_s), honest-only.
+#   reduced           the "+N" attacker: honest until round W, then trains ONLY on
+#                     (all trigger imgs + N per common class) every round. No tapping.
+#   reduced_majority  9 reduced free-riders + 1 honest anchor at an EASY class (cid 8).
+#   PLOTALL           sanity + class_difficulty/thresholds (honest) + timeline/fidelity (attacks).
+#
+# tap_oracle (honest-path tap/coast with the TRUE eta as an oracle) is written below
+# but COMMENTED OUT of the dispatch -- enable it after the reduced results look right.
+#
+# THRESHOLD: your eta_calibrated.json fetch is flaky, so pass the frozen constant on
+# the CLI. Run every attack with USE_FIXED_ETA=1 to use FIXED_ETA below (=0.06397,
+# the eta calibrated on the ORIGINAL 10 honest seeds -- the one you want to test against).
 #
 # FLOW:
-#   ./run_all.sh honest        # submit all-honest seeds
-#   # ...wait for them to finish...
-#   ./run_all.sh calibrate     # -> $RES/eta_calibrated.json
-#   ./run_all.sh attacks       # submit tap_every + tap_stay (reads the frozen eta)
-#   # ...wait...
-#   ./run_all.sh PLOTALL       # timelines + class dynamics + thresholds + fidelity
+#   ./run_all.sh honest                          # (only if you need fresh honest runs)
+#   ./run_all.sh calibrate                       # (optional; we pass eta on CLI anyway)
+#   SEEDS='0 1 2' POS=1,7 USE_FIXED_ETA=1 ./run_all.sh reduced           # easy classes
+#   SEEDS='0 1 2' POS=3,6 USE_FIXED_ETA=1 ./run_all.sh reduced           # hard classes
+#   SEEDS='0 1 2'         USE_FIXED_ETA=1 ./run_all.sh reduced_majority  # 9 FR + 1 honest
+#   ./run_all.sh PLOTALL
 set -uo pipefail
 CFG="${CFG:-14}"; RES="${RES:-/mnt/nfs/home/zu/results}"
 SEEDS="${SEEDS:-0 1 2}"
-POS="${POS:-3,6}"                 # free-rider trigger CLASS IDs (hard cls 3 & 6)
+POS="${POS:-3,6}"                        # trigger CLASS IDs that free-ride
 ETA_FILE="${ETA_FILE:-$RES/eta_calibrated.json}"
-PL="python scripts/plots.py"   # all plotting consolidated
-TH="python threshold.py"  # all threshold code consolidated
+PL="python scripts/plots.py"
+TH="python threshold.py"
 
-# ---------- hardcoded fallback eta ----------
-FIXED_ETA=0.06397                  # use this value if USE_FIXED_ETA is set
-USE_FIXED_ETA="${USE_FIXED_ETA:-}" # set to non-empty to skip reading from file
-# ------------------------------------------------
+# ---- frozen eta (calibrated on the original 10 honest seeds) ----
+FIXED_ETA=0.06397
+USE_FIXED_ETA="${USE_FIXED_ETA:-}"       # set =1 to use FIXED_ETA (CLI workaround for file-fetch)
 
-# common env for one autopilot run
-COMMON_E="ROUNDS=50 AUTOP_WARMUP_MODE=fixed AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-AUTOP_ETA_MODE=tight AUTOP_NUM_CLIENTS_EST=10 AUTOP_MARGIN0=0.06 AUTOP_SAFETY=0.02 AUTOP_MAX_COAST=4"
+# ---- only the warmup schedule matters for the reduced / tap attackers ----
+#   W = AUTOP_HONEST_UNTIL (defect at round W), K = AUTOP_CALIB_ROUNDS (tags calib window [W-K, W-1]).
+COMMON_E="ROUNDS=50 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4"
 
 read_eta(){ python - "$ETA_FILE" <<'PY'
 import json,sys
@@ -42,94 +48,96 @@ try: print(json.load(open(sys.argv[1]))["eta"])
 except Exception: print("")
 PY
 }
+get_eta(){ if [ -n "$USE_FIXED_ETA" ]; then echo "$FIXED_ETA"; else read_eta; fi; }
 
-# ---------- get eta (either fixed or from file) ----------
-get_eta(){
-  if [ -n "$USE_FIXED_ETA" ]; then
-    echo "$FIXED_ETA"
-  else
-    read_eta
-  fi
-}
-# --------------------------------------------------------------
-
-# =============================== EXPERIMENTS ===============================
+# ============================ EXPERIMENTS ============================
 honest(){
-  echo "== HONEST (all-honest, seeds: $SEEDS) -> calibration + baseline"
+  echo "== HONEST (all-honest, seeds: $SEEDS)"
   for s in $SEEDS; do
     env ROUNDS=50 ATTACK=none FAMILY="honest_iid" \
         NOTE="all honest iid" WAIT=0 ./submit_experiment.sh "$CFG" "$s"
   done
 }
 
-tap_every(){
-  local eta="$(get_eta)"   # <-- changed from read_eta
-  [ -z "$eta" ] && { echo "!! no eta available (file missing and USE_FIXED_ETA not set)"; return 1; }
-  echo "== TAP_EVERY (+5/common, full scope), class ids=$POS -> family tap_every_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
-  for s in $SEEDS; do
-    env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS \
-        AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
-        FAMILY="tap_every_iid_c${POS//,/}" SWEEP_LEVEL=5 NOTE="tap every +5/cls full pos=$POS eta=$eta" \
-        WAIT=0 ./submit_experiment.sh "$CFG" "$s"
-  done
-}
-
-tap_stay(){
-  local eta="$(get_eta)"   # <-- changed from read_eta
-  [ -z "$eta" ] && { echo "!! no eta available (file missing and USE_FIXED_ETA not set)"; return 1; }
-  echo "== TAP_STAY (coast), class ids=$POS -> family tap_stay_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
-  for s in $SEEDS; do
-    env $COMMON_E ATTACK=submarine FREE_RIDER_IDS=$POS AUTOP_STAY_MIN=1 \
-        AUTOP_SCOPE=full AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
-        FAMILY="tap_stay_iid_c${POS//,/}" SWEEP_LEVEL=5 NOTE="tap-to-stay full pos=$POS eta=$eta" \
-        WAIT=0 ./submit_experiment.sh "$CFG" "$s"
-  done
-}
-
 calibrate(){
-  echo "== CALIBRATE canonical eta from honest-only runs -> $ETA_FILE"
-  $TH calibrate --in "$RES/*/result.json" \
-      --honest-family honest_iid --tail 20 --out "$ETA_FILE"
+  echo "== CALIBRATE eta from honest-only runs -> $ETA_FILE"
+  $TH calibrate --in "$RES/*/result.json" --honest-family honest_iid --tail 20 --out "$ETA_FILE"
 }
 
-# =============================== PLOTALL ===============================
-# 1) timelines (per family)   2) class difficulty + dynamics (harder class ids)
-# 3) canonical threshold derivation (+ fidelity)
+# --- the "+N" attacker: honest warmup, then honest training on LESS data ---
+reduced(){
+  local eta; eta="$(get_eta)"; [ -z "$eta" ] && { echo "!! no eta (set USE_FIXED_ETA=1)"; return 1; }
+  echo "== REDUCED (+5/common, honest path), pos=$POS -> reduced_iid_c${POS//,/}, eta=$eta, seeds: $SEEDS"
+  for s in $SEEDS; do
+    env $COMMON_E ATTACK=reduced FREE_RIDER_IDS=$POS \
+        AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
+        FAMILY="reduced_iid_c${POS//,/}" SWEEP_LEVEL=5 \
+        NOTE="+5/cls honest-path pos=$POS eta=$eta" \
+        WAIT=0 ./submit_experiment.sh "$CFG" "$s"
+  done
+}
+
+# --- majority: 9 reduced free-riders + 1 honest anchor at an EASY class (cid 8 -> class 8) ---
+reduced_majority(){
+  local eta; eta="$(get_eta)"; [ -z "$eta" ] && { echo "!! no eta (set USE_FIXED_ETA=1)"; return 1; }
+  local FR="0,1,2,3,4,5,6,7,9"          # everyone EXCEPT cid 8 (honest anchor, easy class)
+  echo "== REDUCED MAJORITY (9 FR + honest cid8), eta=$eta, seeds: $SEEDS"
+  for s in $SEEDS; do
+    env $COMMON_E ATTACK=reduced FREE_RIDER_IDS=$FR \
+        AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
+        FAMILY="reduced_iid_majority" SWEEP_LEVEL=5 \
+        NOTE="9 reduced +5/cls, honest anchor cid8, eta=$eta" \
+        WAIT=0 ./submit_experiment.sh "$CFG" "$s"
+  done
+}
+
+# --- (LATER) honest-path tap/coast with the TRUE eta as an ORACLE. Enable after reduced. ---
+# tap_oracle(){
+#   local eta; eta="$(get_eta)"; [ -z "$eta" ] && { echo "!! no eta (set USE_FIXED_ETA=1)"; return 1; }
+#   echo "== TAP_ORACLE (tap/coast, oracle eta), pos=$POS -> taporacle_iid_c${POS//,/}, eta=$eta"
+#   for s in $SEEDS; do
+#     env $COMMON_E ATTACK=tap_oracle FREE_RIDER_IDS=$POS \
+#         AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
+#         FAMILY="taporacle_iid_c${POS//,/}" SWEEP_LEVEL=5 \
+#         NOTE="oracle tap/coast pos=$POS eta=$eta" \
+#         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
+#   done
+# }
+
+# ============================== PLOTS ==============================
 plotall(){
-  # MINIMAL plot set -- only what proves the two claims + catches suspicious runs.
   local ALL="$RES/*/result.json"
   local OUT="${OUT:-$RES/figs}"; mkdir -p "$OUT"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
 
-  # --- 0. sanity FIRST (text): flag flat/zero BER, non-frozen eta, missing loss ---
-  run $PL sanity --in "'$ALL'" --out "$OUT"
+  # honest: difficulty figure + the frozen-eta / honest-FPR figure
+  run $PL sanity           --in "'$ALL'" --out "$OUT"
+  run $PL class_difficulty --in "'$ALL'" --family honest_iid --out "$OUT"
+  run $PL thresholds       --in "'$ALL'" --family honest_iid --out "$OUT"
 
-  # --- 1. CLAIM A: some class ids are harder to embed (all-honest) ---
-  run $PL class_difficulty --in "'$ALL'" --family honest_iid --out "$OUT"   # per-class acc/loss vs BER
-  run $PL thresholds       --in "'$ALL'" --family honest_iid --out "$OUT"   # the frozen eta + honest FPR
-
-  # --- 2. CLAIM B: free-riding is possible in IID (+5/common and coast) ---
-  # auto-discover every tap_* family present (each = one class-id assignment)
-  FAMS="${FAMS:-$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and x.startswith('tap_'))))" 2>/dev/null)}"
+  # every non-honest family present -> timeline (BER lines vs eta) + fidelity (effort/BER)
+  FAMS="${FAMS:-$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and not x.startswith('honest'))))" 2>/dev/null)}"
   for fam in $FAMS; do
-    run $PL timeline      --in "'$ALL'" --family $fam --out "$OUT/timeline_${fam}"  # BER vs eta, taps/coasts
-    run $PL fidelity      --in "'$ALL'" --family $fam --out "$OUT"                  # FR vs honest BER + effort
-    run $PL class_dynamics --in "'$ALL'" --family $fam --out "$OUT"                 # loss curves (diagnostic)
+    run $PL timeline  --in "'$ALL'" --family $fam --out "$OUT/timeline_${fam}"   # <- the BER lines you want
+    run $PL fidelity  --in "'$ALL'" --family $fam --out "$OUT"
   done
-  echo "PLOTALL (minimal) done -> $OUT"
+  echo "PLOTALL done -> $OUT"
 }
 
-# =============================== DISPATCH ===============================
+# ============================= DISPATCH =============================
 case "${1:-}" in
-  honest)     honest ;;
-  calibrate)  calibrate ;;
-  tap_every)  tap_every ;;
-  tap_stay)   tap_stay ;;
-  attacks)    tap_every; tap_stay ;;
-  all)        honest; echo "-> wait for honest jobs, then: ./run_all.sh calibrate && ./run_all.sh attacks" ;;
-  PLOTALL)    plotall ;;
-  *) echo "usage: ./run_all.sh [honest|calibrate|tap_every|tap_stay|attacks|PLOTALL]
-  typical order:  honest  ->(wait)->  calibrate  ->  attacks  ->(wait)->  PLOTALL
-  vars: CFG=$CFG RES=$RES SEEDS='$SEEDS' POS=$POS ETA_FILE=$ETA_FILE
-  env USE_FIXED_ETA=1 to use hardcoded eta=$FIXED_ETA instead of reading from ETA_FILE"; exit 1 ;;
+  honest)           honest ;;
+  calibrate)        calibrate ;;
+  reduced)          reduced ;;
+  reduced_majority) reduced_majority ;;
+  # tap_oracle)     tap_oracle ;;       # enable after the reduced results look right
+  PLOTALL)          plotall ;;
+  *) echo "usage: ./run_all.sh [honest|calibrate|reduced|reduced_majority|PLOTALL]
+  vars: CFG=$CFG RES=$RES SEEDS='$SEEDS' POS=$POS
+  eta:  USE_FIXED_ETA=1 uses FIXED_ETA=$FIXED_ETA (CLI workaround for file-fetch)
+  examples:
+    SEEDS='0 1 2' POS=1,7 USE_FIXED_ETA=1 ./run_all.sh reduced          # easy classes
+    SEEDS='0 1 2' POS=3,6 USE_FIXED_ETA=1 ./run_all.sh reduced          # hard classes
+    SEEDS='0 1 2'         USE_FIXED_ETA=1 ./run_all.sh reduced_majority # 9 FR + 1 honest
+    ./run_all.sh PLOTALL"; exit 1 ;;
 esac

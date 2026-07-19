@@ -43,7 +43,7 @@ per-round (mean-over-clients) honest BERs; final `eta` = **average of the 10 eta
 `run_experiment.py`. If your honest runs predate it, run **3** more honest seeds to get
 them (does NOT change the frozen eta — do not re-calibrate):
 ```bash
-SEEDS="0 1 2" ./run_all.sh honest      # then re-run class_difficulty
+SEEDS="0 1 2" ./../scripts/run_all.sh honest      # then re-run class_difficulty
 python scripts/plots.py class_difficulty --in "$RES/*/result.json" --family honest_iid --out "$RES/figs"
 ```
 
@@ -56,9 +56,9 @@ python scripts/plots.py class_difficulty --in "$RES/*/result.json" --family hone
 
 | command | tests | mechanism | expect |
 |---|---|---|---|
-| `POS=1,7 ./run_all.sh attacks` | free-riding at EASY class ids | tap_every (+5/common) & tap_stay (coast) | FR BER ~0 < eta -> hides cleanly |
-| `POS=3,6 ./run_all.sh attacks` | free-riding at HARD class ids | same two | FR BER ~ honest floor at a fraction of the effort |
-| `POS=3,6 AUTOP_COMMON_PER_CLASS=0 ./run_all.sh tap_every` | data ablation: triggers-only | +0/common | overfits -> high BER -> caught |
+| `USE_FIXED_ETA=1 POS=1,7 ./../scripts/run_all.sh attacks` | free-riding at EASY class ids | tap_every (+5/common) & tap_stay (coast) | FR BER ~0 < eta -> hides cleanly |
+| `USE_FIXED_ETA=1 POS=3,6 ./../scripts/run_all.sh attacks` | free-riding at HARD class ids | same two | FR BER ~ honest floor at a fraction of the effort |
+| `USE_FIXED_ETA=1 POS=3,6 AUTOP_COMMON_PER_CLASS=0 ./../scripts/run_all.sh tap_every` | data ablation: triggers-only | +0/common | overfits -> high BER -> caught |
 
 `attacks` = `tap_every` + `tap_stay`. Each submits `$SEEDS` (default `0 1 2`).
 All read the frozen eta via `read_eta` -> `WM_ETA_FIXED`.
@@ -69,7 +69,7 @@ All read the frozen eta via `read_eta` -> `WM_ETA_FIXED`.
 
 | command | does | expect |
 |---|---|---|
-| `RES=$RES ./run_all.sh PLOTALL` | minimal set: sanity, class_difficulty, thresholds (honest); timeline, fidelity, class_dynamics (each attack family) | figures in `$RES/figs` |
+| `RES=$RES ./scripts/run_all.sh PLOTALL` | minimal set: sanity, class_difficulty, thresholds (honest); timeline, fidelity, class_dynamics (each attack family) | figures in `$RES/figs` |
 | `python scripts/threshold.py verify --in "$RES/*/result.json" --honest-family honest_iid --eta-file "$ETA_FILE"` | attack runs used the frozen eta? | flat `wm_eta_round == eta` -> PASS |
 
 **Read `sanity` first.** If an FR BER is flat/zero or eta isn't flat, open
