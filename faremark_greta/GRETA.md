@@ -49,7 +49,7 @@ To contribute effectively to this project, we highly value:
 | July 2 | [x] finish up code <br> [x] play around with settings and figure out new attacks <br> [x] create plots and graphs for next JSM presentation |
 | July 7 | [x] send a follow up email to authors <br> [x] cleanup codebase (including documentations) and results - get clean results and only keep necessary ones in a summary <br> [] explore better attacks <br> [] explore theoretical approach |
 | July 14 | [] broad submarine attacks |
-| July 21 | [] fix all the code issues <br> [] review all code and be up to date <br> [] run baseline attack experiments <br> [] analyse results and figure out next steps and feasibility of project |
+| July 21 | [x] fix all the code issues <br> [x] review all code and be up to date <br> [x] run baseline attack experiments <br> [] analyse results and figure out next steps and feasibility of project |
 | July 28 | [] |
 | August 4 | [] start writing report ? |
 | August 11 | [] |
@@ -181,13 +181,50 @@ July16
 
 repeated prisoner dilemna
 
-july20
+July21
 - threshold 
-    - the way its calculated now + hpow low it is
+    - the way its calculated now + how low it is 
+    - calculation: mean over the clients BERs in a round and then mean over those for multiple rounds + 3 standard deviation over the last 20 rounds. 10 seeds and averaged eta over these 10: 0.06397 for CIFAR-100.
+    - concern: seeds vary quite a bit: 0.01704 all the way to 0.11526
+    - concern: the threshold is quite low -> FPR not sure how the paper gets such a low FPR. avg? did not look at individual clients?
+    - ![CIFAR100-10clients-10seeds](results/threshold_calibrate/figs/eta_stability_ber_honest_iid.png) 
+    - TODO: add the threshold for CIFAR-10 ? less bits to embed ?
 - class difficulty
+    - watermark is embedded in the shape of the tail of softmax output - the more confident (not class accuracy but rather low entropy and peaky softmax), the less shape and harder for watermark to embed -> the whole point of smoothing was to have less flat shapes but it doesnt solve the entire issue
+
+    | cls | BER    | test_acc | test_loss | entropy | eff.cls | dominance | pmax  |
+    |-----|--------|----------|-----------|---------|---------|-----------|-------|
+    | 8   | 0.000  | 90.0     | 0.42      | 3.121   | 22.7    | 0.0425    | 0.206 |
+    | 7   | 0.000  | 68.3     | 1.23      | 3.017   | 20.4    | 0.0458    | 0.246 |
+    | 9   | 0.000  | 81.3     | 0.78      | 3.100   | 22.2    | 0.0432    | 0.217 |
+    | 1   | 0.003  | 86.3     | 0.44      | 3.058   | 21.3    | 0.0444    | 0.223 |
+    | 5   | 0.033  | 79.0     | 0.87      | 3.265   | 26.2    | 0.0406    | 0.204 |
+    | 2   | 0.035  | 67.3     | 1.22      | 3.023   | 20.6    | 0.0462    | 0.252 |
+    | 0   | 0.037  | 93.0     | 0.30      | 3.024   | 20.6    | 0.0436    | 0.204 |
+    | 3   | 0.060  | 50.7     | 1.69      | 2.901   | 18.2    | 0.0496    | 0.284 |
+    | 4   | 0.078  | 66.3     | 1.43      | 2.970   | 19.5    | 0.0474    | 0.264 |
+    | 6   | 0.207  | 84.3     | 0.65      | 2.842   | 17.2    | 0.0495    | 0.264 |
+
+    **Correlation of per-class BER vs each predictor (Pearson r over 10 classes):**
+
+    | predictor | r      | reading |
+    |-----------|--------|---------|
+    | entropy   | −0.67  | flatter softmax → lower BER (strongest) |
+    | dominance | +0.65  | more dominated → higher BER |
+    | pmax      | +0.54  | more confident → higher BER |
+    | test_loss | +0.08  | ~none |
+    | test_acc  | −0.05  | ~none |
+    
+    - entropy: high entropy means spread out. more shape and low BER. low entropy means one class dominates and less shape and high BER (nothing to shape so bits decided by noise). e^(entropy) = effective number of classes. more effective classes means more shape and lower BER. less effective classes means less shape and higher BER. eg. cls 6 has entropy 2.84 and e^(2.84) = 17.2 effective classes sharing the probability, cls 8 has entropy 3.12 and e^(3.12) = 22.7 effective classes. cls 6 has higher BER than cls 8 because it has less shape to embed the watermark in.
+    - pmax: height of the peak, higher pmax means peakier and less shape and higher BER. lower pmax means more shape and lower BER
 - better watermark embedding with less data ?
-- more free-riders falls under threshold with less good global accuracy
-- the way they calculate FPR?
+    - question: theoretically possible that with less data, concentrated around trigger class + some common samples, the watermark can be embedded better than with more data? the accuracy is lower after training but the BER is lower and the watermark is embedded better?
+        - just trigger class overfits - table V in the paper
+        - but with +5 random per common its enough to balance the overfitting and BER is actually better than full shard -> ![CIFAR100-10clients-3seeds-2fr-easy](results/sub_17/figs/timeline_reduced_iid_c17.png) and ![CIFAR100-10clients-3seeds-2fr-hard](results/sub_17/figs/timeline_reduced_iid_c36.png) compared to the all honest BER -> ![CIFAR100-10clients-10seeds-all-honest](results/sub_17/figs/honest_class_lines.png) or use the 3 seeds version for better comparison with my attack runs: ![CIFAR100-10clients-3seeds-all-honest](results/sub_17/figs/honest_class_lines_3seeds.png)
+            - the flatness of the free-rider BER: training ebery round but with less data - more concentrated. full hsard watermark is ~1% of gradient signal so mark is maintained weaker so wiggle 0-0.1. fr re-embeds with ~9% trigger gradient every round much stronger so drives BER to the floor of the class and holds it
+    - more free-riders falls under threshold with less good global accuracy 
+        - 9 free riders, 1 honest client: global accuracy drops (58% compared to ~72%) but BER all pass under the threshold. the per client accuracy is the trigger accuracy (not test accuracy here) and that is better when less data is used (less data is better for watermarking, not global accuracy) -> ![CIFAR100-10clients-3seeds-9freeriders-1honest](results/sub_17/figs/timeline_reduced_iid_majority.png)
+- TODO: run tests with tapping and oracle only to see if possible to free ride by tapping and coasting - first while knowing the threshold then try ot figure out how to predict the threshold
 
 ---
 ---

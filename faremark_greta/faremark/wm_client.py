@@ -137,8 +137,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     from .attacks_simple import make_reduced_attack, make_tap_attack   
 
     # Watermark construction is LOCKED to the former paper_faithful=True behaviour:
-    # random (unbalanced) keys, FULL softmax (no trigger-class exclusion), m = n//10.
-    # (paper_faithful flag removed; this is the only mode we run now.)
+    # random (unbalanced) keys, FULL softmax (no trigger-class exclusion), m = n//10
     PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
     m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
     l = wm.grouping(num_classes, m)
@@ -153,7 +152,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
         trigger_class = cid % num_classes # assign trigger class in round-robin fashion
-        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=False)  # random keys (former paper_faithful)  # TODO hardcoded seed offset 1000*cid+1
+        # False: random keys. True: less unembeddable keys
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=True)  # random keys (former paper_faithful)  # TODO hardcoded seed offset 1000*cid+1
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
         reg_exclude = None                     # full softmax

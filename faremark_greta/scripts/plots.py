@@ -9,7 +9,7 @@ plots:
 
   positions   Are some trigger classes harder? Per-trigger-class BER (bar +
               over-time), so the bimodal honest floor (a few hard classes) that
-              inflates the loose eta is visible. TODO: dont name it position, its class index.
+              inflates the loose eta is visible. 
 
   fidelity    Global test accuracy over rounds + per-client converged BER
               (honest vs free-rider, if the run has any) + per-client effort.

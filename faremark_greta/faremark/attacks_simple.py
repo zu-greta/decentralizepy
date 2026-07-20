@@ -45,39 +45,40 @@ class _SimpleFRMixin:
         if getattr(self, "_prepared", False):
             return
         self._prepared = True
-        bs = getattr(self.loader, "batch_size", 16) or 16
+        bs = getattr(self.loader, "batch_size", 16) or 16 # batch size for the reduced loader
 
         trig, comm_x, comm_y = [], [], []
         for x, y in self.loader:                      # original shard, once
-            tm = (y == self.trigger_class)
-            if tm.any():
-                trig.append(x[tm])
+            tm = (y == self.trigger_class) # mask for trigger images
+            if tm.any(): 
+                trig.append(x[tm]) # trigger images
             if (~tm).any():
-                comm_x.append(x[~tm]); comm_y.append(y[~tm])
+                comm_x.append(x[~tm]); comm_y.append(y[~tm]) # common-class images
 
-        allt = torch.cat(trig) if trig else torch.empty(0)
+        allt = torch.cat(trig) if trig else torch.empty(0) # trigger images
         # hold out a slice of trigger images for the self-probe (attacker B only)
         k = min(n_probe_holdout, max(0, len(allt) - 1)) if n_probe_holdout else 0
-        self._probe_x = allt[:k].clone() if k > 0 else None
-        trig_train = allt[k:] if k > 0 else allt
+        self._probe_x = allt[:k].clone() if k > 0 else None # probe on held-out triggers
+        trig_train = allt[k:] if k > 0 else allt # trigger images for training
 
-        xs = [trig_train]
-        ys = [torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)]
-        if common_per_class > 0 and comm_x:
-            cx = torch.cat(comm_x); cy = torch.cat(comm_y)
-            for cls in cy.unique():
-                idx = (cy == cls).nonzero(as_tuple=True)[0]
-                take = idx[torch.randperm(len(idx))[:common_per_class]]
-                xs.append(cx[take]); ys.append(cy[take])
-        X, Y = torch.cat(xs), torch.cat(ys)
-        self._reduced_n = len(X)
+        xs = [trig_train] # the reduced loader is trigger images + N common-class images
+        ys = [torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)] # labels for trigger images
+        if common_per_class > 0 and comm_x: # if we have common-class images, sample N from each class
+            cx = torch.cat(comm_x); cy = torch.cat(comm_y) # all common-class images and labels
+            for cls in cy.unique(): # for each common class, sample N images
+                idx = (cy == cls).nonzero(as_tuple=True)[0] # indices of this class
+                take = idx[torch.randperm(len(idx))[:common_per_class]] # random sample of N indices
+                xs.append(cx[take]); ys.append(cy[take]) # add to the reduced loader
+        X, Y = torch.cat(xs), torch.cat(ys) # reduced dataset
+        self._reduced_n = len(X) # number of samples in the reduced loader
         self._reduced_loader = DataLoader(TensorDataset(X, Y),
                                           batch_size=min(bs, max(1, len(X))),
-                                          shuffle=True)
+                                          shuffle=True) 
 
     @torch.no_grad()
     def _probe_ber(self, state) -> float | None:
-        """BER of this client's mark in `state`, on held-out trigger images."""
+        """BER of this client's mark in `state`, on held-out trigger images.
+        used by the OracleTapFreeRider to decide whether to coast or tap."""
         if getattr(self, "_probe_x", None) is None:
             return None
         self.model.load_state_dict(state)
@@ -90,14 +91,14 @@ class _SimpleFRMixin:
     # window bookkeeping shared by both -------------------------------------
     def _phase_action(self, round_idx: int) -> str:
         """honest | calib (last K warmup rounds) | freeride."""
-        W, K = self.honest_rounds, self.calib_rounds
+        W, K = self.honest_rounds, self.calib_rounds # W = honest warmup rounds, K = calibration rounds
         if round_idx >= W:
             return "freeride"
         return "calib" if round_idx >= (W - K) else "honest"
 
 
 # --------------------------------------------------------------------------- #
-#  Attacker A: honest, then honest-on-less-data                                #
+#  Reduced Data Attack: honest, then honest-on-less-data                      #
 # --------------------------------------------------------------------------- #
 def make_reduced_attack(base_cls):
 
@@ -115,26 +116,27 @@ def make_reduced_attack(base_cls):
             self._orig_loader = self.loader
             self.trace = []
 
+        # override the base class's produce_update to switch to the reduced loader after W rounds
         def produce_update(self, global_state, prev_global_state, round_idx):
-            phase = self._phase_action(round_idx)
+            phase = self._phase_action(round_idx) # honest | calib (last K warmup rounds) | freeride
             if phase == "freeride":
                 # switch to the reduced shard and keep training like an honest client
-                self._prepare(self.common_per_class)
-                self.loader = self._reduced_loader
-                submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-                self.trace.append({"round": round_idx, "action": "tap",   # re-embeds every round
-                                   "eta_frozen": None, "reduced_n": self._reduced_n})
+                self._prepare(self.common_per_class) # build the reduced loader once
+                self.loader = self._reduced_loader # switch to the reduced loader
+                submit, n = super().produce_update(global_state, prev_global_state, round_idx) # train on the reduced loader
+                self.trace.append({"round": round_idx, "action": "tap",   
+                                   "eta_frozen": None, "reduced_n": self._reduced_n}) # re-embeds every round 
                 return submit, n
             # warmup / calibration window: pure honest client on the original shard
             submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-            self.trace.append({"round": round_idx, "action": phase, "eta_frozen": None})
+            self.trace.append({"round": round_idx, "action": phase, "eta_frozen": None}) 
             return submit, n
 
     return ReducedDataFreeRider
 
 
 # --------------------------------------------------------------------------- #
-#  Attacker B: honest, then oracle-threshold tap/coast                         #
+#  Oracle Tap Attack: honest, then oracle-threshold tap/coast                 #
 # --------------------------------------------------------------------------- #
 def make_tap_attack(base_cls):
 
