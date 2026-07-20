@@ -181,6 +181,14 @@ July16
 
 repeated prisoner dilemna
 
+july20
+- threshold 
+    - the way its calculated now + hpow low it is
+- class difficulty
+- better watermark embedding with less data ?
+- more free-riders falls under threshold with less good global accuracy
+- the way they calculate FPR?
+
 ---
 ---
 ## resources

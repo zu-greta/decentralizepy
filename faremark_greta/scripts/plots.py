@@ -731,6 +731,25 @@ def eta_defs(runs, tail=TAIL, fixed_path=None):
     }
 
 
+def honest_class_floor(honest_runs, classes=None, tail=TAIL):
+    """Per-trigger-class honest BER floor, pooled over honest runs & the converged
+    tail. Returns {class_id: [ber, ...]} restricted to `classes` if given.
+    Used to overlay 'what an honest client at THIS trigger class would floor at'
+    on the free-rider timeline, so the FR line is read against its own class
+    rather than the (harder-class-inflated) honest mixture."""
+    from collections import defaultdict as _dd
+    by_cls = _dd(list)
+    want = set(classes) if classes is not None else None
+    for r in honest_runs:
+        for h in r.get("history", [])[-tail:]:
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider"):
+                    continue
+                c = int(p["trigger_class"])
+                if want is None or c in want:
+                    by_cls[c].append(p["ber"])
+    return by_cls
+
 
 def timeline(a):
     # Load runs based on family, level, and optional seed.
@@ -846,27 +865,47 @@ def timeline(a):
     ax.text(lo - 0.4, ytop*0.97, " converged → calibrate η", color="#2C7A3F", fontsize=8.5, va="top")
     ax.text(W - 0.4, ytop*0.90, " free-riding starts", color=GREY, fontsize=8.5, va="top")
 
-    if E["eta_tight"]: ax.axhline(E["eta_tight"], color=BLACK, ls="--", lw=2,
-        label=f"fair η tight (round-mean) = {E['eta_tight']:.3f}")
-    if E["eta_loose"]: ax.axhline(E["eta_loose"], color=GREY, ls=":", lw=1.8,
-        label=f"loose η (per-client) = {E['eta_loose']:.3f}")
+    # ONLY the calibrated (frozen) eta the server ACTUALLY used for detection.
+    # Prefer the value the server logged each round (wm_eta_round == WM_ETA_FIXED,
+    # flat), then config.wm_eta_fixed, then the recomputed frozen eta. Do NOT use
+    # eta_defs()'s recomputation first: on an ATTACK run it recomputes mu+3s from
+    # the 8 honest clients (which include hard classes) and lands ~0.099, not the
+    # frozen 0.064 the detector applied.
+    live = [h.get("wm_eta_round") for h in hist if h.get("wm_eta_round") is not None]
+    cfg_fixed = (r_ref.get("config") or {}).get("wm_eta_fixed")
+    if live:
+        eta_cal = float(np.median(live))
+    elif cfg_fixed:
+        eta_cal = float(cfg_fixed)
+    else:
+        eta_cal = E.get("eta_fixed")
+    if eta_cal is not None:
+        ax.axhline(eta_cal, color=BLACK, ls="--", lw=2.2,
+                   label=f"calibrated η (detection threshold) = {eta_cal:.3f}")
 
-    live_eta = [h.get("wm_eta_round") for h in hist]
-    ax.plot(rounds, live_eta, color="#E69F00", linestyle="-.", lw=1.5, alpha=0.9, label="Server Live η (cumulative μ+3σ)")
-
-    # Calculate FR Estimated eta (uses first run's trace usually, but if aggregated, average them)
-    fr_est_vals = []
-    for r in runs:
-        pc = (r.get("compute", {}) or {}).get("per_client", {}) or {}
-        for c in pc.values():
-            if c.get("is_free_rider"):
-                est = [t["eta_frozen"] for t in c.get("trace", []) if t.get("action") == "calib" and t.get("eta_frozen") is not None]
-                fr_est_vals.extend(est)
-                break
-    if fr_est_vals:
-        fr_est_eta = np.mean(fr_est_vals)
-        ax.axhline(fr_est_eta, color="#CC79A7", linestyle="-", lw=1.8,
-                   label=f"FR Estimated η (self-calib) = {fr_est_eta:.3f}")
+    # --- OVERLAY: honest floor for the free-rider's OWN trigger classes ---------
+    # Read the FR line against an honest client at the SAME class, not the honest
+    # mixture (which is dragged up by hard classes like cls 6). Honest runs come
+    # from a separate directory via --honest_in.
+    fr_classes = sorted({int(p["trigger_class"])
+                         for r in runs for h in r.get("history", [])
+                         for p in (h.get("wm_per_client") or [])
+                         if p.get("is_free_rider")})
+    if getattr(a, "honest_in", None) and fr_classes:
+        href = [r for r in load(a.honest_in) if th.is_honest_run(r)
+                and (a.honest_family is None or fam(r) == a.honest_family)]
+        floor = honest_class_floor(href, classes=fr_classes)
+        per_cls_mean = {c: float(np.mean(v)) for c, v in floor.items() if v}
+        if per_cls_mean:
+            vals = list(per_cls_mean.values())
+            lo_f, hi_f, mid_f = min(vals), max(vals), float(np.mean(vals))
+            if len(per_cls_mean) <= 4:
+                cls_str = ", ".join(f"cls {c} {per_cls_mean[c]:.2f}" for c in sorted(per_cls_mean))
+            else:
+                cls_str = f"{len(per_cls_mean)} classes, floor {lo_f:.2f}-{hi_f:.2f}"
+            ax.axhspan(lo_f, hi_f, color=ps.C_HONEST, alpha=0.12, lw=0,
+                       label=f"honest floor @ FR classes ({cls_str})")
+            ax.axhline(mid_f, color=ps.C_HONEST, ls=(0, (2, 2)), lw=1.6, alpha=0.8)
 
     # Data usage label (calculate average over seeds)
     eff_ratios = []
@@ -888,9 +927,9 @@ def timeline(a):
     ax.set_title(a.title or f"BER vs round  ·  {fam(r_ref)}  ·  cpc={lvl(r_ref)}  ·  {agg_seed_str}")
     ax.legend(loc="upper right", fontsize=7.5, ncol=2)
 
-    note = ("η frozen on the calibration window (green, all clients honest):  tight = μ+3σ of the "
-            "per-round mean BER;  loose = μ+3σ of all per-client BERs.\n"
-            "FR Estimated η is the free-rider's own calculated μ+3σ from its observation during forced warmup.")
+    note = ("Dashed line = the calibrated detection threshold η (frozen constant the server used, "
+            "WM_ETA_FIXED).\nA free-rider whose BER stays below it is not flagged. "
+            "Warmup (yellow) = forced-honest; green = calibration window; grey dashed = free-riding starts.")
     ax.text(0.005, -0.18, note, transform=ax.transAxes, fontsize=8.5, color=GREY)
     ps.finish(fig, a.out + ".png")
     print(f"calib window [{lo},{hi}] | free-ride from {W} | n_taps={len(taps)} n_coasts={len(coasts)} | seeds={num_seeds}")
@@ -1426,6 +1465,9 @@ if __name__ == "__main__":
         s.add_argument("--seed", default=None)
         s.add_argument("--families", nargs="+", default=None)
         s.add_argument("--honest_family", default=None)
+        s.add_argument("--honest_in", nargs="+", default=None,
+                       help="glob(s) of honest result.json for the per-class floor overlay "
+                            "on the timeline (e.g. 'results/sub_16_3/*/result.json').")
         s.add_argument("--scope", default=None)
     a = ap.parse_args()
     if a.out is None:
