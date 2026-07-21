@@ -148,12 +148,24 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     if attack in (None, "none", ""):
         fr_idx = set()
 
+    # optional trigger-class overrides: "0:6,1:6" -> {0: 6, 1: 6} : FR and honest with same trigger class
+    tmap = {}
+    raw_map = (getattr(cfg, "trigger_class_map", "") or "").strip()
+    if raw_map:
+        for tok in raw_map.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            a, b = tok.split(":")
+            tmap[int(a)] = int(b) % num_classes
+
     clients, unembed = [], []
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
-        trigger_class = cid % num_classes # assign trigger class in round-robin fashion
-        # False: random keys. True: less unembeddable keys
-        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=True)  # random keys (former paper_faithful)  # TODO hardcoded seed offset 1000*cid+1
+        trigger_class = tmap.get(cid, cid % num_classes)  # round-robin, unless overridden
+        # key balance: balanced=True removes structurally-unembeddable same-sign rows 
+        bal = bool(getattr(cfg, "wm_balanced_keys", False))
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)  # TODO hardcoded seed offset 1000*cid+1
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
         reg_exclude = None                     # full softmax

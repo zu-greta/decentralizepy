@@ -28,11 +28,13 @@ PY_EXTRA=""
 [ -n "${MODEL:-}" ]            && PY_EXTRA="$PY_EXTRA --model ${MODEL}"
 [ -n "${DATASET:-}" ]          && PY_EXTRA="$PY_EXTRA --dataset ${DATASET}"
 [ -n "${ROUNDS:-}" ]          && PY_EXTRA="$PY_EXTRA --rounds ${ROUNDS}"
+[ -n "${NUM_CLIENTS:-}" ]     && PY_EXTRA="$PY_EXTRA --num_clients ${NUM_CLIENTS}"
 [ -n "${LOCAL_EPOCHS:-}" ]     && PY_EXTRA="$PY_EXTRA --local_epochs ${LOCAL_EPOCHS}"
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 [ -n "${LR:-}" ]              && PY_EXTRA="$PY_EXTRA --lr ${LR}"
 [ -n "${PARTITION:-}" ]        && PY_EXTRA="$PY_EXTRA --partition ${PARTITION}"
 [ -n "${DIRICHLET_ALPHA:-}" ]  && PY_EXTRA="$PY_EXTRA --dirichlet_alpha ${DIRICHLET_ALPHA}"
+[ -n "${TRIGGER_CLASS_MAP:-}" ] && PY_EXTRA="$PY_EXTRA --trigger_class_map ${TRIGGER_CLASS_MAP}"
 # free-rider selection
 [ -n "${ATTACK:-}" ]          && PY_EXTRA="$PY_EXTRA --attack ${ATTACK}"
 [ -n "${NUM_FREE_RIDERS:-}" ] && PY_EXTRA="$PY_EXTRA --num_free_riders ${NUM_FREE_RIDERS}"
@@ -63,6 +65,8 @@ PY_EXTRA=""
 # watermarking
 [ -n "${WATERMARK:-}" ]        && PY_EXTRA="$PY_EXTRA --watermark"
 [ -n "${WM_BITS:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_bits ${WM_BITS}"
+[ "${BALANCED:-}" = "1" ]      && PY_EXTRA="$PY_EXTRA --wm_balanced_keys"
+[ -n "${WM_F:-}" ]             && PY_EXTRA="$PY_EXTRA --wm_f ${WM_F}"
 [ -n "${WM_NUM_TRIGGERS:-}" ]  && PY_EXTRA="$PY_EXTRA --wm_num_triggers ${WM_NUM_TRIGGERS}"
 [ -n "${WM_LAMBDA:-}" ]        && PY_EXTRA="$PY_EXTRA --wm_lambda ${WM_LAMBDA}"
 [ -n "${WM_BETA:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_beta ${WM_BETA}"
@@ -76,9 +80,23 @@ PY_EXTRA=""
 [ -n "${SWEEP_LEVEL:-}" ] && PY_EXTRA="$PY_EXTRA --sweep_level ${SWEEP_LEVEL}"
 
 # Tag results/job uniquely
-FR_TAG=""; [ -n "${NUM_FREE_RIDERS:-}" ] && FR_TAG="-fr${NUM_FREE_RIDERS}"
-USER_TAG="${TAG:+-${TAG}}"
-RUN_TAG="cfg${CONFIG_IDX}_rep${REPEAT}${FR_TAG}${USER_TAG}_$(date +%Y%m%d_%H%M%S)"
+# RUN_TAG (output-dir name) 
+#   * via run_all.sh: FAMILY encodes dataset+bits+attack+partition+positions
+#     dir = "<FAMILY>_rep<seed>_<ts>" 
+#   * bare submit_experiment.sh (no FAMILY): assemble the tag from the knobs 
+USER_TAG="${TAG:+_${TAG}}"
+if [ -n "${FAMILY:-}" ]; then
+  RUN_TAG="${FAMILY}${USER_TAG}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
+else
+  CORE="cfg${CONFIG_IDX}"
+  BITS_TAG="";  [ -n "${WM_BITS:-}" ]           && BITS_TAG="_b${WM_BITS}"
+  POS_TAG="";   [ -n "${FREE_RIDER_IDS:-}" ]    && POS_TAG="_c${FREE_RIDER_IDS//,/}"
+  MAP_TAG="";   [ -n "${TRIGGER_CLASS_MAP:-}" ] && MAP_TAG="_map$(printf '%s' "${TRIGGER_CLASS_MAP}" | tr -d ':,' )"
+  ETA_TAG="";   [ -n "${WM_ETA_FIXED:-}" ]      && ETA_TAG="_eta$(printf '%s' "${WM_ETA_FIXED}" | tr -d '.')"
+  F_TAG="";     [ -n "${WM_F:-}" ]              && F_TAG="_${WM_F}"
+  FR_TAG="";    [ -n "${NUM_FREE_RIDERS:-}" ]   && FR_TAG="_fr${NUM_FREE_RIDERS}"
+  RUN_TAG="${CORE}${BITS_TAG}${POS_TAG}${MAP_TAG}${FR_TAG}${ETA_TAG}${F_TAG}${USER_TAG}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
+fi
 OUTPUT_DIR="${MOUNT}/home/zu/results/${RUN_TAG}"
 DATA_ROOT="${MOUNT}/home/zu/data"
 JOB_NAME="faremark-c${CONFIG_IDX}-r${REPEAT}${FR_TAG}${USER_TAG}-$(date +%H%M%S)"

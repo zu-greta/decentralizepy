@@ -41,6 +41,10 @@ def parse_args():
     p.add_argument("--num_workers", type=int, default=2)
     # ---- general overrides ----
     p.add_argument("--rounds", type=int, default=None)
+    p.add_argument("--num_clients", type=int, default=None,
+                   help="override client count. num_clients > num_classes forces "
+                        "clients to SHARE trigger classes (paper capacity/Table IX; "
+                        "makes same-class non-separability systemic).")
     p.add_argument("--model", type=str, default=None)
     p.add_argument("--dataset", type=str, default=None)
     p.add_argument("--local_epochs", type=int, default=None)
@@ -49,6 +53,9 @@ def parse_args():
     p.add_argument("--partition", type=str, default=None,
                    choices=["iid", "dirichlet", "noniid"])
     p.add_argument("--dirichlet_alpha", type=float, default=None)
+    p.add_argument("--trigger_class_map", type=str, default=None,
+                   help="pin trigger classes, e.g. '0:6' forces cid 0 onto class 6 "
+                        "(same-trigger-class control; overrides cid%%num_classes)")
     # ---- free-rider selection ----
     p.add_argument("--attack", type=str, default=None,
                    choices=["none", "previous_models", "gaussian", "submarine", "autopilot", "reduced", "tap_oracle"])
@@ -86,6 +93,13 @@ def parse_args():
     p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
     p.add_argument("--wm_bits", type=int, default=None)
+    p.add_argument("--wm_balanced_keys", dest="wm_balanced_keys",
+                   action="store_true", default=None,
+                   help="sign-balanced key rows (removes unembeddable-bit artifact, STATUS F6).")
+    p.add_argument("--no_wm_balanced_keys", dest="wm_balanced_keys", action="store_false")
+    p.add_argument("--wm_f", type=str, default=None, choices=["power", "sin"],
+                   help="smoothing f() in Eq.7-9: 'power' (p^alpha) or 'sin' (sin(alpha*p)). "
+                        "sin is the paper's alternative; sweep --wm_alpha with it.")
     p.add_argument("--wm_num_triggers", type=int, default=None)
     p.add_argument("--wm_lambda", type=float, default=None)
     p.add_argument("--wm_beta", type=float, default=None)
@@ -104,7 +118,8 @@ def parse_args():
 
 
 _OVERRIDABLE = [
-    "model", "dataset", "partition", "dirichlet_alpha", "rounds", "local_epochs",
+    "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map",
+    "num_clients", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",
     "autop_oracle_eta", "autop_warmup_mode", "autop_honest_min", "autop_warmup_cap",
@@ -114,7 +129,7 @@ _OVERRIDABLE = [
     "autop_margin0", "autop_safety", "autop_max_coast",
     "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
-    "watermark", "wm_bits", "wm_num_triggers", "wm_lambda", "wm_beta",
+    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_num_triggers", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
 ]
 

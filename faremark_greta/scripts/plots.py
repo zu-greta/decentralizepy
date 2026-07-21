@@ -68,6 +68,10 @@ except Exception:
                             stacked_panels=stacked_panels)
 
 import threshold as th
+try:
+    import separability as sep
+except Exception:
+    sep = None
 
 def lvl(r):
     m = r.get('manifest', {}) or {}
@@ -1434,8 +1438,224 @@ def eta_stability(a):
     print(f"  saved BER plot and eta spread plot to {a.out}")
 
 
+# ============================================================================
+# honest class lines nad class difficulty plotting
+# ============================================================================
+def _honest_runs(a):
+    return [r for r in load(a.inp) if th.is_honest_run(r)
+            and (a.family is None or fam(r) == a.family)]
+
+
+def honest_lines(a):
+    """Honest client BER over rounds, ONE line per trigger class (merged from
+    honest_class_lines.py). The right-hand end of each line == that class's
+    converged floor (the value the timeline/overlay collapses to)."""
+    tail = getattr(a, "tail", None) or TAIL
+    runs = _honest_runs(a)
+    if not runs:
+        print("no honest runs matched (check --in / --family)."); return
+    only = set(int(c) for c in a.classes.split(",")) if getattr(a, "classes", None) else None
+
+    by_cr = defaultdict(lambda: defaultdict(list))
+    per_seed = defaultdict(lambda: defaultdict(dict))
+    max_round = 0
+    for si, r in enumerate(runs):
+        for h in r.get("history", []):
+            rd = h.get("round")
+            if rd is None:
+                continue
+            max_round = max(max_round, rd)
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider"):
+                    continue
+                c = int(p["trigger_class"])
+                if only and c not in only:
+                    continue
+                by_cr[c][rd].append(p["ber"])
+                per_seed[c][si][rd] = p["ber"]
+    classes = sorted(by_cr)
+    if not classes:
+        print("no matching trigger classes."); return
+    rounds = list(range(1, max_round + 1))
+    cmap = plt.get_cmap("tab10" if len(classes) <= 10 else "tab20")
+
+    fig, ax = plt.subplots(figsize=(11, 6.2))
+    if tail and tail > 0 and max_round > tail:
+        ax.axvspan(max_round - tail + 0.5, max_round + 0.5, color="#DDDDDD",
+                   alpha=0.35, lw=0, label=f"converged tail (last {tail})")
+    floors = {}
+    for i, c in enumerate(classes):
+        col = cmap(i % cmap.N)
+        mean = np.array([np.mean(by_cr[c][rd]) if by_cr[c].get(rd) else np.nan for rd in rounds])
+        std = np.array([np.std(by_cr[c][rd]) if by_cr[c].get(rd) else np.nan for rd in rounds])
+        if getattr(a, "per_seed", False):
+            for si in per_seed[c]:
+                ys = [per_seed[c][si].get(rd, np.nan) for rd in rounds]
+                ax.plot(rounds, ys, color=col, lw=0.6, alpha=0.20)
+        else:
+            ax.fill_between(rounds, mean - std, mean + std, color=col, alpha=0.12, lw=0)
+        tailvals = [np.mean(by_cr[c][rd]) for rd in rounds[-tail:] if by_cr[c].get(rd)]
+        floor = float(np.mean(tailvals)) if tailvals else float("nan")
+        floors[c] = floor
+        ax.plot(rounds, mean, color=col, lw=2.2, label=f"cls {c}  (floor {floor:.3f})")
+        if floor == floor:
+            ax.annotate(f"{floor:.2f}", xy=(rounds[-1], mean[-1]), xytext=(4, 0),
+                        textcoords="offset points", va="center", fontsize=8, color=col)
+    eta = getattr(a, "eta", None)
+    if eta is not None:
+        ax.axhline(eta, color="black", ls="--", lw=2, label=f"calibrated η = {eta:.3f}")
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("honest bit-error-rate (lower = mark embeds)")
+    ttl = f"Honest BER per trigger class  ·  {a.family or 'honest'}  ·  {len(runs)} seeds"
+    if only:
+        ttl += f"  ·  classes {sorted(only)}"
+    ax.set_title(ttl)
+    ax.set_ylim(bottom=min(0, ax.get_ylim()[0]))
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    ax.grid(alpha=0.25)
+    out = a.out if str(a.out).endswith(".png") else a.out + ".png"
+    finish(fig, out)
+    print("converged floors:", {c: round(floors[c], 4) for c in classes})
+
+
+def class_probe(a):
+    """TEXT: per-trigger-class BER vs candidate predictors + correlations (merged
+    from class_difficulty_probe.py). Confirms difficulty is a softmax-SHAPE effect
+    (entropy/dominance/pmax), not a class-accuracy effect."""
+    tail = getattr(a, "tail", None) or TAIL
+    runs = _honest_runs(a)
+    if not runs:
+        print("no honest runs matched (check --in / --family)."); return
+    print(f"class_probe: {len(runs)} honest run(s)"
+          + (f" [{a.family}]" if a.family else "") + f"; tail={tail}")
+
+    ber = defaultdict(list); pmax = defaultdict(list); ent = defaultdict(list)
+    dom = defaultdict(list); tacc = defaultdict(list)
+    test_acc = defaultdict(list); test_loss = defaultdict(list)
+    for r in runs:
+        for h in r.get("history", [])[-tail:]:
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider"):
+                    continue
+                c = int(p["trigger_class"]); ber[c].append(p["ber"])
+                for src, key in ((pmax, "pmax"), (ent, "entropy"),
+                                 (dom, "dominance"), (tacc, "trig_acc")):
+                    v = p.get(key)
+                    if v is not None:
+                        src[c].append(v)
+        pc = (r.get("per_class") or {}).get("by_class") or {}
+        for c, d in pc.items():
+            c = int(c)
+            if d.get("acc") is not None:
+                test_acc[c].append(d["acc"])
+            if d.get("loss") is not None:
+                test_loss[c].append(d["loss"])
+
+    def m(dct, c):
+        return float(np.mean(dct[c])) if dct.get(c) else float("nan")
+
+    classes = sorted(ber)
+    rows = []
+    for c in classes:
+        acc = m(test_acc, c)
+        rows.append(dict(cls=c, n=len(ber[c]), ber=m(ber, c), test_acc=acc,
+                         test_error=(100 - acc if acc == acc else float("nan")),
+                         test_loss=m(test_loss, c), trig_acc=m(tacc, c),
+                         pmax=m(pmax, c), entropy=m(ent, c), dominance=m(dom, c)))
+    rows.sort(key=lambda d: (float("inf") if d["ber"] != d["ber"] else d["ber"]))
+    cols = ["cls", "n", "ber", "test_acc", "test_error", "test_loss",
+            "trig_acc", "pmax", "entropy", "dominance"]
+    w = {c: max(len(c), 8) for c in cols}
+    print("PER-CLASS (easy -> hard by BER):")
+    print("  " + "  ".join(f"{c:>{w[c]}}" for c in cols))
+    for d in rows:
+        cells = []
+        for c in cols:
+            v = d[c]
+            cells.append(f"{v:>{w[c]}d}" if isinstance(v, int)
+                         else (f"{'--':>{w[c]}}" if v != v else f"{v:>{w[c]}.4f}"))
+        print("  " + "  ".join(cells))
+
+    def pearson(x, y):
+        x, y = np.asarray(x, float), np.asarray(y, float)
+        if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
+            return float("nan")
+        return float(np.corrcoef(x, y)[0, 1])
+    y = [d["ber"] for d in rows]
+    print(f"\nCORRELATION of per-class BER vs predictor (over {len(classes)} classes):")
+    for p in ["test_acc", "test_error", "test_loss", "trig_acc", "pmax", "entropy", "dominance"]:
+        x = [d[p] for d in rows]
+        mask = [xi == xi and yi == yi for xi, yi in zip(x, y)]
+        xs = [xi for xi, ok in zip(x, mask) if ok]
+        ys = [yi for yi, ok in zip(y, mask) if ok]
+        r = pearson(xs, ys)
+        print(f"  {p:>10}  pearson_r={'  --  ' if r != r else f'{r:+.3f}'}  (n={len(xs)})")
+
+    if getattr(a, "csv", None):
+        os.makedirs(os.path.dirname(a.csv) or ".", exist_ok=True)
+        with open(a.csv, "w") as fh:
+            fh.write(",".join(cols) + "\n")
+            for d in rows:
+                fh.write(",".join(("" if d[c] != d[c] else str(d[c])) for c in cols) + "\n")
+        print(f"wrote {a.csv}")
+
+
+def separability_plot(a):
+    """Non-separability figure: honest vs free-rider converged-BER histograms with
+    the coded and best-possible (Youden) η lines, plus the FPR/recall of the whole
+    threshold regime. Reads honest from --family, free-riders from --attack_family.
+    Uses separability.py for the numbers (single source of truth)."""
+    if sep is None:
+        print("separability module unavailable"); return
+    tail = getattr(a, "tail", None) or TAIL
+    honest_runs = sep.select(load(a.inp), a.family, honest=True)
+    attack_runs = sep.select(load(a.inp), a.attack_family, honest=False)
+    if not honest_runs or not attack_runs:
+        print(f"need both honest [{a.family}] and attack [{a.attack_family}] runs "
+              f"(got {len(honest_runs)}/{len(attack_runs)})"); return
+    H = [b for _c, b in sep.per_client_bers(honest_runs, tail, free_rider=False)]
+    F = [b for _c, b in sep.per_client_bers(attack_runs, tail, free_rider=True)]
+    res = sep.summarise(H, F, honest_runs, tail, label=a.attack_family or "attack")
+
+    fig, (axh, axb) = stacked_panels(2, figsize=(11, 8), height_ratios=[1.1, 1])
+    lo, hi = 0.0, max(max(H, default=0.5), max(F, default=0.5), 0.5)
+    bins = np.linspace(lo, hi, 30)
+    axh.hist(H, bins=bins, color=C_HONEST, alpha=0.55, label=f"honest (n={len(H)})", density=True)
+    axh.hist(F, bins=bins, color=C_FR, alpha=0.55, label=f"free-rider (n={len(F)})", density=True)
+    coded = res["rules"].get("coded (mu+3s round-mean)")
+    best = res["rules"].get("Youden-optimal (best)")
+    if coded:
+        axh.axvline(coded["eta"], color=C_BAD, ls="--", lw=2,
+                    label=f"coded η={coded['eta']:.3f} (FPR {coded['fpr']}, recall {coded['recall']})")
+    if best:
+        axh.axvline(best["eta"], color=OK["black"], ls=":", lw=2,
+                    label=f"best η={best['eta']:.3f} (bal_acc {best['bal_acc']})")
+    axh.set_xlabel("converged bit-error-rate")
+    axh.set_ylabel("density")
+    axh.set_title(f"Non-separability — honest vs free-rider BER  ·  {a.attack_family}\n"
+                  f"overlap OVL={res['overlap_coefficient']}   "
+                  f"best-possible balanced error={res['best_threshold_balanced_error']} "
+                  f"(0.5 = no η helps)")
+    axh.legend(fontsize=8, loc="upper right")
+
+    names, fprs, recs = [], [], []
+    for name, d in res["rules"].items():
+        if d is None:
+            continue
+        names.append(name.replace(" (", "\n(")); fprs.append(d["fpr"] or 0); recs.append(d["recall"] or 0)
+    x = np.arange(len(names)); ww = 0.4
+    axb.bar(x - ww / 2, fprs, ww, color=C_BAD, label="honest FPR (lower=better)")
+    axb.bar(x + ww / 2, recs, ww, color=C_GOOD, label="free-rider recall (higher=better)")
+    axb.set_xticks(x); axb.set_xticklabels(names, fontsize=7, rotation=0)
+    axb.set_ylabel("rate"); axb.set_ylim(0, 1.0)
+    axb.set_title("Threshold regime — every rule trades FPR against recall")
+    axb.legend(fontsize=8, loc="upper right")
+    out = a.out if str(a.out).endswith(".png") else a.out + ".png"
+    finish(fig, out)
+    print(f"OVL={res['overlap_coefficient']}  best_bal_err={res['best_threshold_balanced_error']}")
+
+
 CMDS = {
-    # canonical / current
     "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
     "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)
@@ -1445,6 +1665,9 @@ CMDS = {
     "fidelity": fidelity,              # accuracy + per-client BER + effort
     "timeline": timeline,              # BER over rounds, taps/coasts, eta lines
     "honest_fpr": honest_fpr,          # honest false-positive rate vs eta
+    "honest_lines": honest_lines,      # MERGED: honest BER per class over rounds (was honest_class_lines.py)
+    "class_probe": class_probe,        # MERGED: per-class BER vs predictors + correlations (was class_difficulty_probe.py)
+    "separability": separability_plot, # NEW: honest vs FR BER overlap + threshold-regime FPR/recall
     "threshold": threshold,            # (legacy) two-distribution soundness view
     # legacy sweep plots (kept for reuse)
     "frontier": frontier,
@@ -1469,6 +1692,15 @@ if __name__ == "__main__":
                        help="glob(s) of honest result.json for the per-class floor overlay "
                             "on the timeline (e.g. 'results/sub_16_3/*/result.json').")
         s.add_argument("--scope", default=None)
+        s.add_argument("--tail", type=int, default=TAIL)
+        s.add_argument("--eta", type=float, default=None)
+        s.add_argument("--classes", default=None,
+                       help="comma list to restrict trigger classes (honest_lines).")
+        s.add_argument("--per-seed", dest="per_seed", action="store_true",
+                       help="faint per-seed lines in honest_lines.")
+        s.add_argument("--attack_family", default=None,
+                       help="free-rider family for the separability plot.")
+        s.add_argument("--csv", default=None, help="optional CSV out (class_probe).")
     a = ap.parse_args()
     if a.out is None:
         a.out = default_out(a.inp)

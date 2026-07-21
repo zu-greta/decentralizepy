@@ -35,7 +35,8 @@ To contribute effectively to this project, we highly value:
 | July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples |
 | July 7 | [1] no working results yet - needs more tuning for the new attacks | [1] testing how much training is needed to start with (cannot just do trigger samples, need a full shard to warm up) <br> testing some autopilot dynamic way |
 | July 16 | [x] threshold and different knobs experiments for submarine attack to be refined | - |
-| July 21 | [] threshold fixed <br> [] baseline submarine attack results for iid, full scope, tap/coast, and +5/common <br> [] have basic plots for results - just prove that on iid, with the harsh threshold, free-riding is possible with either tap/coast or +5/common | - |
+| July 21 | [x] threshold fixed <br> [x] baseline submarine attack results for iid, full scope, tap/coast, and +5/common <br> [x] have basic plots for results - just prove that on iid, with the harsh threshold, free-riding is possible with either tap/coast or +5/common | - |
+| July 28 | - | - |
 
 ---
 
@@ -50,7 +51,7 @@ To contribute effectively to this project, we highly value:
 | July 7 | [x] send a follow up email to authors <br> [x] cleanup codebase (including documentations) and results - get clean results and only keep necessary ones in a summary <br> [] explore better attacks <br> [] explore theoretical approach |
 | July 14 | [] broad submarine attacks |
 | July 21 | [x] fix all the code issues <br> [x] review all code and be up to date <br> [x] run baseline attack experiments <br> [] analyse results and figure out next steps and feasibility of project |
-| July 28 | [] |
+| July 28 | [] stress testing <br> [] storyline tests to prove current hypothesis |
 | August 4 | [] start writing report ? |
 | August 11 | [] |
 | August 18 | [] |
@@ -214,7 +215,7 @@ July21
     | pmax      | +0.54  | more confident → higher BER |
     | test_loss | +0.08  | ~none |
     | test_acc  | −0.05  | ~none |
-    
+
     - entropy: high entropy means spread out. more shape and low BER. low entropy means one class dominates and less shape and high BER (nothing to shape so bits decided by noise). e^(entropy) = effective number of classes. more effective classes means more shape and lower BER. less effective classes means less shape and higher BER. eg. cls 6 has entropy 2.84 and e^(2.84) = 17.2 effective classes sharing the probability, cls 8 has entropy 3.12 and e^(3.12) = 22.7 effective classes. cls 6 has higher BER than cls 8 because it has less shape to embed the watermark in.
     - pmax: height of the peak, higher pmax means peakier and less shape and higher BER. lower pmax means more shape and lower BER
 - better watermark embedding with less data ?
@@ -225,6 +226,41 @@ July21
     - more free-riders falls under threshold with less good global accuracy 
         - 9 free riders, 1 honest client: global accuracy drops (58% compared to ~72%) but BER all pass under the threshold. the per client accuracy is the trigger accuracy (not test accuracy here) and that is better when less data is used (less data is better for watermarking, not global accuracy) -> ![CIFAR100-10clients-3seeds-9freeriders-1honest](results/sub_17/figs/timeline_reduced_iid_majority.png)
 - TODO: run tests with tapping and oracle only to see if possible to free ride by tapping and coasting - first while knowing the threshold then try ot figure out how to predict the threshold
+
+- Notes:
+    - TODO: 
+        - check what the seeds are varying over. what is the source of randomness, why is the variance so high?
+        - fix the tagging and naming of experiments for easier tracking
+        - cleanup the logging in the code and result.json
+        - merge files that dont need to be seperated, same modules should be in a same file (eg. all plotting should be together)
+    - THRESHOLD: stress test different threshold calculations (and then prove that it is not possible for seperability)
+        - adaptive clipping in warmup rounds (each round clip and adapt - until get to keep the right amount of clients in the pool)
+        - median
+        - trimmed mean
+        -> regime of thresholds basically
+    - DIFFICULTY:
+        - try better smoothing function - sin from paper ?
+    - DETECTION: 
+        - define what consequence of crossing threshold would be
+        - how many warnings before flagging
+        - window of detection instead ?
+    - EXPERIMENTS: stress testing to prove our theory. come up with a meaningful set of experiments to prove/disprove that FR with threshold and output layer watermarking is possible no matter what setting (iid/non-iid, more clients, threshold...)
+        - show that no matter what the threshold is it won't work (not seperable)
+        - assigning different trigger classes for each round (round robbin) and averaging on that ? but also overlap probably
+        - test with more clients than classes - figure out how paper does it and try it
+        - show that different trigger classes have different BERs and variance is high
+        - test all thresholds and show that everything fails
+        - show that for the same trigger class, in the same training, the BER is the same for a FR and honest client - assign the same trigger class to see
+        - FR spectrum: show different +#/common, varying what classes to take from, find the free-riding limits
+        - non-iid
+    - THEORETICAL:
+        - no threshold can work: there is too much noise and variance and the FR and honest overlap always somewhere
+        - not enough freedom in the output logits - cannot prove honest clients without enough prior knowledge of the honest clients
+        - class difficulty will always sacrifice honest for FR - randomly assigned trigger classes
+        - watermarking on output layer is impossible
+    - NEXT:
+        - hint of solution?
+        - show impossible?
 
 ---
 ---

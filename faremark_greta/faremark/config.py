@@ -31,6 +31,9 @@ class ExpConfig:
     noise_decay: float = 0.0                # >0 -> sigma_t = sigma0 * t^(-decay)
     partition: str = "iid"                  # 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
+    trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default
+                                            # trigger_class = cid % num_classes for those cids.
+                                            # Enables pin same trigger class to FR and honest
 
     # ---- submarine adaptive free-rider ----
     # Acts exactly like an honest client, except: 
@@ -77,6 +80,10 @@ class ExpConfig:
     # ---- watermarking ----
     watermark: bool = False
     wm_bits: int = 0                        # m; 0 -> auto
+    wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys (some rows
+                                            # come out all-same-sign -> structurally unembeddable
+                                            # bits, BER floor ~0.5*unembeddable_frac
+                                            # True = sign-balanced rows (still pseudo-random)
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
