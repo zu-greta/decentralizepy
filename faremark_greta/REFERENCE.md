@@ -76,22 +76,34 @@ for any η, since BER is stored.
 ## 2. Experiment matrix
 
 `H` = honest seeds (default 6: `0 1 2 3 4 5`); `A` = attack seeds (default 3: `0 1 2`).
-Unbalanced keys everywhere except the `balanced` leg. Run all with `./run_everything.sh`; run
-one leg with `LEGS=<name> ./run_everything.sh`.
+Unbalanced keys everywhere except the `balanced` leg. All runs land in run_all's flat
+results dir, distinguished by a **unique family** per leg (submit writes to
+`$MOUNT/home/zu/results/<RUN_TAG>`; nothing is mixed because each leg has its own family
+and its own `eta_*.json`). Run it **staged**, fire-and-forget (nothing waits on the cluster):
 
-| leg → folder | dataset / partition / keys / bits / clients / smoothing | runs (family) | tests | look for |
+```
+./run_everything.sh honest     # submit every leg's honest jobs, return
+# wait for the cluster (runai/kubectl), then:
+./run_everything.sh attacks    # calibrate each leg's eta + submit its attacks, return
+# wait, scp results to local, then:
+RES=~/local/results ./run_everything.sh plot     # separability tables + figures
+```
+
+Run one leg with `LEGS=<name> ./run_everything.sh <phase>`.
+
+| leg (eta file) | dataset / partition / keys / bits / clients / smoothing | families | tests | look for |
 |---|---|---|---|---|
-| **iid** → `c100_iid` | CIFAR-100 / IID / unbal / m=10 / 10 / power | honest×H `honest_c100_bdef_iid`; reduced 1,7×A `…_c17`; reduced 3,6×A `…_c36`; sameclass 0→6×A `sameclass_…_c6` | easy-pos hides, hard-pos = floor, same-class inseparable | reduced 1,7: FR BER≈0 **below η**, ~30% effort. reduced 3,6: FR≈floor. sameclass: **OVL→1, best-err→~0.5** |
-| **balanced** → `c100_iid_bal` | …/ **balanced** keys /… | honest×H; reduced 3,6×A; sameclass 0→6×A | does overlap survive removing the stuck-bit artifact (F6)? | compare honest spread & sameclass OVL vs `c100_iid` |
-| **noniid** → `c100_niid` | CIFAR-100 / **Dirichlet(0.5)** /… | honest×H `…_niid`; reduced 3,6×A; sameclass×A | does label skew widen honest & worsen separability? | wider floor, larger η seed-std, OVL ≥ IID |
-| **sin** → `c100_sin` | …/ **sin** smoothing (Eq.9) | honest×H `…_sin_iid`; reduced 3,6×A | does a different f() remove per-class floors? | floors shift, don't vanish |
-| **bits20** → `c100_b20` | …/ **m=20** bits | honest×H `honest_c100_b20_iid`; reduced 1,7×A; reduced 3,6×A | does more capacity make BER separable? | finer BER, floor/overlap persists |
-| **classes** → `c100_classes` | …/ trigger classes **9,19,…,99** (not 0–9) | honest×H (classes 9..99); reduced 3,6→classes 39,69×A | is class difficulty general, not specific to 0–9? | `class_probe`/`honest_lines`: spread of floors on new classes; per-class OVL on 39/69 |
-| **capacity** → `c100_cap` | CIFAR-100 / **200 clients** | honest×H; reduced 106,107×A `…_c106107` | when clients MUST share classes, is same-class overlap systemic? | per-class OVL on 6,7 (honest 6/7 vs FR 106/107). watch data starvation |
-| **capacity10** → `c10_cap` | **CIFAR-10 / 50 clients** | honest×H `honest_c10_bdef_iid`; reduced 16,17×A `…_c1617` | capacity without the thin-data confound | clean same-class overlap (5 clients/class, ~100 trigger imgs each) |
+| **iid** `eta_c100_bdef` | CIFAR-100 / IID / unbal / m=10 / 10 / power | honest×H `honest_c100_bdef_iid`; reduced 1,7×A `reduced_c100_bdef_iid_c17`; reduced 3,6×A `…_c36`; sameclass 0→6×A `sameclass_c100_bdef_iid_c6` | easy hides, hard = floor, same-class inseparable | reduced 1,7: FR BER≈0 **below η**, ~30% effort. reduced 3,6: FR≈floor. sameclass: **OVL→1, best-err→~0.5** |
+| **balanced** `eta_c100_bdef_bal` | …/ **balanced** keys (VTAG=bal) | honest×H `honest_c100_bdef_bal_iid`; reduced 3,6×A; sameclass 0→6×A | overlap survive removing stuck-bit artifact (F6)? | compare honest spread & sameclass OVL vs `iid` |
+| **noniid** `eta_c100_bdef_niid` | CIFAR-100 / **Dirichlet(0.5)** | honest×H `honest_c100_bdef_niid`; reduced 3,6×A; sameclass×A | does skew widen honest & worsen separability? | wider floor, larger η seed-std, OVL ≥ IID |
+| **sin** `eta_c100_bdef_sin` | …/ **sin** smoothing (Eq.9) | honest×H `honest_c100_bdef_sin_iid`; reduced 3,6×A | does a different f() remove floors? | floors shift, don't vanish |
+| **bits20** `eta_c100_b20` | …/ **m=20** bits | honest×H `honest_c100_b20_iid`; reduced 1,7×A; reduced 3,6×A | more capacity → separable? | finer BER, floor/overlap persists |
+| **classes** `eta_c100_bdef_spread` | …/ trigger classes **9,19,…,99** (VTAG=spread) | honest×H (classes 9..99); reduced→classes 39,69×A | class difficulty general, not just 0–9? | `class_probe`/`honest_lines` spread of floors; per-class OVL on 39/69 |
+| **capacity** `eta_c100_bdef_nc200` | CIFAR-100 / **200 clients** (VTAG=nc200) | honest×H `honest_c100_bdef_nc200_iid`; reduced 106,107×A | clients MUST share classes → systemic overlap? | per-class OVL on 6,7 (honest 6/7 vs FR 106/107). watch data starvation |
+| **capacity10** `eta_c10_bdef` | **CIFAR-10 / 50 clients** | honest×H `honest_c10_bdef_iid`; reduced 16,17×A | capacity without thin-data confound | clean same-class overlap (5 clients/class, ~100 trigger imgs) |
 
-Each folder gets its own `eta_*.json` and `figs/<tag>/` (`honest_lines`, `timeline_*`,
-`separability_*`, `class_difficulty`, `thresholds`, `fidelity`).
+Plot with `RES=<results> ./run_everything.sh plot` (per-family `figs/`: `honest_lines`,
+`timeline_*`, `separability_*`, `class_difficulty`, `thresholds`, `fidelity`).
 
 ---
 

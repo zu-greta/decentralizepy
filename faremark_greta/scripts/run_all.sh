@@ -27,6 +27,8 @@ export BALANCED="${BALANCED:-0}"                   # 0 = paper-faithful UNBALANC
 FTAG=""; [ -n "$WMF" ] && FTAG="_${WMF}"           # tag so sin never mixes with power at calibration
 FENV=""; [ -n "$WMF" ] && FENV="WM_F=$WMF"
 TAG="${DS}_${BT}${FTAG}"                           # c100_bdef | c100_b20 | c100_bdef_sin
+VTAG="${VTAG:-}"                                    # optional variant marker (bal|nc200|spread...)
+[ -n "$VTAG" ] && TAG="${TAG}_${VTAG}"             # -> unique family+eta when DS/BITS/PART/WMF don't differ
 PART="${PART:-iid}"                                # iid | niid  (data partition)
 PARTENV=""; [ "$PART" = "niid" ] && PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${DIRICHLET_ALPHA:-0.5}"
 TCMAP="${TCMAP:-}"                                 # optional "cid:class,..." trigger-class override

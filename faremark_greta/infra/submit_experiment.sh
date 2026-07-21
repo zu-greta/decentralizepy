@@ -79,12 +79,14 @@ PY_EXTRA=""
 [ -n "${SWEEP_VAR:-}" ]   && PY_EXTRA="$PY_EXTRA --sweep_var ${SWEEP_VAR}"
 [ -n "${SWEEP_LEVEL:-}" ] && PY_EXTRA="$PY_EXTRA --sweep_level ${SWEEP_LEVEL}"
 
-# Tag results/job uniquely
-# RUN_TAG (output-dir name) 
-#   * via run_all.sh: FAMILY encodes dataset+bits+attack+partition+positions
-#     dir = "<FAMILY>_rep<seed>_<ts>" 
-#   * bare submit_experiment.sh (no FAMILY): assemble the tag from the knobs 
+# Tag results/job uniquely.
+# RUN_TAG (the output-dir name) is now self-identifying (STATUS "KNOWN ISSUES").
+#   * via run_all.sh: FAMILY already encodes dataset+bits+attack+partition+positions,
+#     so the dir is exactly "<FAMILY>_rep<seed>_<ts>" -- predictable and collision-free.
+#   * bare submit_experiment.sh (no FAMILY): assemble the tag from the knobs so two
+#     different experiments never look identical except for a timestamp.
 USER_TAG="${TAG:+_${TAG}}"
+FR_TAG=""                                 # always defined (JOB_NAME uses it under set -u)
 if [ -n "${FAMILY:-}" ]; then
   RUN_TAG="${FAMILY}${USER_TAG}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
 else
