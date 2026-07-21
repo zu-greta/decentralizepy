@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_all.sh CIFAR-100 (default) or CIFAR-10.
+# run_all.sh -- CIFAR-100 (default) or CIFAR-10.
 #
 # Everything is TAGGED by dataset + bit count so runs never collide:
 #   honest  family = honest_<DS>_b<BITS>_iid      (BITS omitted -> "bdef" = code default m)
@@ -29,6 +29,8 @@ FENV=""; [ -n "$WMF" ] && FENV="WM_F=$WMF"
 TAG="${DS}_${BT}${FTAG}"                           # c100_bdef | c100_b20 | c100_bdef_sin
 PART="${PART:-iid}"                                # iid | niid  (data partition)
 PARTENV=""; [ "$PART" = "niid" ] && PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${DIRICHLET_ALPHA:-0.5}"
+TCMAP="${TCMAP:-}"                                 # optional "cid:class,..." trigger-class override
+TCENV=""; [ -n "$TCMAP" ] && TCENV="TRIGGER_CLASS_MAP=$TCMAP"  # for honest/reduced (NOT sameclass)
 ETA_SUFFIX=""; [ "$PART" = "niid" ] && ETA_SUFFIX="_niid"
 ETA_FILE="${ETA_FILE:-$RES/eta_${TAG}${ETA_SUFFIX}.json}"
 PL="python scripts/plots.py"; TH="python threshold.py"
@@ -52,7 +54,7 @@ get_eta(){ if [ -n "$USE_FIXED_ETA" ]; then [ -z "$FIXED_ETA" ] && { echo ""; re
 honest(){
   echo "== HONEST $TAG/$PART (all-honest, balanced keys, seeds: $SEEDS)"
   for s in $SEEDS; do
-    env ROUNDS=50 ATTACK=none $BITSENV $PARTENV $FENV FAMILY="$HFAM" \
+    env ROUNDS=50 ATTACK=none $BITSENV $PARTENV $FENV $TCENV FAMILY="$HFAM" \
         NOTE="$DS $PART balanced-keys all honest bits=${BITS:-default}" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
   done
@@ -71,7 +73,7 @@ reduced(){
   local FAM="reduced_${TAG}_${PART}_c${POS//,/}"
   echo "== REDUCED $TAG/$PART (+5/common), pos=$POS -> $FAM, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
-    env $COMMON_E $BITSENV $PARTENV $FENV ATTACK=reduced FREE_RIDER_IDS=$POS \
+    env $COMMON_E $BITSENV $PARTENV $FENV $TCENV ATTACK=reduced FREE_RIDER_IDS=$POS \
         AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
         FAMILY="$FAM" SWEEP_LEVEL=5 NOTE="$DS $PART +5/cls pos=$POS bits=${BITS:-default}" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"

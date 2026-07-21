@@ -132,6 +132,42 @@ def frozen_eta(runs, tail=20):
     return float(np.mean(etas)) if etas else None
 
 
+def adaptive_clip_eta(bers, k=3.0, max_iter=10):
+    """Iterative sigma-clip (astronomy-style) robust threshold on honest BER.
+
+    This is the "clip-and-adapt during the calibration rounds" idea: start from the
+    full honest BER set, drop every point above mu+k*sigma, recompute mu/sigma on the
+    survivors, and repeat until the surviving set stops changing. Each pass discards
+    the heavy UPPER tail (the hard-class honest outliers) and re-estimates, so eta
+    converges onto the BULK of honest clients instead of being dragged up by a few
+    hard classes.
+
+    Returns (eta, kept_fraction). IMPORTANT: the honest clients that get clipped out
+    then sit ABOVE this eta -> they are exactly the ones the deployed detector would
+    false-positive on. So a tighter, "better-behaved" eta on the bulk buys itself a
+    guaranteed set of honest false positives -- which is the separability point, not a
+    bug. Pass per-client BER (full variance) or round-means, as you like.
+    """
+    x = np.asarray([b for b in bers if b is not None], float)
+    if x.size == 0:
+        return None, 0.0
+    keep = np.ones(x.size, dtype=bool)
+    for _ in range(max_iter):
+        cur = x[keep]
+        if cur.size < 2:
+            break
+        mu = float(cur.mean()); sd = float(cur.std())
+        eta = mu + k * sd
+        new_keep = x <= eta
+        if int(new_keep.sum()) == int(keep.sum()):   # inlier set stable -> converged
+            keep = new_keep
+            break
+        keep = new_keep
+    cur = x[keep] if keep.any() else x
+    eta = float(cur.mean() + k * (cur.std() if cur.size > 1 else 0.0))
+    return eta, float(keep.mean())
+
+
 def all_thresholds(runs, tail=20):
     # return a dict of all thresholds (for plotting)
     return {"eta = mean-over-clients,\nthen mu+3sigma over rounds": frozen_eta(runs, tail)}

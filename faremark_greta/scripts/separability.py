@@ -273,6 +273,10 @@ def summarise(H, F, honest_runs, tail, label=""):
     add("loose (mu+3s per-client)", _mu_k_sigma(H, 3.0))
     add("median+3*MAD", _median_k_mad(H, 3.0))
     add("trimmed10 mu+3s", _trimmed_mu_sigma(H, 0.10, 3.0))
+    # adaptive clipping: iterative sigma-clip on honest BER 
+    if _HAVE_TH:
+        _ace, _kept = _th.adaptive_clip_eta(list(H), k=3.0)
+        add(f"adaptive-clip (kept {round(_kept,2)})", _ace)
     add("honest p95", _percentile(H, 95))
     add("honest p99", _percentile(H, 99))
     add("equal-error-rate", eer_threshold(H, F))

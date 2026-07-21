@@ -262,6 +262,13 @@ July21
         - hint of solution?
         - show impossible?
 
+    - TODO
+        - check all thresholds - figure out details
+        - double check the experiments they were calculated on
+        - run with non-iid and other settings too? all honest as always
+        - READ reference.md -> understand all the new changes and experiments -> check if anything is missing from my list of things to add and run
+        - check and analyse the results
+
 ---
 ---
 ## resources

@@ -18,6 +18,7 @@
 #   noniid     CIFAR-100 Dirichlet(0.5), reduced hard(3,6) + sameclass(0->6)
 #   sin        CIFAR-100 IID, sin() smoothing (paper Eq.9), reduced hard(3,6)
 #   bits20     CIFAR-100 IID, m=20 bits, reduced easy(1,7) + hard(3,6)
+#   classes    CIFAR-100 IID, trigger classes SPREAD across 9,19,..,99 (not 0-9); reduced 39,69
 #   capacity   CIFAR-100 IID, CAP_NC clients (>100 -> classes SHARED); FR on classes 6,7 (nat. overlap)
 #   capacity10 CIFAR-10 IID, CAP10_NC clients (>10 -> classes shared); FR on classes 6,7 (comparison)
 #
@@ -40,7 +41,7 @@ export BALANCED="${BALANCED:-0}"
 CAP_NC="${CAP_NC:-200}"
 CAP10_NC="${CAP10_NC:-50}"
 DO_PLOTS="${DO_PLOTS:-1}"
-LEGS="${LEGS:-iid balanced noniid sin bits20 capacity capacity10}"
+LEGS="${LEGS:-iid balanced noniid sin bits20 classes capacity capacity10}"
 POLL_TIMEOUT="${POLL_TIMEOUT:-10800}"
 
 nH=$(echo $HONEST_SEEDS | wc -w)
@@ -154,6 +155,22 @@ leg_capacity(){
   unset NUM_CLIENTS
 }
 
+leg_classes(){
+  local RES="$BASE/c100_classes"; mkdir -p "$RES"
+  echo "########## LEG classes (trigger classes 9,19,..,99 not 0-9) -> $RES ##########"
+  # Put the 10 clients on a SPREAD of trigger classes across the whole 0-99 range instead
+  # of the first ten, to show the per-class BER floors / non-separability are a property of
+  # class difficulty generally, not an artifact of classes 0-9. reduced hits cids 3,6 ->
+  # classes 39,69; separability --per-class then compares honest-vs-FR on those.
+  local MAP="0:9,1:19,2:29,3:39,4:49,5:59,6:69,7:79,8:89,9:99"
+  env RES="$RES" TCMAP="$MAP" SEEDS="$HONEST_SEEDS" DS=c100 ./run_all.sh honest
+  wait_for "$RES" "$nH"
+  env RES="$RES" DS=c100 ./run_all.sh calibrate
+  env RES="$RES" TCMAP="$MAP" SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./run_all.sh reduced
+  wait_for "$RES" $((nH + nA))
+  analyze "$RES" DS=c100
+}
+
 leg_capacity10(){
   local RES="$BASE/c10_cap"; mkdir -p "$RES"
   echo "########## LEG capacity10 (CIFAR-10, $CAP10_NC clients) -> $RES ##########"
@@ -181,9 +198,10 @@ for leg in $LEGS; do
     noniid)     leg_noniid ;;
     sin)        leg_sin ;;
     bits20)     leg_bits20 ;;
+    classes)    leg_classes ;;
     capacity)   leg_capacity ;;
     capacity10) leg_capacity10 ;;
-    *) echo "unknown leg '$leg' (want: iid balanced noniid sin bits20 capacity capacity10)";;
+    *) echo "unknown leg '$leg' (want: iid balanced noniid sin bits20 classes capacity capacity10)";;
   esac
 done
 
@@ -194,8 +212,8 @@ for leg in $LEGS; do
   case "$leg" in
     iid) d="$BASE/c100_iid";; balanced) d="$BASE/c100_iid_bal";;
     noniid) d="$BASE/c100_niid";; sin) d="$BASE/c100_sin";;
-    bits20) d="$BASE/c100_b20";; capacity) d="$BASE/c100_cap";;
-    capacity10) d="$BASE/c10_cap";; *) continue;;
+    bits20) d="$BASE/c100_b20";; classes) d="$BASE/c100_classes";;
+    capacity) d="$BASE/c100_cap";; capacity10) d="$BASE/c10_cap";; *) continue;;
   esac
   echo "  $leg -> $d/figs/   (eta in $d/eta_*.json)"
 done
