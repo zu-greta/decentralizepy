@@ -63,11 +63,11 @@ wait_for(){
   done
 }
 
-analyze(){   # $1=RES  rest=run_all env prefix (DS=.. PART=.. WMF=.. BITS=..)
+analyze(){   # $1=RES  rest=../scripts/run_all env prefix (DS=.. PART=.. WMF=.. BITS=..)
   local RES="$1"; shift
-  env RES="$RES" "$@" ./run_all.sh separability || true       # numpy tables (cheap, always)
+  env RES="$RES" "$@" ./../scripts/run_all.sh separability || true       # numpy tables (cheap, always)
   if [ "$DO_PLOTS" = "1" ]; then
-    env RES="$RES" "$@" ./run_all.sh PLOTALL || true          # matplotlib figures
+    env RES="$RES" "$@" ./../scripts/run_all.sh PLOTALL || true          # matplotlib figures
     echo "  leg done -> tables & figures in $RES/figs/"
   else
     echo "  leg done -> tables in $RES/figs/ (DO_PLOTS=0: scp $RES and plot locally)"
@@ -78,12 +78,12 @@ analyze(){   # $1=RES  rest=run_all env prefix (DS=.. PART=.. WMF=.. BITS=..)
 leg_iid(){
   local RES="$BASE/c100_iid"; mkdir -p "$RES"
   echo "########## LEG iid -> $RES ##########"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=1,7 ./run_all.sh reduced
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./run_all.sh reduced
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 SC_FR=0 SC_CLASS=6 ./run_all.sh sameclass
+  env RES="$RES" DS=c100 ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=1,7 ./../scripts/run_all.sh reduced
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./../scripts/run_all.sh reduced
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 SC_FR=0 SC_CLASS=6 ./../scripts/run_all.sh sameclass
   wait_for "$RES" $((nH + 3*nA))
   analyze "$RES" DS=c100
 }
@@ -94,11 +94,11 @@ leg_balanced(){
   # was the same-sign-row artifact (F6) vs real class difficulty.
   local RES="$BASE/c100_iid_bal"; mkdir -p "$RES"
   echo "########## LEG balanced (BALANCED=1) -> $RES ##########"
-  env RES="$RES" BALANCED=1 SEEDS="$HONEST_SEEDS" DS=c100 ./run_all.sh honest
+  env RES="$RES" BALANCED=1 SEEDS="$HONEST_SEEDS" DS=c100 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" BALANCED=1 DS=c100 ./run_all.sh calibrate
-  env RES="$RES" BALANCED=1 SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./run_all.sh reduced
-  env RES="$RES" BALANCED=1 SEEDS="$ATTACK_SEEDS" DS=c100 SC_FR=0 SC_CLASS=6 ./run_all.sh sameclass
+  env RES="$RES" BALANCED=1 DS=c100 ./../scripts/run_all.sh calibrate
+  env RES="$RES" BALANCED=1 SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./../scripts/run_all.sh reduced
+  env RES="$RES" BALANCED=1 SEEDS="$ATTACK_SEEDS" DS=c100 SC_FR=0 SC_CLASS=6 ./../scripts/run_all.sh sameclass
   wait_for "$RES" $((nH + 2*nA))
   analyze "$RES" DS=c100
 }
@@ -106,11 +106,11 @@ leg_balanced(){
 leg_noniid(){
   local RES="$BASE/c100_niid"; mkdir -p "$RES"
   echo "########## LEG noniid -> $RES ##########"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 PART=niid ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 PART=niid ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 PART=niid ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 PART=niid POS=3,6 ./run_all.sh reduced
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 PART=niid SC_FR=0 SC_CLASS=6 ./run_all.sh sameclass
+  env RES="$RES" DS=c100 PART=niid ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 PART=niid POS=3,6 ./../scripts/run_all.sh reduced
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 PART=niid SC_FR=0 SC_CLASS=6 ./../scripts/run_all.sh sameclass
   wait_for "$RES" $((nH + 2*nA))
   analyze "$RES" DS=c100 PART=niid
 }
@@ -118,10 +118,10 @@ leg_noniid(){
 leg_sin(){
   local RES="$BASE/c100_sin"; mkdir -p "$RES"
   echo "########## LEG sin -> $RES ##########"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 WMF=sin ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 WMF=sin ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 WMF=sin ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 WMF=sin POS=3,6 ./run_all.sh reduced
+  env RES="$RES" DS=c100 WMF=sin ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 WMF=sin POS=3,6 ./../scripts/run_all.sh reduced
   wait_for "$RES" $((nH + nA))
   analyze "$RES" DS=c100 WMF=sin
 }
@@ -129,11 +129,11 @@ leg_sin(){
 leg_bits20(){
   local RES="$BASE/c100_b20"; mkdir -p "$RES"
   echo "########## LEG bits20 -> $RES ##########"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 BITS=20 ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 BITS=20 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 BITS=20 ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 BITS=20 POS=1,7 ./run_all.sh reduced
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 BITS=20 POS=3,6 ./run_all.sh reduced
+  env RES="$RES" DS=c100 BITS=20 ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 BITS=20 POS=1,7 ./../scripts/run_all.sh reduced
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 BITS=20 POS=3,6 ./../scripts/run_all.sh reduced
   wait_for "$RES" $((nH + 2*nA))
   analyze "$RES" DS=c100 BITS=20
 }
@@ -146,10 +146,10 @@ leg_capacity(){
   # clients on classes 6/7 (natural same-class overlap). NUM_CLIENTS is exported so both
   # honest and reduced legs see it.
   export NUM_CLIENTS="$CAP_NC"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c100 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=106,107 ./run_all.sh reduced
+  env RES="$RES" DS=c100 ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c100 POS=106,107 ./../scripts/run_all.sh reduced
   wait_for "$RES" $((nH + nA))
   analyze "$RES" DS=c100
   unset NUM_CLIENTS
@@ -163,10 +163,10 @@ leg_classes(){
   # class difficulty generally, not an artifact of classes 0-9. reduced hits cids 3,6 ->
   # classes 39,69; separability --per-class then compares honest-vs-FR on those.
   local MAP="0:9,1:19,2:29,3:39,4:49,5:59,6:69,7:79,8:89,9:99"
-  env RES="$RES" TCMAP="$MAP" SEEDS="$HONEST_SEEDS" DS=c100 ./run_all.sh honest
+  env RES="$RES" TCMAP="$MAP" SEEDS="$HONEST_SEEDS" DS=c100 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c100 ./run_all.sh calibrate
-  env RES="$RES" TCMAP="$MAP" SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./run_all.sh reduced
+  env RES="$RES" DS=c100 ./../scripts/run_all.sh calibrate
+  env RES="$RES" TCMAP="$MAP" SEEDS="$ATTACK_SEEDS" DS=c100 POS=3,6 ./../scripts/run_all.sh reduced
   wait_for "$RES" $((nH + nA))
   analyze "$RES" DS=c100
 }
@@ -179,10 +179,10 @@ leg_capacity10(){
   # embedding is NOT data-starved -> isolates the sharing effect from the thin-data confound.
   # With CAP10_NC=50 every class has 5 clients; FR cid 16/17 share classes 6/7 with honest 6/7.
   export NUM_CLIENTS="$CAP10_NC"
-  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c10 ./run_all.sh honest
+  env RES="$RES" SEEDS="$HONEST_SEEDS" DS=c10 ./../scripts/run_all.sh honest
   wait_for "$RES" "$nH"
-  env RES="$RES" DS=c10 ./run_all.sh calibrate
-  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c10 POS=16,17 ./run_all.sh reduced
+  env RES="$RES" DS=c10 ./../scripts/run_all.sh calibrate
+  env RES="$RES" SEEDS="$ATTACK_SEEDS" DS=c10 POS=16,17 ./../scripts/run_all.sh reduced
   wait_for "$RES" $((nH + nA))
   analyze "$RES" DS=c10
   unset NUM_CLIENTS
