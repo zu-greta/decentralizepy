@@ -33,7 +33,11 @@ class ExpConfig:
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
     trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default
                                             # trigger_class = cid % num_classes for those cids.
-                                            # Enables pin same trigger class to FR and honest
+                                            # Enables the same-trigger-class control: pin a
+                                            # free-rider onto the SAME class as an honest client
+                                            # to show their BER is drawn from one class floor
+                                            # (keys/bits stay seeded from cid, so the floor is
+                                            # shown to be a class property, not a key artifact).
 
     # ---- submarine adaptive free-rider ----
     # Acts exactly like an honest client, except: 
@@ -82,14 +86,29 @@ class ExpConfig:
     wm_bits: int = 0                        # m; 0 -> auto
     wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys (some rows
                                             # come out all-same-sign -> structurally unembeddable
-                                            # bits, BER floor ~0.5*unembeddable_frac
-                                            # True = sign-balanced rows (still pseudo-random)
+                                            # bits, BER floor ~0.5*unembeddable_frac; STATUS F6/F7).
+                                            # True = sign-balanced rows (removes that artifact by
+                                            # construction, still pseudo-random). Use True for the
+                                            # go-forward experiments; False only for the F6/F7 demo.
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
     wm_beta: float = 0.6                    # memory coefficient (Eq. 14)
     wm_label_smoothing: float = 0.1
     wm_num_triggers: int = 50               # N_T trigger samples for extraction (Eq. 15)
+    wm_trigger_mode: str = "class"          # which trigger images the VERIFIER uses:
+                                            #  "class"  = one shared held-out bank per trigger
+                                            #             class (default; clients sharing a class
+                                            #             see identical images -> only M^i/B^i
+                                            #             distinguish them). Generalisation test.
+                                            #  "client" = per-client DISJOINT held-out slice
+                                            #             (paper V-F3 "client-specific trigger
+                                            #             variations", still held-out)
+                                            #  "client_train" = per-client images taken from that
+                                            #             client's OWN training shard (paper V-F3
+                                            #             "trigger sample consistency": test imgs
+                                            #             == train imgs). Memorisation, not
+                                            #             generalisation -- see paper Table V.
     wm_eta_floor: float = 0.05              # small degenerate guard for eta only (not the threshold):
                                             # keeps eta = mu+3sigma strictly positive if every benign BER is
                                             # ~0. The operative threshold is always the computed mu+3sigma

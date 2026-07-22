@@ -42,7 +42,15 @@ class WatermarkRegistry:
 
 
 def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
-    """Collect up to n_triggers samples per trigger class from the test set"""
+    """Collect up to n_triggers samples per trigger class from the test set.
+
+    Keyed by CLASS: every client whose trigger class is c is verified on the SAME
+    held-out images. This is the generalisation reading of the watermark (the mark
+    must survive on images the client never trained on) and is what we use whenever
+    one class == one client. Under oversubscription (clients sharing a class) it
+    means two clients differ ONLY by their key M^i and bits B^i -- see
+    build_trigger_bank_per_client / _from_train for the paper's capacity protocol.
+    """
     g = torch.Generator().manual_seed(seed)
     by_class = {c: [] for c in classes}
     order = torch.randperm(len(test_dataset), generator=g).tolist()
@@ -59,10 +67,89 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
     return {c: torch.stack(v) for c, v in by_class.items() if v}
 
 
+def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
+    """Paper Section V-F3 (capacity), held-out variant. Keyed by CID.
+
+    "While clients sharing the same trigger class utilize identical class labels,
+    their watermarks remain distinguishable through client-specific trigger
+    variations." -> each client gets its OWN disjoint slice of that class's images,
+    so two clients on class c are verified on DIFFERENT images (plus their own M^i,
+    B^i). Images still come from the held-out test set, so the mark must generalise.
+    """
+    # cid -> class, and class -> [cids] (stable order so slices are reproducible)
+    cls_of = {cid: e["trigger_class"] for cid, e in registry.entries.items()}
+    per_cls = {}
+    for cid in sorted(cls_of):
+        per_cls.setdefault(cls_of[cid], []).append(cid)
+
+    need_per_cls = {c: n_triggers * len(cids) for c, cids in per_cls.items()}
+    pool = {c: [] for c in per_cls}
+    g = torch.Generator().manual_seed(seed)
+    order = torch.randperm(len(test_dataset), generator=g).tolist()
+    remaining = set(per_cls)
+    for i in order:
+        if not remaining:
+            break
+        x, y = test_dataset[i]
+        y = int(y)
+        if y in pool and len(pool[y]) < need_per_cls[y]:
+            pool[y].append(x)
+            if len(pool[y]) >= need_per_cls[y]:
+                remaining.discard(y)
+
+    bank = {}
+    for c, cids in per_cls.items():
+        imgs = pool.get(c, [])
+        if not imgs:
+            continue
+        # deal out disjoint slices; if the class ran short, wrap around (documented,
+        # and reported via bank_short below) rather than silently dropping clients.
+        for j, cid in enumerate(cids):
+            lo = j * n_triggers
+            sl = imgs[lo: lo + n_triggers]
+            if not sl:                      # class exhausted -> reuse from the top
+                sl = imgs[(lo % max(len(imgs), 1)): (lo % max(len(imgs), 1)) + n_triggers]
+            if sl:
+                bank[cid] = torch.stack(sl)
+    return bank
+
+
+def build_trigger_bank_from_train(client_loaders, registry, n_triggers):
+    """Paper Section V-F3 (capacity), TRIGGER-SAMPLE-CONSISTENCY variant. Keyed by CID.
+
+    "we enforce trigger sample consistency: the trigger samples used during testing
+    are identical to those employed in training." -> each client's verification images
+    are drawn from ITS OWN training shard, i.e. images it actually trained on. This is
+    the paper-exact capacity protocol and it makes the mark trivially separable per
+    client -- but it is pure memorisation: the paper itself notes (Table V) that a mark
+    fitted to specific samples "cannot be generalized to other trigger-class samples".
+    Use it to reproduce the paper's capacity numbers; use the held-out banks to test
+    whether the mark means anything beyond those exact images.
+
+    NOTE: loaders apply train-time augmentation, so the cached tensors are one
+    augmented view of the client's own trigger images (same underlying samples).
+    """
+    bank = {}
+    for cid, e in registry.entries.items():
+        if cid >= len(client_loaders):
+            continue
+        tc = e["trigger_class"]
+        got = []
+        for x, y in client_loaders[cid]:
+            m = (y == tc)
+            if m.any():
+                got.append(x[m])
+                if sum(len(t) for t in got) >= n_triggers:
+                    break
+        if got:
+            bank[cid] = torch.cat(got)[:n_triggers]
+    return bank
+
+
 # TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
                   free_rider_indices, eta_floor=0.05, verify_every=1,
-                  calib_on_all=False, eta_fixed=0.0):
+                  calib_on_all=False, eta_fixed=0.0, per_client_bank=False):
     """Return a verify_hook(server, round, updates) for Server
 
     THRESHOLD: eta is a pre-calibrated passed in as `eta_fixed` 
@@ -94,10 +181,12 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             if entry is None:
                 continue
             tc = entry["trigger_class"]
-            if tc not in trigger_bank:
+            # per_client_bank: each client has its own trigger images else the bank is shared per trigger class.
+            bkey = cid if per_client_bank else tc
+            if bkey not in trigger_bank:
                 continue
             verify_model.load_state_dict(state)
-            x = trigger_bank[tc].to(device)
+            x = trigger_bank[bkey].to(device)
             probs = F.softmax(verify_model(x), dim=1)
             bits = wm.extract_bits(probs, entry["key"].to(device),
                                    entry["kind"], entry["alpha"],

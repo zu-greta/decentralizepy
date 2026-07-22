@@ -22,12 +22,17 @@ POS="${POS:-1,7}"
 BITS="${BITS:-}"                                   # empty = code default m; else e.g. 20 (c100) / 5 (c10)
 BT="b${BITS:-def}"                                 # bdef | b20 | b5
 WMF="${WMF:-}"                                     # empty = power (default); or 'sin' (paper Eq.9)
-export BALANCED="${BALANCED:-0}"                   # 0 = paper-faithful UNBALANCED keys (default)
-                                                   # BALANCED=1 = sign-balanced keys 
+export BALANCED="${BALANCED:-0}"                   # 0 = paper-faithful UNBALANCED keys (default;
+                                                   # spreads the honest floor -> clearer story).
+                                                   # BALANCED=1 = sign-balanced keys (removes the
+                                                   # F6 unembeddable-bit artifact; the airtight control)
 FTAG=""; [ -n "$WMF" ] && FTAG="_${WMF}"           # tag so sin never mixes with power at calibration
 FENV=""; [ -n "$WMF" ] && FENV="WM_F=$WMF"
 TAG="${DS}_${BT}${FTAG}"                           # c100_bdef | c100_b20 | c100_bdef_sin
 VTAG="${VTAG:-}"                                    # optional variant marker (bal|nc200|spread...)
+TRIGMODE="${TRIGMODE:-}"                            # ""|class|client|client_train (verifier images)
+TMENV=""; [ -n "$TRIGMODE" ] && TMENV="WM_TRIGGER_MODE=$TRIGMODE"
+[ -n "$TRIGMODE" ] && [ "$TRIGMODE" != "class" ] && VTAG="${VTAG:+${VTAG}_}tm${TRIGMODE#client_}"
 [ -n "$VTAG" ] && TAG="${TAG}_${VTAG}"             # -> unique family+eta when DS/BITS/PART/WMF don't differ
 PART="${PART:-iid}"                                # iid | niid  (data partition)
 PARTENV=""; [ "$PART" = "niid" ] && PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${DIRICHLET_ALPHA:-0.5}"
@@ -56,7 +61,7 @@ get_eta(){ if [ -n "$USE_FIXED_ETA" ]; then [ -z "$FIXED_ETA" ] && { echo ""; re
 honest(){
   echo "== HONEST $TAG/$PART (all-honest, balanced keys, seeds: $SEEDS)"
   for s in $SEEDS; do
-    env ROUNDS=50 ATTACK=none $BITSENV $PARTENV $FENV $TCENV FAMILY="$HFAM" \
+    env ROUNDS=50 ATTACK=none $BITSENV $PARTENV $FENV $TCENV $TMENV FAMILY="$HFAM" \
         NOTE="$DS $PART balanced-keys all honest bits=${BITS:-default}" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
   done
@@ -75,7 +80,7 @@ reduced(){
   local FAM="reduced_${TAG}_${PART}_c${POS//,/}"
   echo "== REDUCED $TAG/$PART (+5/common), pos=$POS -> $FAM, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
-    env $COMMON_E $BITSENV $PARTENV $FENV $TCENV ATTACK=reduced FREE_RIDER_IDS=$POS \
+    env $COMMON_E $BITSENV $PARTENV $FENV $TCENV $TMENV ATTACK=reduced FREE_RIDER_IDS=$POS \
         AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
         FAMILY="$FAM" SWEEP_LEVEL=5 NOTE="$DS $PART +5/cls pos=$POS bits=${BITS:-default}" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"
@@ -93,7 +98,7 @@ sameclass(){
   local FAM="sameclass_${TAG}_${PART}_c${CLS}"
   echo "== SAMECLASS $TAG/$PART: FR cid$FRC pinned to class $CLS (honest cid$CLS shares it) -> $FAM, eta=$eta"
   for s in $SEEDS; do
-    env $COMMON_E $BITSENV $PARTENV $FENV ATTACK=reduced FREE_RIDER_IDS=$FRC \
+    env $COMMON_E $BITSENV $PARTENV $FENV $TMENV ATTACK=reduced FREE_RIDER_IDS=$FRC \
         TRIGGER_CLASS_MAP="${FRC}:${CLS}" AUTOP_COMMON_PER_CLASS=5 WM_ETA_FIXED=$eta \
         FAMILY="$FAM" NOTE="$DS $PART same-class FR cid$FRC->cls$CLS bits=${BITS:-default}" \
         WAIT=0 ./submit_experiment.sh "$CFG" "$s"

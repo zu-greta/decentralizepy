@@ -268,6 +268,11 @@ July21
         - run with non-iid and other settings too? all honest as always
         - READ reference.md -> understand all the new changes and experiments -> check if anything is missing from my list of things to add and run
         - check and analyse the results
+        -> check how the paper tests for when too many clients compared to classes
+            - table IX CIFAR-10 up to 50 clients
+            - TODO: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
+            - 
+        -> check if paper does non-iid => no
 
 ---
 ---

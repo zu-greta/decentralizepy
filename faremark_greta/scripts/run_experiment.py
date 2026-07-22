@@ -26,7 +26,9 @@ from faremark.datasets import build_data
 from faremark.attacks import build_clients
 from faremark.server import Server
 from faremark.wm_client import build_watermarked_clients
-from faremark.wm_verify import WatermarkRegistry, build_trigger_bank, make_verifier
+from faremark.wm_verify import (WatermarkRegistry, build_trigger_bank,
+                                build_trigger_bank_per_client,
+                                build_trigger_bank_from_train, make_verifier)
 from faremark.compute_meter import estimate_flops_per_sample_fwd
 from faremark.manifest import build_manifest
 
@@ -101,6 +103,12 @@ def parse_args():
                    help="smoothing f() in Eq.7-9: 'power' (p^alpha) or 'sin' (sin(alpha*p)). "
                         "sin is the paper's alternative; sweep --wm_alpha with it.")
     p.add_argument("--wm_num_triggers", type=int, default=None)
+    p.add_argument("--wm_trigger_mode", type=str, default=None,
+                   choices=["class", "client", "client_train"],
+                   help="verifier trigger images: class=shared held-out bank per class; "
+                        "client=per-client disjoint held-out slice (paper V-F3); "
+                        "client_train=per-client images from its own training shard "
+                        "(paper V-F3 trigger-sample consistency).")
     p.add_argument("--wm_lambda", type=float, default=None)
     p.add_argument("--wm_beta", type=float, default=None)
     p.add_argument("--wm_eta_floor", type=float, default=None)
@@ -129,7 +137,8 @@ _OVERRIDABLE = [
     "autop_margin0", "autop_safety", "autop_max_coast",
     "autop_floor", "autop_common_per_class", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
-    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_num_triggers", "wm_lambda", "wm_beta",
+    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_num_triggers",
+    "wm_trigger_mode", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
 ]
 
@@ -262,13 +271,31 @@ def main():
             logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
         verify_model = build_model(cfg.model, data.num_classes, data.in_channels)
         classes = sorted({e["trigger_class"] for e in registry.entries.values()})
-        trigger_bank = build_trigger_bank(data.test_dataset, classes,
-                                          cfg.wm_num_triggers, seed=seed)
+        tmode = getattr(cfg, "wm_trigger_mode", "class")
+        per_client_bank = (tmode != "class")
+        if tmode == "client_train":
+            # paper V-F3 trigger-sample consistency: verify on the client's OWN train imgs
+            trigger_bank = build_trigger_bank_from_train(
+                data.client_loaders, registry, cfg.wm_num_triggers)
+        elif tmode == "client":
+            # paper V-F3 client-specific trigger variations, held-out
+            trigger_bank = build_trigger_bank_per_client(
+                data.test_dataset, registry, cfg.wm_num_triggers, seed=seed)
+        else:
+            trigger_bank = build_trigger_bank(data.test_dataset, classes,
+                                              cfg.wm_num_triggers, seed=seed)
+        n_clients_wm = len(registry.entries)
+        logger.info(f"trigger bank: mode={tmode}, {len(trigger_bank)} banks "
+                    f"({'per client' if per_client_bank else 'per class'}), "
+                    f"N_T={cfg.wm_num_triggers}"
+                    + (f"  [WARNING: only {len(trigger_bank)}/{n_clients_wm} clients got a bank]"
+                       if per_client_bank and len(trigger_bank) < n_clients_wm else ""))
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
                                     free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,
                                     calib_on_all=getattr(cfg, "calib_on_all", False),
-                                    eta_fixed=getattr(cfg, "wm_eta_fixed", 0.0))
+                                    eta_fixed=getattr(cfg, "wm_eta_fixed", 0.0),
+                                    per_client_bank=per_client_bank)
         server = Server(model, clients, data.test_loader, device, logger,
                         verify_hook=verify_hook)
     else:
