@@ -233,6 +233,46 @@ LEGS="capacity capacity_paper" ./run_everything.sh submit      # held-out vs pap
 ```
 Families: `…_nc200_iid` (held-out) vs `…_nc200_tmtrain_iid` (paper), each with its own eta.
 
+## 2c. Non-IID leg — what it covers
+
+`PART=niid` uses a Dirichlet(alpha) label-skew split. Coverage:
+
+| requirement | leg | detail |
+|---|---|---|
+| honest-only threshold runs, multi-seed | `noniid` | H seeds, family `honest_c100_bdef_niid`, own `eta_c100_bdef_niid.json` |
+| reduced free-rider attacks | `noniid` | `POS=3,6`, A seeds |
+| same-trigger-class runs | `noniid` | `SC_FR=0 SC_CLASS=6`, A seeds |
+| **alpha sweep** | `noniid_a01`, `noniid_a1`, `noniid_a100` | alpha = 0.1 / 1.0 / 100 (plus 0.5 in `noniid`), each honest + reduced 3,6 |
+
+Alpha now lands in the family and eta filename, so a sweep can't collide:
+`honest_c100_bdef_niid_a01`, `…_a10`, `…_a100`. **alpha = 0.5 keeps the plain `niid`
+string** (back-compatible with anything already submitted). Severity: small alpha = severe
+skew, alpha -> infinity approaches IID, so `noniid_a100` doubles as a sanity check that it
+converges back to the IID numbers.
+
+**What varies across seeds in a non-IID honest run** — everything the IID runs vary (data
+split, batch order, model init, key `M^i`, bits `B^i`, trigger bank), *plus* the Dirichlet
+draw itself. That last one is qualitatively different and much larger: in IID every client
+gets a balanced slice, so the split is nearly the same every seed. Under Dirichlet the split
+is redrawn each seed, so a client's holding of its **own trigger class** swings wildly.
+
+**The failure mode to watch for.** A client can be assigned trigger class *c* while holding
+almost **no images of class c** — it then cannot embed its mark at all, BER goes to ~0.5, and
+it is a guaranteed false positive regardless of eta. That is a different mechanism from "hard
+class" and the two must not be conflated. `wm_stats[round].n_trigger_samples` (newly logged
+per client per round) is the discriminator:
+
+* `n_trigger_samples` = 0 or tiny, BER high  -> **no data to embed with** (partition artifact)
+* `n_trigger_samples` healthy, BER high      -> **genuine class difficulty** (the real finding)
+
+Check that column before interpreting any non-IID BER, and expect the zero-sample population
+to grow as alpha shrinks.
+
+```
+LEGS="iid noniid" ./run_everything.sh submit
+LEGS="noniid_a01 noniid_a1 noniid_a100" ./run_everything.sh submit
+```
+
 ## 3. What the seed varies (and why)
 
 `seed = base_seed + repeat`; one number re-rolls every random choice. Trigger class is **NOT**

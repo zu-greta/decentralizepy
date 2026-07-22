@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_all.sh -- CIFAR-100 (default) or CIFAR-10.
+# run_all.sh --  CIFAR-100 (default) or CIFAR-10.
 #
 # Everything is TAGGED by dataset + bit count so runs never collide:
 #   honest  family = honest_<DS>_b<BITS>_iid      (BITS omitted -> "bdef" = code default m)
@@ -35,10 +35,15 @@ TMENV=""; [ -n "$TRIGMODE" ] && TMENV="WM_TRIGGER_MODE=$TRIGMODE"
 [ -n "$TRIGMODE" ] && [ "$TRIGMODE" != "class" ] && VTAG="${VTAG:+${VTAG}_}tm${TRIGMODE#client_}"
 [ -n "$VTAG" ] && TAG="${TAG}_${VTAG}"             # -> unique family+eta when DS/BITS/PART/WMF don't differ
 PART="${PART:-iid}"                                # iid | niid  (data partition)
-PARTENV=""; [ "$PART" = "niid" ] && PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${DIRICHLET_ALPHA:-0.5}"
+ALPHA="${DIRICHLET_ALPHA:-0.5}"                    # Dirichlet concentration (non-IID severity)
+PARTENV=""; [ "$PART" = "niid" ] && PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${ALPHA}"
+# PTAG carries alpha so an alpha SWEEP gets separate families + separate eta files.
+# alpha=0.5 (the benchmark default) keeps the plain "niid" string -> back-compatible.
+PTAG="$PART"
+[ "$PART" = "niid" ] && [ "$ALPHA" != "0.5" ] && PTAG="niid_a${ALPHA//./}"
 TCMAP="${TCMAP:-}"                                 # optional "cid:class,..." trigger-class override
 TCENV=""; [ -n "$TCMAP" ] && TCENV="TRIGGER_CLASS_MAP=$TCMAP"  # for honest/reduced (NOT sameclass)
-ETA_SUFFIX=""; [ "$PART" = "niid" ] && ETA_SUFFIX="_niid"
+ETA_SUFFIX=""; [ "$PART" = "niid" ] && ETA_SUFFIX="_${PTAG}"
 ETA_FILE="${ETA_FILE:-$RES/eta_${TAG}${ETA_SUFFIX}.json}"
 PL="python scripts/plots.py"; TH="python threshold.py"
 SEP="python scripts/separability.py"
@@ -47,7 +52,7 @@ FIXED_ETA="${FIXED_ETA:-}"; USE_FIXED_ETA="${USE_FIXED_ETA:-}"
 COMMON_E="ROUNDS=50 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4"
 BITSENV=""; [ -n "$BITS" ] && BITSENV="WM_BITS=$BITS"
 
-HFAM="honest_${TAG}_${PART}"                        # honest_c100_bdef_iid (PART=iid == old string)
+HFAM="honest_${TAG}_${PTAG}"                        # honest_c100_bdef_iid | ..._niid | ..._niid_a01
 
 read_eta(){ python - "$ETA_FILE" <<'PY'
 import json,sys
@@ -77,7 +82,7 @@ calibrate(){
 reduced(){
   local eta; eta="$(get_eta)"
   [ -z "$eta" ] && { echo "!! no eta for $TAG/$PART. Run 'calibrate' first, or USE_FIXED_ETA=1 FIXED_ETA=<v>"; return 1; }
-  local FAM="reduced_${TAG}_${PART}_c${POS//,/}"
+  local FAM="reduced_${TAG}_${PTAG}_c${POS//,/}"
   echo "== REDUCED $TAG/$PART (+5/common), pos=$POS -> $FAM, eta=$eta, seeds: $SEEDS"
   for s in $SEEDS; do
     env $COMMON_E $BITSENV $PARTENV $FENV $TCENV $TMENV ATTACK=reduced FREE_RIDER_IDS=$POS \
@@ -95,7 +100,7 @@ sameclass(){
   local eta; eta="$(get_eta)"
   [ -z "$eta" ] && { echo "!! no eta for $TAG/$PART. Run 'calibrate' first."; return 1; }
   local FRC="${SC_FR:-0}"; local CLS="${SC_CLASS:-6}"
-  local FAM="sameclass_${TAG}_${PART}_c${CLS}"
+  local FAM="sameclass_${TAG}_${PTAG}_c${CLS}"
   echo "== SAMECLASS $TAG/$PART: FR cid$FRC pinned to class $CLS (honest cid$CLS shares it) -> $FAM, eta=$eta"
   for s in $SEEDS; do
     env $COMMON_E $BITSENV $PARTENV $FENV $TMENV ATTACK=reduced FREE_RIDER_IDS=$FRC \
@@ -119,7 +124,7 @@ noniid(){
 # Plots ONLY the current TAG/PART (so variants never get mixed).
 plotall(){
   local ALL="$RES/*/result.json"
-  local OUT="${OUT:-$RES/figs/${TAG}_${PART}}"; mkdir -p "$OUT"
+  local OUT="${OUT:-$RES/figs/${TAG}_${PTAG}}"; mkdir -p "$OUT"
   local eta; eta="$(get_eta)"; [ -z "$eta" ] && eta="0"
   run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
 
@@ -128,10 +133,10 @@ plotall(){
   run $PL thresholds       --in "'$ALL'" --family "$HFAM" --out "$OUT"
   # honest per-class BER lines (merged into plots.py), with this tag's eta drawn
   run $HL --in "'$ALL'" --family "$HFAM" --tail 20 --eta "$eta" \
-          --out "$OUT/honest_lines_${TAG}_${PART}.png"
+          --out "$OUT/honest_lines_${TAG}_${PTAG}.png"
 
   # attack families for THIS tag+partition only (reduced + sameclass)
-  FAMS="${FAMS:-$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and (x.startswith('reduced_${TAG}_${PART}') or x.startswith('sameclass_${TAG}_${PART}')))))" 2>/dev/null)}"
+  FAMS="${FAMS:-$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and (x.startswith('reduced_${TAG}_${PTAG}') or x.startswith('sameclass_${TAG}_${PTAG}')))))" 2>/dev/null)}"
   for fam in $FAMS; do
     run $PL timeline --in "'$ALL'" --family $fam \
         --honest_in "'$ALL'" --honest_family "$HFAM" --out "$OUT/timeline_${fam}"
@@ -139,15 +144,15 @@ plotall(){
     run $PL separability --in "'$ALL'" --family "$HFAM" --attack_family $fam \
         --out "$OUT/separability_${fam}"
   done
-  echo "PLOTALL ($TAG/$PART) done -> $OUT"
+  echo "PLOTALL ($TAG/$PTAG) done -> $OUT"
 }
 
 # rule-independent non-separability tables (text + json) for every attack family vs the
 # honest floor. This is the headline "no threshold works" evidence.
 separability(){
   local ALL="$RES/*/result.json"
-  local OUT="${OUT:-$RES/figs/${TAG}_${PART}}"; mkdir -p "$OUT"
-  local FAMS; FAMS="$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and (x.startswith('reduced_${TAG}_${PART}') or x.startswith('sameclass_${TAG}_${PART}')))))" 2>/dev/null)"
+  local OUT="${OUT:-$RES/figs/${TAG}_${PTAG}}"; mkdir -p "$OUT"
+  local FAMS; FAMS="$(python -c "import json,glob;fs=set(json.load(open(f)).get('manifest',{}).get('family') for f in glob.glob('$RES/*/result.json'));print(' '.join(sorted(x for x in fs if x and (x.startswith('reduced_${TAG}_${PTAG}') or x.startswith('sameclass_${TAG}_${PTAG}')))))" 2>/dev/null)"
   for fam in $FAMS; do
     echo "== SEPARABILITY  honest=$HFAM  attack=$fam"
     $SEP --honest-in "$ALL" --honest-family "$HFAM" \
@@ -166,7 +171,9 @@ case "${1:-}" in
   separability) separability ;;
   PLOTALL)      plotall ;;
   *) echo "usage: DS=c100|c10 [BITS=n] [PART=iid|niid] ./run_all.sh [honest|calibrate|reduced|sameclass|noniid|separability|PLOTALL]
-  current: DS=$DS CFG=$CFG TAG=$TAG PART=$PART RES=$RES SEEDS='$SEEDS' POS=$POS
+  current: DS=$DS CFG=$CFG TAG=$TAG PART=$PART alpha=$ALPHA RES=$RES SEEDS='$SEEDS' POS=$POS
+  honest family: $HFAM
+  eta file:      $ETA_FILE
   default-bits CIFAR-100 (IID):
     DS=c100 SEEDS='0 1 2 3 4 5 6 7 8 9' ./run_all.sh honest
     DS=c100 ./run_all.sh calibrate

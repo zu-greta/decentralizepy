@@ -103,6 +103,12 @@ class WatermarkClient(Client):
             "wm_loss": round(wm_sum / max(n_wm_batches, 1), 5) if n_wm_batches else None,
             "total_loss": round(tot_sum / max(n_batches, 1), 5),
             "trig_train_acc": round(trig_correct / trig_total, 4) if trig_total else None,
+            # how many trigger-class samples this client actually saw this round.
+            # Under Dirichlet non-IID a client can hold FEW or ZERO images of its own
+            # trigger class -> it cannot embed its mark at all -> BER ~0.5 -> guaranteed
+            # false positive. This number is what distinguishes "hard class" from
+            # "no data to embed with", so always check it before reading a non-IID BER.
+            "n_trigger_samples": int(trig_total),
             "trigger_class": int(self.trigger_class),
         }
 
@@ -148,7 +154,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     if attack in (None, "none", ""):
         fr_idx = set()
 
-    # optional trigger-class overrides: "0:6,1:6" -> {0: 6, 1: 6} : FR and honest with same trigger class
+    # optional trigger-class overrides: "0:6,1:6" -> {0: 6, 1: 6}. Lets a free-rider
+    # share a trigger class with an honest client (same-class non-separability control).
     tmap = {}
     raw_map = (getattr(cfg, "trigger_class_map", "") or "").strip()
     if raw_map:
@@ -163,7 +170,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
         trigger_class = tmap.get(cid, cid % num_classes)  # round-robin, unless overridden
-        # key balance: balanced=True removes structurally-unembeddable same-sign rows 
+        # key balance is a config flag now (was hardcoded False). balanced=True removes
+        # structurally-unembeddable same-sign rows (STATUS F6). Still per-cid pseudo-random.
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)  # TODO hardcoded seed offset 1000*cid+1
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)

@@ -5,7 +5,7 @@
 # NOTHING here waits on the cluster. Each phase submits jobs (WAIT=0, like run_all)
 # and returns immediately. Phases:
 #
-#   submit    fire everything now (honest + attacks), no waiting.  <-- fire-and-forget
+#   submit    fire EVERYTHING now (honest + attacks), no waiting.  <-- fire-and-forget
 #   honest    submit only the honest jobs
 #   attacks   (after honest done) calibrate the REAL eta + submit attacks
 #   plot      (after all done, results local) calibrate + separability tables + figures
@@ -42,8 +42,10 @@ CAP_NC="${CAP_NC:-200}"
 CAP10_NC="${CAP10_NC:-50}"
 DO_PLOTS="${DO_PLOTS:-1}"
 PROV_ETA="${PROV_ETA:-0.065}"                # provisional eta for 'submit' (recomputed at 'plot')
-LEGS="${LEGS:-iid balanced noniid sin bits20 classes capacity capacity_paper capacity10}"
+LEGS="${LEGS:-iid balanced noniid noniid_a01 noniid_a1 noniid_a100 sin bits20 classes capacity capacity_paper capacity10}"
 CLASS_MAP="0:9,1:19,2:29,3:39,4:49,5:59,6:69,7:79,8:89,9:99"
+nH=$(echo $HONEST_SEEDS | wc -w)
+nA=$(echo $ATTACK_SEEDS | wc -w)
 
 # ---- per-leg config: HENV (honest/calibrate env) + ATKS ("extra_env|target") ----
 set_leg(){
@@ -52,6 +54,12 @@ set_leg(){
     iid)        HENV=(DS=c100);                                ATKS=("POS=1,7|reduced" "POS=3,6|reduced" "SC_FR=0 SC_CLASS=6|sameclass") ;;
     balanced)   HENV=(DS=c100 BALANCED=1 VTAG=bal);            ATKS=("POS=3,6|reduced" "SC_FR=0 SC_CLASS=6|sameclass") ;;
     noniid)     HENV=(DS=c100 PART=niid);                      ATKS=("POS=3,6|reduced" "SC_FR=0 SC_CLASS=6|sameclass") ;;
+    # --- Dirichlet alpha sweep: how non-IID severity moves the honest floor & eta ---
+    # small alpha = severe skew (a client may hold FEW/NO images of its own trigger class);
+    # large alpha -> IID. alpha=0.5 is the 'noniid' leg above (the FL benchmark default).
+    noniid_a01) HENV=(DS=c100 PART=niid DIRICHLET_ALPHA=0.1);   ATKS=("POS=3,6|reduced") ;;
+    noniid_a1)  HENV=(DS=c100 PART=niid DIRICHLET_ALPHA=1.0);   ATKS=("POS=3,6|reduced") ;;
+    noniid_a100) HENV=(DS=c100 PART=niid DIRICHLET_ALPHA=100);  ATKS=("POS=3,6|reduced") ;;
     sin)        HENV=(DS=c100 WMF=sin);                        ATKS=("POS=3,6|reduced") ;;
     bits20)     HENV=(DS=c100 BITS=20);                        ATKS=("POS=1,7|reduced" "POS=3,6|reduced") ;;
     classes)    HENV=(DS=c100 VTAG=spread TCMAP="$CLASS_MAP"); ATKS=("POS=3,6|reduced") ;;
@@ -94,6 +102,23 @@ run_leg(){   # $1=leg  $2=phase
 # ============================== DRIVER =======================================
 PHASE="${1:-help}"
 case "$PHASE" in
+  count)
+    tot=0
+    printf "%-14s %8s %8s %8s\n" leg honest attacks total
+    for leg in $LEGS; do
+      set_leg "$leg" || continue
+      h=$nH; a=$(( ${#ATKS[@]} * nA )); t=$((h+a)); tot=$((tot+t))
+      printf "%-14s %8d %8d %8d\n" "$leg" "$h" "$a" "$t"
+    done
+    echo "-----------------------------------------------"
+    printf "%-14s %26d GPU-jobs (1 GPU each)\n" TOTAL "$tot"
+    echo
+    echo "check your quota before firing all of it:"
+    echo "  runai list projects                 # GPU quota for your project"
+    echo "  runai list jobs                     # what is already running/queued"
+    echo "  kubectl describe quota -n \$NAMESPACE"
+    echo "submit a few legs at a time, e.g.:  LEGS=\"iid noniid\" ./run_everything.sh submit"
+    ;;
   submit|honest|attacks|plot)
     echo "=== run_everything: phase=$PHASE  legs=[$LEGS]  honest=[$HONEST_SEEDS] attack=[$ATTACK_SEEDS] BALANCED=$BALANCED${PHASE:+ } $([ "$PHASE" = submit ] && echo "PROV_ETA=$PROV_ETA") ==="
     for leg in $LEGS; do
@@ -110,13 +135,15 @@ case "$PHASE" in
     ;;
   *)
     cat <<USAGE
-usage: ./run_everything.sh <submit|honest|attacks|plot>
+usage: ./run_everything.sh <count|submit|honest|attacks|plot>
+  count    print how many GPU-jobs each phase would submit (submits NOTHING)
   submit   fire EVERYTHING now (honest + attacks w/ provisional eta), no waiting
   honest   submit only honest jobs
   attacks  (after honest done) calibrate real eta + submit attacks
   plot     (results local) calibrate + separability tables + figures; set RES=<local>
 knobs: LEGS HONEST_SEEDS ATTACK_SEEDS BALANCED CAP_NC CAP10_NC DO_PLOTS PROV_ETA
-legs:  iid balanced noniid sin bits20 classes capacity capacity_paper capacity10
+legs:  iid balanced noniid noniid_a01 noniid_a1 noniid_a100 sin bits20 classes
+       capacity capacity_paper capacity10
 Run submit/honest/attacks from the dir with submit_experiment.sh + .env;
 run plot from your local repo root with RES pointing at the scp'd results.
 USAGE

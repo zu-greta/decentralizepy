@@ -271,7 +271,7 @@ July21
         -> check how the paper tests for when too many clients compared to classes
             - table IX CIFAR-10 up to 50 clients
             - TODO: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
-            - 
+                - `./table9_check.sh check ` once the tests are done running -> this is with client_train
         -> check if paper does non-iid => no
 
 ---
