@@ -44,12 +44,10 @@ class WatermarkRegistry:
 def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
     """Collect up to n_triggers samples per trigger class from the test set.
 
-    Keyed by CLASS: every client whose trigger class is c is verified on the SAME
-    held-out images. This is the generalisation reading of the watermark (the mark
-    must survive on images the client never trained on) and is what we use whenever
-    one class == one client. Under oversubscription (clients sharing a class) it
-    means two clients differ ONLY by their key M^i and bits B^i -- see
-    build_trigger_bank_per_client / _from_train for the paper's capacity protocol.
+    Keyed by class: every client whose trigger class is c is verified on the same
+    held-out images. Used whenever one class == one client. 
+    Under oversubscription (clients sharing a class) two clients differ ONLY by 
+    their key M^i and bits B^i 
     """
     g = torch.Generator().manual_seed(seed)
     by_class = {c: [] for c in classes}
@@ -68,12 +66,12 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 
 
 def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
-    """Paper Section V-F3 (capacity), held-out variant. Keyed by CID.
+    """Table IX from FareMark, held-out variant. Keyed by CID.
 
     "While clients sharing the same trigger class utilize identical class labels,
     their watermarks remain distinguishable through client-specific trigger
-    variations." -> each client gets its OWN disjoint slice of that class's images,
-    so two clients on class c are verified on DIFFERENT images (plus their own M^i,
+    variations." -> each client gets its own disjoint slice of that class's images,
+    so two clients on class c are verified on different images (plus their own M^i,
     B^i). Images still come from the held-out test set, so the mark must generalise.
     """
     # cid -> class, and class -> [cids] (stable order so slices are reproducible)
@@ -102,8 +100,7 @@ def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
         imgs = pool.get(c, [])
         if not imgs:
             continue
-        # deal out disjoint slices; if the class ran short, wrap around (documented,
-        # and reported via bank_short below) rather than silently dropping clients.
+        # deal out disjoint slices
         for j, cid in enumerate(cids):
             lo = j * n_triggers
             sl = imgs[lo: lo + n_triggers]
@@ -115,19 +112,16 @@ def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
 
 
 def build_trigger_bank_from_train(client_loaders, registry, n_triggers):
-    """Paper Section V-F3 (capacity), TRIGGER-SAMPLE-CONSISTENCY variant. Keyed by CID.
+    """Table IX from FareMark, trigger sample consistency variant. Keyed by CID.
 
     "we enforce trigger sample consistency: the trigger samples used during testing
     are identical to those employed in training." -> each client's verification images
-    are drawn from ITS OWN training shard, i.e. images it actually trained on. This is
+    are drawn from its own training shard, i.e. images it actually trained on. This is
     the paper-exact capacity protocol and it makes the mark trivially separable per
     client -- but it is pure memorisation: the paper itself notes (Table V) that a mark
     fitted to specific samples "cannot be generalized to other trigger-class samples".
     Use it to reproduce the paper's capacity numbers; use the held-out banks to test
     whether the mark means anything beyond those exact images.
-
-    NOTE: loaders apply train-time augmentation, so the cached tensors are one
-    augmented view of the client's own trigger images (same underlying samples).
     """
     bank = {}
     for cid, e in registry.entries.items():
@@ -146,7 +140,6 @@ def build_trigger_bank_from_train(client_loaders, registry, n_triggers):
     return bank
 
 
-# TODO: verify the threshold calibration 
 def make_verifier(registry, trigger_bank, verify_model, device,
                   free_rider_indices, eta_floor=0.05, verify_every=1,
                   calib_on_all=False, eta_fixed=0.0, per_client_bank=False):
@@ -154,8 +147,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
 
     THRESHOLD: eta is a pre-calibrated passed in as `eta_fixed` 
     (from calibrate_eta.py: mu+3sigma over per-round mean-over-clients
-    benign BER, pooled over honest-only seeds, frozen). When eta_fixed > 0 it is
-    used for every round
+    benign BER, pooled over honest-only seeds, frozen)
 
     `eta_floor` stays a tiny degenerate guard (keeps a >0 threshold if eta_fixed
     is somehow 0). calib_on_all is kept only for the circularity demo.
@@ -209,7 +201,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         # a pre-calibrated constant (calibrate_eta.py)
         benign_now = [b for _, b, isfr, _ in measured if not isfr]
         if eta_fixed and eta_fixed > 0:
-            eta_round = float(eta_fixed)
+            eta_round = float(eta_fixed) # when eta_fixed > 0 it is used for every round
         else:
             eta_round = eta_floor        # degenerate fallback only
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# table9_check.sh -- reproduce ONE row of the paper's Table IX and check our setup.
+# TODO: merge this script with the run_all script?
+# 
+# paper_check.sh -- reproduce ONE row of the paper's Table IX and check our setup.
 #
 #   PAPER TARGET (Table IX, capacity analysis):
 #       ResNet-18 / CIFAR-10 / 50 clients / 50 training rounds / all honest
@@ -10,9 +12,9 @@
 # Standalone: needs only submit_experiment.sh + .env (same dir), like run_all.
 # Nothing waits -- 'submit' fires and returns; run 'check' when the jobs are done.
 #
-#   ./table9_check.sh submit          # fire the runs (3 seeds, parallel)
-#   ./table9_check.sh check           # compare against the paper's numbers
-#   RES=~/local/results ./table9_check.sh check     # ...after scp'ing results local
+#   ./paper_check.sh submit          # fire the runs (3 seeds, parallel)
+#   ./paper_check.sh check           # compare against the paper's numbers
+#   RES=~/local/results ./paper_check.sh check     # ...after scp'ing results local
 #
 # PAPER-FAITHFUL SETTINGS USED (paper Section V-A + V-F3):
 #   ResNet-18, CIFAR-10, lr 0.01, batch 16, 5 local epochs, 50 rounds   (config 11)
@@ -40,25 +42,34 @@
 # =============================================================================
 set -uo pipefail
 
+ROW="${ROW:-t9}"          # t9 | c10 | c100   (which paper row to check)
+case "$ROW" in
+  t9)   PAPER_WM=95.78; PAPER_ACC=88.42; DEF_NC=50;  DEF_CFG=11; DEF_MODE=client_train
+        ROWDESC="Table IX  ResNet-18 / CIFAR-10 / 50 clients (capacity)" ;;
+  c10)  PAPER_WM=99.72; PAPER_ACC=90.78; DEF_NC=10;  DEF_CFG=11; DEF_MODE=class
+        ROWDESC="Table I+II  ResNet-18 / CIFAR-10 / 10 clients" ;;
+  c100) PAPER_WM=99.71; PAPER_ACC=75.31; DEF_NC=100; DEF_CFG=14; DEF_MODE=class
+        ROWDESC="Table I+II  ResNet-18 / CIFAR-100 / 100 clients" ;;
+  *) echo "ROW must be t9 | c10 | c100"; exit 1 ;;
+esac
+
 CMD="${1:-help}"
-SEEDS="${SEEDS:-0 1 2}"
-NC="${NC:-50}"
+SEEDS="${SEEDS:-0 1 2 3 4 5 6 7 8 9}"
+NC="${NC:-$DEF_NC}"
 ROUNDS="${ROUNDS:-50}"
 NT="${NT:-50}"
-MODE="${MODE:-client_train}"
+MODE="${MODE:-$DEF_MODE}"
 WM_BITS="${WM_BITS:-}"
 HELDOUT="${HELDOUT:-0}"
-CFG=11                                   # wm_resnet18_cifar10 (resnet18/cifar10/50 rounds/5 epochs)
+CFG="${CFG:-$DEF_CFG}"
 RES="${RES:-/mnt/nfs/home/zu/results}"
-FAM="${FAM:-table9_c10_nc${NC}_${MODE}}"
-FAM_HO="table9_c10_nc${NC}_class"
+FAM="${FAM:-paper_${ROW}_nc${NC}_${MODE}}"
+FAM_HO="paper_${ROW}_nc${NC}_class"
 
-PAPER_WM=95.78
-PAPER_ACC=88.42
 
 submit_one(){   # $1=family  $2=trigger mode
   local fam="$1" mode="$2" s
-  echo "== submitting $fam  (clients=$NC, rounds=$ROUNDS, N_T=$NT, mode=$mode, seeds: $SEEDS)"
+  echo "== [$ROWDESC] submitting $fam  (clients=$NC, rounds=$ROUNDS, N_T=$NT, mode=$mode, seeds: $SEEDS)"
   for s in $SEEDS; do
     env ATTACK=none NUM_CLIENTS="$NC" ROUNDS="$ROUNDS" \
         WM_NUM_TRIGGERS="$NT" WM_TRIGGER_MODE="$mode" \
@@ -74,8 +85,8 @@ case "$CMD" in
     submit_one "$FAM" "$MODE"
     [ "$HELDOUT" = "1" ] && submit_one "$FAM_HO" "class"
     echo
-    echo "submitted. when the jobs finish:  ./table9_check.sh check"
-    echo "  (or scp results locally and:  RES=<local dir> ./table9_check.sh check)"
+    echo "submitted. when the jobs finish:  ./paper_check.sh check"
+    echo "  (or scp results locally and:  RES=<local dir> ./paper_check.sh check)"
     ;;
 
   check)
@@ -184,8 +195,11 @@ PY
 
   *)
     cat <<USAGE
-usage: ./table9_check.sh <submit|check>
-  submit   fire the Table IX run (ResNet-18 / CIFAR-10 / ${NC} clients / all honest)
+usage: ROW=<t9|c10|c100> ./paper_check.sh <submit|check>
+  ROW=c10   Table I+II  CIFAR-10  10 clients   (wm 99.72 / acc 90.78)
+  ROW=c100  Table I+II  CIFAR-100 100 clients  (wm 99.71 / acc 75.31)
+  ROW=t9    Table IX    CIFAR-10  50 clients   (wm 95.78 / acc 88.42)
+  submit   fire the run for $ROW (ResNet-18 / CIFAR-10 / ${NC} clients / all honest)
   check    compare the finished runs against the paper (wm ${PAPER_WM}%, acc ${PAPER_ACC}%)
 
 knobs: SEEDS('0 1 2')  NC(50)  ROUNDS(50)  NT(50)  MODE(client_train)  WM_BITS()

@@ -268,10 +268,97 @@ per client per round) is the discriminator:
 Check that column before interpreting any non-IID BER, and expect the zero-sample population
 to grow as alpha shrinks.
 
+## 2d. +N free-riding spectrum (attack sweep)
+
+**Question:** how much data must a free-rider actually spend before its watermark passes?
+`AUTOP_COMMON_PER_CLASS` (N) is the knob; the sweep walks it from the cheapest possible
+embedder to a full honest shard.
+
+| N | what the free-rider trains on | role |
+|---|---|---|
+| `0` | trigger-class images only | cheapest embedder; paper Table V predicts it overfits and fails to generalise |
+| `1`, `2` | + 1 or 2 images per common class | the "really push the limits" end |
+| `5`, `10`, `25`, `50` | + N per common class | the working range |
+| `-1` | **full shard** (identical to an honest client) | **upper anchor.** Still tagged `is_free_rider`, so if its BER is indistinguishable from honest — and it must be — then BER measures *data spent*, not honesty. That is the whole argument in one run. |
+
+A second axis, `AUTOP_N_COMMON_CLASSES` (K): draw from only **K randomly chosen** common
+classes instead of all of them. This separates *how many images* from *how much class
+diversity* — the mark is read off the shape of the non-trigger softmax tail, so a free-rider
+touching few classes may leave most of the tail unshaped even with a large image count.
+
+**Bug fixed to make this work:** `wm_client.py` previously did
+`common_per_class=max(0, cfg.autop_common_per_class)`, which clamped `-1` to `0` — the
+full-shard anchor was silently unreachable and ran as triggers-only. Now passed through
+unclamped, with `-1` handled explicitly in `attacks_adaptive.py`.
+
+```bash
+# default ladder: N = -1 0 1 2 5 10 25 50   (families ..._c36_n<N>, -1 tagged nm1)
+DS=c100 SEEDS='0 1 2' POS=3,6 ./run_all.sh sweep
+
+# push the low end harder / custom ladder
+DS=c100 SEEDS='0 1 2' POS=3,6 NS='0 1 2 3 4' ./run_all.sh sweep
+
+# class-diversity axis: same N, but only K random common classes
+DS=c100 SEEDS='0 1 2' POS=3,6 NS='5 10' KCLS=5  ./run_all.sh sweep   # -> ..._n5_k5
+DS=c100 SEEDS='0 1 2' POS=3,6 NS='5 10' KCLS=20 ./run_all.sh sweep
+
+# plot: BER-over-rounds per N, converged BER vs N, effort vs N
+python scripts/plots.py sweep --in "$RES/*/result.json" --eta <calibrated> \
+    --out "$RES/figs/sweep_c36.png"
 ```
-LEGS="iid noniid" ./run_everything.sh submit
-LEGS="noniid_a01 noniid_a1 noniid_a100" ./run_everything.sh submit
+
+Read the figure as: the N where the converged curve crosses below η is the **free-riding
+threshold** — the minimum data purchase that buys invisibility. Panel 3 converts N into actual
+samples/round, which is the number to quote (device-independent, unlike gpu_ms).
+
+## 2e. Paper sanity rows (are my numbers right at all?)
+
+Three all-honest rows reproduce the paper directly. `paper_check.sh` submits and then grades
+them (supersedes `table9_check.sh`, which only did the third):
+
+| ROW | paper source | setup | watermark acc | classification acc |
+|---|---|---|---|---|
+| `c10` | Table I + II | ResNet-18 / CIFAR-10 / **10 clients** | 99.72 | 90.78 |
+| `c100` | Table I + II | ResNet-18 / CIFAR-100 / **100 clients** | 99.71 | 75.31 |
+| `t9` | Table IX | ResNet-18 / CIFAR-10 / **50 clients** (capacity) | 95.78 | 88.42 |
+
+Note CIFAR-100 in Table I uses **100 clients**, not the 10 the `iid` leg runs — so the `iid`
+honest runs are *not* a paper comparison, and neither is anything currently in flight. These
+are new. Both use 10 seeds.
+
+```bash
+ROW=c10  ./paper_check.sh submit      # -> family paper_c10_nc10_class
+ROW=c100 ./paper_check.sh submit      # -> family paper_c100_nc100_class
+ROW=t9   ./paper_check.sh submit      # -> family paper_t9_nc50_client_train
+ROW=c10  ./paper_check.sh check       # grade vs the paper (±2pp verdict)
 ```
+Equivalently as legs: `LEGS="sanity10 sanity100" ./run_everything.sh submit` (10 seeds each).
+
+## 2f. Capacity — all verifier modes now wired
+
+Oversubscription (clients > classes) is now covered in **all three** trigger-image modes on
+**both** datasets. If you ran capacity before the `wm_trigger_mode` change, those runs used
+the `class` mode only — rerun for the rest.
+
+| leg | dataset / clients | trigger mode | what it isolates |
+|---|---|---|---|
+| `capacity` | CIFAR-100 / 200 | `class` (shared held-out bank) | generalisation; clients on one class differ only by `M^i`,`B^i` |
+| `capacity_cv` | CIFAR-100 / 200 | `client` (disjoint held-out slice) | paper's "client-specific trigger variations", still held-out |
+| `capacity_paper` | CIFAR-100 / 200 | `client_train` (test == train imgs) | **paper §V-F3 exact**; memorisation |
+| `capacity10` | CIFAR-10 / 50 | `class` | same as `capacity` without the thin-data confound |
+| `capacity10_paper` | CIFAR-10 / 50 | `client_train` | paper protocol, healthy data |
+
+```bash
+LEGS="capacity capacity_cv capacity_paper capacity10 capacity10_paper" \
+  ./run_everything.sh submit
+```
+Expect `client_train` >> `class`. That gap is the memorisation artifact, and the paper's own
+Table V is the citation for why it matters.
+
+**Constraint (mode `client` only):** CIFAR-100's test set has 100 images/class, so
+`N_T × clients_per_class ≤ 100`. At 200 clients (2/class) with `N_T=50` that is exactly 100 —
+zero slack. 3 clients/class would wrap and stop being disjoint; drop to `N_T=33`.
+`client_train` has no such limit.
 
 ## 3. What the seed varies (and why)
 
@@ -291,6 +378,68 @@ Healthy variance to average over: partition / shuffle / init. Task-changing vari
 bits (and, avoidably, the unbalanced stuck-bit lottery — subtract it with the `balanced` leg).
 
 ---
+
+## 3b. MASTER COMMAND LIST (run order + status)
+
+Run `submit`/`honest`/`attacks`/`sweep` from the dir with `submit_experiment.sh` + `.env`
+(your `infra/`). Run `plot`/`check`/`separability` locally after `scp`-ing results.
+Nothing waits on the cluster. **Check the load first:** `./run_everything.sh count`
+(currently 153 GPU-jobs for the full matrix; deserved quota = 3 GPUs, extra is preemptible).
+
+### Status legend
+✅ done / in flight · 🔁 rerun needed (code changed) · 🆕 new, not run yet
+
+| # | command | what it does | status |
+|---|---|---|---|
+| **0** | `./run_everything.sh count` | job tally + quota context, submits nothing | 🆕 |
+| **1** | `ROW=c10 ./paper_check.sh submit` | sanity: CIFAR-10, 10 clients, all honest, 10 seeds → paper 99.72 / 90.78 | 🆕 |
+| **2** | `ROW=c100 ./paper_check.sh submit` | sanity: CIFAR-100, **100 clients**, all honest, 10 seeds → paper 99.71 / 75.31 | 🆕 |
+| **3** | `ROW=t9 ./paper_check.sh submit` | Table IX: CIFAR-10, 50 clients, capacity protocol → 95.78 / 88.42 | ✅ in flight (as `table9_check.sh`) |
+| **4** | `ROW=<r> ./paper_check.sh check` | grade rows 1–3 against the paper (±2pp) | 🆕 |
+| **5** | `LEGS=iid ./run_everything.sh submit` | core: honest + reduced 1,7 + reduced 3,6 + sameclass 0→6 | ✅ mostly done |
+| **6** | `LEGS=balanced ./run_everything.sh submit` | same with balanced keys → is the overlap a key artifact (F6)? | 🆕 |
+| **7** | `LEGS=noniid ./run_everything.sh submit` | Dirichlet α=0.5: honest + reduced 3,6 + sameclass | 🆕 |
+| **8** | `LEGS="noniid_a01 noniid_a1 noniid_a100" ./run_everything.sh submit` | α sweep 0.1 / 1.0 / 100 (→IID) | 🆕 |
+| **9** | `LEGS=sin ./run_everything.sh submit` | sin() smoothing, paper Eq. 9 | 🆕 |
+| **10** | `LEGS=bits20 ./run_everything.sh submit` | m=20 bits | 🆕 |
+| **11** | `LEGS=classes ./run_everything.sh submit` | trigger classes 9,19,…,99 instead of 0–9 | 🆕 |
+| **12** | `LEGS="capacity capacity_cv capacity_paper" ./run_everything.sh submit` | CIFAR-100 / 200 clients, all 3 trigger modes | 🔁 rerun (ran pre-`wm_trigger_mode`) |
+| **13** | `LEGS="capacity10 capacity10_paper" ./run_everything.sh submit` | CIFAR-10 / 50 clients, 2 trigger modes | 🔁 rerun |
+| **14** | `DS=c100 ./run_all.sh calibrate` | freeze η from the honest runs (per leg; `attacks` phase does it for you) | ✅ |
+| **15** | `DS=c100 SEEDS='0 1 2' POS=3,6 ./run_all.sh sweep` | +N spectrum: N = −1 0 1 2 5 10 25 50 | 🆕 (bug fixed: −1 was clamped to 0) |
+| **16** | `DS=c100 SEEDS='0 1 2' POS=3,6 NS='5 10' KCLS=5 ./run_all.sh sweep` | class-diversity axis (K random common classes) | 🆕 |
+| **17** | `RES=<local> ./run_everything.sh plot` | calibrate + separability tables + all figures, per leg | 🆕 |
+| **18** | `python scripts/plots.py sweep --in "$RES/*/result.json" --eta <η> --out fig.png` | the +N spectrum figure | 🆕 |
+| **19** | `python scripts/separability.py --honest-in … --attack-in … --per-class` | rule-independent non-separability tables | 🆕 |
+
+### Suggested order given a 3-GPU deserved quota
+```bash
+./run_everything.sh count                                   # look before you leap
+ROW=c10 ./paper_check.sh submit                             # cheapest, highest-value sanity
+ROW=c100 ./paper_check.sh submit
+LEGS="iid noniid" MAX_INFLIGHT=3 ./run_everything.sh submit  # the core argument
+# ... then, as capacity frees up:
+LEGS="balanced classes sin bits20" ./run_everything.sh submit
+LEGS="noniid_a01 noniid_a1 noniid_a100" ./run_everything.sh submit
+LEGS="capacity capacity_cv capacity_paper capacity10 capacity10_paper" ./run_everything.sh submit
+DS=c100 SEEDS='0 1 2' POS=3,6 ./run_all.sh sweep             # after iid η exists
+```
+
+### Useful knobs
+`MAX_INFLIGHT=3` cap concurrency · `RUNAI_EXTRA="--node-pools <p>"` pin GPU type ·
+`DO_PLOTS=0` skip figures (plot locally) · `HONEST_SEEDS` / `ATTACK_SEEDS` / `SANITY_SEEDS` ·
+`NS` / `KCLS` sweep ladders · `PROV_ETA` provisional η for `submit`
+
+### Cluster
+```bash
+runai list jobs        # NODE column = which GPU; gpu001-032 = A100-80GB
+runai list projects    # DESERVED (3) vs ALLOCATED right now
+runai list node-pools  # pool names for RUNAI_EXTRA
+```
+Every run now records `gpu_name` / `gpu_count` in `result.json` and an `nvidia-smi` line in
+`pod.log`. GPU type affects **only** `gpu_ms` / `wall_ms`; BER, accuracy, `samples` and
+`flops` are unaffected, and the effort *ratios* are computed within a single run so they are
+safe regardless.
 
 ## 4. Original task list — status audit
 
@@ -315,7 +464,7 @@ bits (and, avoidably, the unbalanced stuck-bit lottery — subtract it with the 
 | experiments | different classes have different BER, high variance | ✅ done (`class_probe`, `honest_lines`, `classes` leg) |
 | experiments | test all thresholds, all fail | ✅ done |
 | experiments | same trigger class → same BER (FR vs honest) | ✅ done (`sameclass` leg) |
-| experiments | FR spectrum: sweep +N/common, source classes, limits | ⚠️ partial (`AUTOP_COMMON_PER_CLASS` exists; no sweep wired) |
+| experiments | FR spectrum: sweep +N/common, source classes, limits | ✅ done (`run_all.sh sweep`, N and K axes, `plots.py sweep`; −1 clamp bug fixed) |
 | experiments | non-IID | ✅ done (`noniid` leg) |
 | theory | no threshold can work (noise/overlap) | ⚠️ empirically supported (OVL, best-error), not formalized |
 | theory | not enough freedom in output logits | ❌ not formalized (dominance/entropy diagnostics gesture at it) |

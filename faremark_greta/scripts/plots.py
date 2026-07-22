@@ -1,5 +1,8 @@
 """
 plots:
+TODO: update the docstring to document all available plotting
+
+
   threshold   Is the mu+3sigma calculation SOLID? Shows WHY honest points sit
               above the "tight" eta line even though 3-sigma "should" cover
               ~99.7%: the tight eta is mu+3sigma over ROUND-MEAN BER (variance
@@ -1437,10 +1440,6 @@ def eta_stability(a):
           f"n_seeds={len(etas)}")
     print(f"  saved BER plot and eta spread plot to {a.out}")
 
-
-# ============================================================================
-# honest class lines nad class difficulty plotting
-# ============================================================================
 def _honest_runs(a):
     return [r for r in load(a.inp) if th.is_honest_run(r)
             and (a.family is None or fam(r) == a.family)]
@@ -1655,6 +1654,117 @@ def separability_plot(a):
     print(f"OVL={res['overlap_coefficient']}  best_bal_err={res['best_threshold_balanced_error']}")
 
 
+def sweep_plot(a):
+    """+N sweep: how much data must a free-rider spend before its mark passes?
+
+    panel 1: free-rider BER over rounds, one line per N (post-warmup)
+    panel 2: converged free-rider BER vs N, with the honest floor and eta drawn
+    panel 3: effort actually spent (samples/round) vs N -- the x-axis that matters,
+             since N is a knob but samples is the cost.
+    N = -1 means FULL shard (honest-equivalent); it is drawn as the right-hand anchor.
+    """
+    tail = getattr(a, "tail", None) or TAIL
+    runs = load(a.inp)
+    # collect sweep runs: manifest.sweep_var == common_per_class
+    byN = defaultdict(list)
+    for r in runs:
+        man = r.get("manifest", {}) or {}
+        if man.get("sweep_var") != "common_per_class":
+            continue
+        if a.family and not (man.get("family") or "").startswith(a.family):
+            continue
+        try:
+            n = int(man.get("sweep_level"))
+        except (TypeError, ValueError):
+            continue
+        byN[n].append(r)
+    if not byN:
+        print("no +N sweep runs found (need manifest.sweep_var=common_per_class). "
+              "run:  ./run_all.sh sweep"); return
+
+    Ns = sorted(byN)                      # -1 sorts first; move it to the end as the anchor
+    order = [n for n in Ns if n >= 0] + [n for n in Ns if n < 0]
+
+    def fr_ber_series(rs):
+        """round -> mean FR BER across seeds."""
+        acc = defaultdict(list)
+        for r in rs:
+            for h in r.get("history", []):
+                rd = h.get("round")
+                vals = [p["ber"] for p in (h.get("wm_per_client") or []) if p.get("is_free_rider")]
+                if rd and vals:
+                    acc[rd].append(float(np.mean(vals)))
+        return {rd: float(np.mean(v)) for rd, v in acc.items()}
+
+    def conv_fr_ber(rs):
+        vals = []
+        for r in rs:
+            for h in r.get("history", [])[-tail:]:
+                vals += [p["ber"] for p in (h.get("wm_per_client") or []) if p.get("is_free_rider")]
+        return (float(np.mean(vals)), float(np.std(vals))) if vals else (float("nan"), 0.0)
+
+    def conv_hon_ber(rs):
+        vals = []
+        for r in rs:
+            for h in r.get("history", [])[-tail:]:
+                vals += [p["ber"] for p in (h.get("wm_per_client") or []) if not p.get("is_free_rider")]
+        return float(np.mean(vals)) if vals else float("nan")
+
+    def fr_samples(rs):
+        """mean samples/round spent by the free-riders (device-independent effort)."""
+        vals = []
+        for r in rs:
+            cs = (r.get("compute", {}) or {}).get("summary", {}) or {}
+            v = cs.get("fr_mean_samples")
+            if v: vals.append(float(v))
+        return float(np.mean(vals)) if vals else float("nan")
+
+    fig, (ax1, ax2, ax3) = stacked_panels(3, figsize=(11, 10), height_ratios=[1.2, 1, 1])
+    cmap = plt.get_cmap("viridis")
+    lab = lambda n: ("full shard" if n < 0 else ("triggers only" if n == 0 else f"+{n}/class"))
+
+    for i, n in enumerate(order):
+        ser = fr_ber_series(byN[n])
+        if not ser: continue
+        rds = sorted(ser)
+        col = OK["black"] if n < 0 else cmap(i / max(len(order) - 1, 1))
+        ax1.plot(rds, [ser[r] for r in rds], lw=2,
+                 ls="--" if n < 0 else "-", color=col,
+                 label=f"{lab(n)}  (n={len(byN[n])} seeds)")
+    hon = conv_hon_ber([r for rs in byN.values() for r in rs])
+    if hon == hon:
+        ax1.axhline(hon, color=C_HONEST, ls=":", lw=2, label=f"honest floor {hon:.3f}")
+    if getattr(a, "eta", None) is not None:
+        ax1.axhline(a.eta, color=OK["black"], ls="--", lw=2, label=f"η = {a.eta:.3f}")
+    ax1.set_ylabel("free-rider BER")
+    ax1.set_title("Free-riding spectrum — BER over rounds for each data budget")
+    ax1.legend(fontsize=8, ncol=2, loc="upper right")
+
+    xs = list(range(len(order)))
+    mus = [conv_fr_ber(byN[n])[0] for n in order]
+    sds = [conv_fr_ber(byN[n])[1] for n in order]
+    ax2.errorbar(xs, mus, yerr=sds, marker="o", lw=2, color=C_FR, capsize=3,
+                 label="free-rider (converged)")
+    if hon == hon:
+        ax2.axhline(hon, color=C_HONEST, ls=":", lw=2, label="honest floor")
+    if getattr(a, "eta", None) is not None:
+        ax2.axhline(a.eta, color=OK["black"], ls="--", lw=2, label="η (flagged above)")
+    ax2.set_xticks(xs); ax2.set_xticklabels([lab(n) for n in order], fontsize=8, rotation=20)
+    ax2.set_ylabel("converged BER")
+    ax2.set_title("Converged BER vs data budget — where does the free-rider stop being caught?")
+    ax2.legend(fontsize=8)
+
+    sm = [fr_samples(byN[n]) for n in order]
+    ax3.bar(xs, sm, color=OK["blue"])
+    ax3.set_xticks(xs); ax3.set_xticklabels([lab(n) for n in order], fontsize=8, rotation=20)
+    ax3.set_ylabel("free-rider samples / round")
+    ax3.set_title("Actual effort spent (device-independent)")
+    out = a.out if str(a.out).endswith(".png") else a.out + ".png"
+    finish(fig, out)
+    for n, m in zip(order, mus):
+        print(f"  {lab(n):>16}: converged FR BER = {m:.4f}")
+
+
 CMDS = {
     "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
@@ -1668,6 +1778,7 @@ CMDS = {
     "honest_lines": honest_lines,      # MERGED: honest BER per class over rounds (was honest_class_lines.py)
     "class_probe": class_probe,        # MERGED: per-class BER vs predictors + correlations (was class_difficulty_probe.py)
     "separability": separability_plot, # NEW: honest vs FR BER overlap + threshold-regime FPR/recall
+    "sweep": sweep_plot,               # NEW: +N free-riding spectrum (BER vs data budget)
     "threshold": threshold,            # (legacy) two-distribution soundness view
     # legacy sweep plots (kept for reuse)
     "frontier": frontier,

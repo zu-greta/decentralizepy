@@ -85,6 +85,8 @@ def parse_args():
     p.add_argument("--autop_max_coast", type=int, default=None)
     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
+    p.add_argument("--autop_n_common_classes", type=int, default=None,
+                   help="K randomly-chosen common classes to draw from (-1/0 = all).")
     p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
     p.add_argument("--autop_stay_min", action="store_true", default=None,
                    help="coast when safely under target, tap only when needed (default: tap every round)")
@@ -125,6 +127,15 @@ def parse_args():
     return p.parse_args()
 
 
+def _gpu_name():
+    """Physical GPU model, e.g. 'NVIDIA A100-SXM4-80GB'. None on CPU."""
+    try:
+        import torch as _t
+        return _t.cuda.get_device_name(0) if _t.cuda.is_available() else None
+    except Exception:
+        return None
+
+
 _OVERRIDABLE = [
     "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map",
     "num_clients", "rounds", "local_epochs",
@@ -135,7 +146,7 @@ _OVERRIDABLE = [
     "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
     "autop_eta_mode", "autop_num_clients_est",
     "autop_margin0", "autop_safety", "autop_max_coast",
-    "autop_floor", "autop_common_per_class", "autop_scope",
+    "autop_floor", "autop_common_per_class", "autop_n_common_classes", "autop_scope",
     "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
     "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_num_triggers",
     "wm_trigger_mode", "wm_lambda", "wm_beta",
@@ -368,6 +379,12 @@ def main():
         "repeat": args.repeat,
         "seed": seed,
         "device": device,
+        # which physical GPU this run landed on. RCP is heterogeneous (V100 / A100-40 /
+        # A100-80 / H100 / H200), and timing metrics (gpu_ms, wall_ms) are only
+        # comparable across runs that used the SAME card. BER / accuracy / samples /
+        # flops do NOT depend on this. Recorded so every run self-documents.
+        "gpu_name": _gpu_name(),
+        "gpu_count": (torch.cuda.device_count() if torch.cuda.is_available() else 0),
         "attack": cfg.attack,
         "num_free_riders": cfg.num_free_riders,
         "free_rider_indices": free_rider_indices,

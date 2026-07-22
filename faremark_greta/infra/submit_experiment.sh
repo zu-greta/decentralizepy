@@ -8,6 +8,13 @@ set -euo pipefail
 #     ATTACK=none FAMILY=t1_all_honest ./submit_experiment.sh 14 0
 #  Set DEBUG_HOLD=1 to keep the pod alive 1h after the run for inspection.
 # ===================================================
+# RUNAI_EXTRA: extra flags appended verbatim to `runai submit`. Use it to pin a GPU
+# type on a heterogeneous cluster (RCP has V100 / A100-40 / A100-80 / H100 / H200, so
+# wall-clock and gpu_ms are not comparable across jobs unless you pin), e.g.
+#   RUNAI_EXTRA="--node-pools a100-80" ./submit_experiment.sh 14 0
+# (check the pool names with: runai list node-pools)
+# NOTE: so far A100-80 have been used for experiments
+
 CONFIG_IDX="${1:-0}"
 REPEAT="${2:-0}"
 DEBUG_HOLD="${DEBUG_HOLD:-0}"
@@ -22,7 +29,7 @@ GIT_BRANCH="main"
 PKG_SUBDIR="faremark_greta"
 SCRIPT="${SCRIPT:-scripts/run_experiment.py}"
 
-# ---- Python overrides assembled from env vars (only the ones you set) ----
+# ---- Python overrides assembled from env vars ----
 PY_EXTRA=""
 # general
 [ -n "${MODEL:-}" ]            && PY_EXTRA="$PY_EXTRA --model ${MODEL}"
@@ -58,6 +65,7 @@ PY_EXTRA=""
 [ -n "${AUTOP_MAX_COAST:-}" ]       && PY_EXTRA="$PY_EXTRA --autop_max_coast ${AUTOP_MAX_COAST}"
 [ -n "${AUTOP_FLOOR:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_floor ${AUTOP_FLOOR}"
 [ -n "${AUTOP_COMMON_PER_CLASS:-}" ] && PY_EXTRA="$PY_EXTRA --autop_common_per_class ${AUTOP_COMMON_PER_CLASS}"
+[ -n "${AUTOP_N_COMMON_CLASSES:-}" ] && PY_EXTRA="$PY_EXTRA --autop_n_common_classes ${AUTOP_N_COMMON_CLASSES}"
 [ -n "${AUTOP_SCOPE:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_scope ${AUTOP_SCOPE}"
 [ "${AUTOP_STAY_MIN:-}" = "1" ]     && PY_EXTRA="$PY_EXTRA --autop_stay_min"
 [ -n "${AUTOP_HOLDOUT_RATIO:-}" ]   && PY_EXTRA="$PY_EXTRA --autop_holdout_ratio ${AUTOP_HOLDOUT_RATIO}"
@@ -81,11 +89,10 @@ PY_EXTRA=""
 [ -n "${SWEEP_LEVEL:-}" ] && PY_EXTRA="$PY_EXTRA --sweep_level ${SWEEP_LEVEL}"
 
 # Tag results/job uniquely.
-# RUN_TAG (the output-dir name) is now self-identifying (STATUS "KNOWN ISSUES").
-#   * via run_all.sh: FAMILY already encodes dataset+bits+attack+partition+positions,
-#     so the dir is exactly "<FAMILY>_rep<seed>_<ts>" -- predictable and collision-free.
-#   * bare submit_experiment.sh (no FAMILY): assemble the tag from the knobs so two
-#     different experiments never look identical except for a timestamp.
+# RUN_TAG (the output-dir name) 
+#   * via run_all.sh: FAMILY encodes dataset+bits+attack+partition+positions,
+#     the dir is exactly "<FAMILY>_rep<seed>_<ts>"
+#   * bare submit_experiment.sh (no FAMILY): assemble the tag from the knobs 
 USER_TAG="${TAG:+_${TAG}}"
 FR_TAG=""                                 # always defined (JOB_NAME uses it under set -u)
 if [ -n "${FAMILY:-}" ]; then
@@ -108,6 +115,7 @@ echo "=== Submitting $JOB_NAME (config_idx=$CONFIG_IDX repeat=$REPEAT) ==="
 
 runai submit "$JOB_NAME" \
   --project "$PROJECT" -g 1 --image "$IMAGE" --pvc "$PVC:$MOUNT" \
+  ${RUNAI_EXTRA:-} \
   --run-as-uid "$USER_UID" --run-as-gid "$USER_GID" --memory "$MEMORY" \
   -e "CONFIG_IDX=$CONFIG_IDX" -e "REPEAT=$REPEAT" -e "OUTPUT_DIR=$OUTPUT_DIR" \
   -e "DATA_ROOT=$DATA_ROOT" -e "GIT_REPO=$GIT_REPO" -e "GIT_BRANCH=$GIT_BRANCH" \
@@ -119,6 +127,8 @@ runai submit "$JOB_NAME" \
     mkdir -p "$OUTPUT_DIR" "$DATA_ROOT"
     exec > >(tee "$OUTPUT_DIR/pod.log") 2>&1
     echo "=== pod start: $(date) ==="
+    echo "=== node: ${NODE_NAME:-unknown} ==="
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || echo "nvidia-smi unavailable"
     rm -rf /tmp/decentralizepy
     git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REPO" /tmp/decentralizepy
     if [ ! -d "/tmp/decentralizepy/$PKG_SUBDIR" ]; then

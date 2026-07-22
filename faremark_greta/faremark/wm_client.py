@@ -103,11 +103,7 @@ class WatermarkClient(Client):
             "wm_loss": round(wm_sum / max(n_wm_batches, 1), 5) if n_wm_batches else None,
             "total_loss": round(tot_sum / max(n_batches, 1), 5),
             "trig_train_acc": round(trig_correct / trig_total, 4) if trig_total else None,
-            # how many trigger-class samples this client actually saw this round.
-            # Under Dirichlet non-IID a client can hold FEW or ZERO images of its own
-            # trigger class -> it cannot embed its mark at all -> BER ~0.5 -> guaranteed
-            # false positive. This number is what distinguishes "hard class" from
-            # "no data to embed with", so always check it before reading a non-IID BER.
+            # number of trigger class samples client saw in the round (can be 0 or very few in non-iid)
             "n_trigger_samples": int(trig_total),
             "trigger_class": int(self.trigger_class),
         }
@@ -139,11 +135,9 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     Honest slots embed; free-rider slots are the submarine attack (watermark-capable) or
     a crude baseline. Returns (clients, free_rider_indices)."""
     from .attacks import ATTACKS, GaussianNoiseFreeRider, resolve_free_riders
-    from .attacks_adaptive import make_submarine_attack
-    from .attacks_simple import make_reduced_attack, make_tap_attack   
+    from .attacks_adaptive import make_submarine_attack, make_reduced_attack, make_tap_attack   
 
-    # Watermark construction is LOCKED to the former paper_faithful=True behaviour:
-    # random (unbalanced) keys, FULL softmax (no trigger-class exclusion), m = n//10
+    # random (unbalanced) keys, full softmax (no trigger-class exclusion), m = n//10
     PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
     m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
     l = wm.grouping(num_classes, m)
@@ -170,8 +164,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
         trigger_class = tmap.get(cid, cid % num_classes)  # round-robin, unless overridden
-        # key balance is a config flag now (was hardcoded False). balanced=True removes
-        # structurally-unembeddable same-sign rows (STATUS F6). Still per-cid pseudo-random.
+        # key balance config: balanced=True removes structurally-unembeddable same-sign rows 
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)  # TODO hardcoded seed offset 1000*cid+1
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
@@ -219,7 +212,9 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             elif attack == "reduced":
                 cls = make_reduced_attack(WatermarkClient)
                 clients.append(cls(
-                    common_per_class=max(0, getattr(cfg, "autop_common_per_class", 5)),
+                    # -1: full data shard. 0 = trigger-class images only
+                    common_per_class=int(getattr(cfg, "autop_common_per_class", 5)),
+                    n_common_classes=int(getattr(cfg, "autop_n_common_classes", -1)),
                     honest_rounds=getattr(cfg, "autop_honest_until", 12),
                     calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
                     **wm_args, **common))

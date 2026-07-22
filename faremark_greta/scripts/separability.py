@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 """
-"does ANY scalar threshold separate free-riders from honest?"
+goal: prove/disprove that a possible scalar threshold exists that can seperate free-riders from honest clients
 
 FareMark flags client i as a free-rider iff its bit-error-rate BER_i >= eta, for a
-single scalar threshold eta. The whole detector is that one comparison. This script
-takes honest runs and free-rider (attack) runs and asks, on the smae converged BER
-distributions, two things:
+single scalar threshold eta. Experiments takes honest runs and free-rider (attack) 
+runs, on the smae converged BER distributions:
 
   1. REGIME OF THRESHOLDS -- for a battery of eta rules (the paper's mu+3sigma over
      round-means, a per-client/loose variant, robust median+k*MAD, a trimmed-mean
@@ -22,7 +21,7 @@ distributions, two things:
      eta separates the two populations: the detector is not merely mis-tuned, it is
      information-theoretically incapable of the task on this distribution.
 
-WHY THIS IS THE HEADLINE
+reasoning:
 ------------------------
 "Tune eta better" is answered by rule 1 (every rule has a bad corner). "Pick the
 perfect eta" is answered by rule 2 (even the oracle-optimal eta leaves a large
@@ -58,8 +57,7 @@ from collections import defaultdict
 import numpy as np
 
 # Canonical eta (mean-over-clients per round, then mu+3sigma, averaged over seeds)
-# lives in threshold.py. Import it so there is ONE definition of the coded rule;
-# fall back to a local copy if this script is run outside the package dir.
+# lives in threshold.py
 try:
     import threshold as _th  # type: ignore
     _HAVE_TH = True
@@ -168,7 +166,7 @@ def _percentile(xs, q):
 
 
 def coded_eta(honest_runs, tail):
-    """The repo's canonical eta (single source of truth = threshold.frozen_eta)."""
+    """The repo's canonical eta (single source of truth = threshold.frozen_eta)"""
     if _HAVE_TH:
         e = _th.frozen_eta(honest_runs, tail=tail)
         if e is not None:
@@ -179,7 +177,7 @@ def coded_eta(honest_runs, tail):
 
 # ---------------------------------------------------------- metrics for one eta
 def _rates(H, F, eta):
-    """flag iff ber >= eta. FPR on honest H, recall (TPR) on free-riders F."""
+    """flag iff ber >= eta. FPR on honest H, recall (TPR) on free-riders F"""
     H = np.asarray(H, float)
     F = np.asarray(F, float)
     fpr = float(np.mean(H >= eta)) if H.size else float("nan")
@@ -189,7 +187,7 @@ def _rates(H, F, eta):
 
 def best_threshold(H, F):
     """Sweep every candidate eta (midpoints of the pooled sorted BER values) and
-    return the one that MINIMISES balanced error (FPR+FNR)/2 -- i.e. the best any
+    return the one that minimises balanced error (FPR+FNR)/2 -- i.e. the best any
     scalar threshold can do. Returns (eta*, balanced_err*, fpr*, tpr*)."""
     H = np.asarray(H, float)
     F = np.asarray(F, float)

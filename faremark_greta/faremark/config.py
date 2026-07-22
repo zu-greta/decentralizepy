@@ -23,7 +23,7 @@ class ExpConfig:
     expected_acc: tuple = (0.0, 100.0)      # correctness band
 
     # ---- free-rider selection / paper baselines ----
-    attack: str = "none"                    # "none" | "previous_models" | "gaussian" | "submarine"
+    attack: str = "none"                    # "none" | "previous_models" | "gaussian" | "submarine" | "reduced"
     num_free_riders: int = 0                # how many of num_clients are free-riders
     free_rider_ids: str = ""                # NEW: "3,6" pins which cids free-ride (overrides the
                                             # seeded choice). Empty => choose_free_riders(seed).
@@ -74,6 +74,10 @@ class ExpConfig:
     autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
     autop_floor: float = 0.05               # "mark is good" bar
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
+    autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
+                                            # -1/0 = all of them; K>0 = K randomly chosen classes.
+                                            # Separates "how many images" from "how much class
+                                            # diversity" in the +N sweep.
     autop_scope: str = "full"               # PARAMS per tap: full | block2 | block | head
     autop_stay_min: bool = False            # coast (no training) while safely under target, tap only when needed.
                                             # False => tap EVERY post-warmup round (honest-style, for the data sweep).

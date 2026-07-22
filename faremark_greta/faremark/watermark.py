@@ -68,13 +68,13 @@ def make_key(num_bits: int, group_size: int, seed: int,
              balanced: bool = True) -> torch.Tensor:
     """Per-client secret projection matrix M, shape [m, l], entries +/-1.
 
-    balanced=True (default): each ROW is sign-balanced (equal +1/-1, shuffled).
+    balanced=True: each row is sign-balanced (equal +1/-1, shuffled).
     With small l this is required, not cosmetic: probabilities are non-negative
     and f(p) >= 0, so a same-sign row (e.g. [-1,-1]) would force z_k < 0
     regardless of input -> that bit could never be embedded. Balanced rows make
     z_k = sum_j f(p_j) M_{k,j} shapeable to either sign.
 
-    balanced=False: paper-exact pseudo-random +/-1 entries (the paper's M is
+    balanced=False (default): paper-exact pseudo-random +/-1 entries (the paper's M is
     drawn at random). Safe only when l is large enough that a random row is
     almost surely mixed-sign; otherwise some bits are unembeddable by construction.
     """

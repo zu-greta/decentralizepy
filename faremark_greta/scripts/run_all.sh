@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run_all.sh --  CIFAR-100 (default) or CIFAR-10.
+# run_all.sh -- CIFAR-100 (default) or CIFAR-10.
 #
 # Everything is TAGGED by dataset + bit count so runs never collide:
 #   honest  family = honest_<DS>_b<BITS>_iid      (BITS omitted -> "bdef" = code default m)
@@ -47,7 +47,7 @@ ETA_SUFFIX=""; [ "$PART" = "niid" ] && ETA_SUFFIX="_${PTAG}"
 ETA_FILE="${ETA_FILE:-$RES/eta_${TAG}${ETA_SUFFIX}.json}"
 PL="python scripts/plots.py"; TH="python threshold.py"
 SEP="python scripts/separability.py"
-HL="$PL honest_lines"                              # merged into plots.py (was honest_class_lines.py)
+HL="$PL honest_lines"                             
 FIXED_ETA="${FIXED_ETA:-}"; USE_FIXED_ETA="${USE_FIXED_ETA:-}"
 COMMON_E="ROUNDS=50 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4"
 BITSENV=""; [ -n "$BITS" ] && BITSENV="WM_BITS=$BITS"
@@ -93,7 +93,7 @@ reduced(){
 }
 
 # same-trigger-class control (the airtight non-separability slice): pin ONE free-rider
-# onto a HARD honest class so a FR and an honest client share a trigger class. Their BER
+# onto a hard honest class so a FR and an honest client share a trigger class. Their BER
 # is then drawn from ONE class floor (keys/bits still differ per cid), so no threshold
 # can tell them apart. SC_FR = which cid free-rides, SC_CLASS = the class it is pinned to.
 sameclass(){
@@ -118,6 +118,37 @@ noniid(){
   PART=niid PARTENV="PARTITION=dirichlet DIRICHLET_ALPHA=${DIRICHLET_ALPHA:-0.5}" \
   HFAM="honest_${TAG}_niid" honest
   echo "next: DS=$DS PART=niid ./run_all.sh calibrate  &&  DS=$DS PART=niid POS=$POS ./run_all.sh reduced"
+}
+
+# +N SWEEP: the free-riding spectrum, from "trigger images only" to "full shard".
+# N=0   -> trigger-class images only (cheapest possible embedder)
+# N=1,2,5,10,25,50 -> + N images from each common class
+# N=-1  -> FULL shard (trains exactly like an honest client; upper anchor: its BER
+#          MUST be indistinguishable from honest, proving BER tracks data spent)
+# KCLS=K additionally restricts the draw to K randomly chosen common classes, which
+# separates "how many images" from "how much class diversity".
+# Each N gets its own family: reduced_<TAG>_<PTAG>_c<POS>_n<N>[_k<K>]
+sweep(){
+  local eta; eta="$(get_eta)"
+  [ -z "$eta" ] && { echo "!! no eta for $TAG/$PART. Run 'calibrate' first."; return 1; }
+  local NS="${NS:--1 0 1 2 5 10 25 50}"
+  local KCLS="${KCLS:-}"                      # empty = all common classes
+  local KTAG=""; [ -n "$KCLS" ] && KTAG="_k${KCLS}"
+  local KENV=""; [ -n "$KCLS" ] && KENV="AUTOP_N_COMMON_CLASSES=$KCLS"
+  echo "== SWEEP $TAG/$PART pos=$POS  N in [$NS]  Kclasses=${KCLS:-all}  eta=$eta"
+  local n s
+  for n in $NS; do
+    local NTAG="${n/-/m}"                      # -1 -> m1 (no dash in family names)
+    local FAM="reduced_${TAG}_${PTAG}_c${POS//,/}_n${NTAG}${KTAG}"
+    for s in $SEEDS; do
+      env $COMMON_E $BITSENV $PARTENV $FENV $TCENV $TMENV $KENV \
+          ATTACK=reduced FREE_RIDER_IDS=$POS \
+          AUTOP_COMMON_PER_CLASS=$n WM_ETA_FIXED=$eta \
+          FAMILY="$FAM" SWEEP_VAR=common_per_class SWEEP_LEVEL=$n \
+          NOTE="$DS +N sweep N=$n K=${KCLS:-all} pos=$POS" \
+          WAIT=0 ./submit_experiment.sh "$CFG" "$s"
+    done
+  done
 }
 
 # ============================== PLOTS ==============================
@@ -166,11 +197,12 @@ case "${1:-}" in
   honest)       honest ;;
   calibrate)    calibrate ;;
   reduced)      reduced ;;
+  sweep)        sweep ;;
   sameclass)    sameclass ;;
   noniid)       noniid ;;
   separability) separability ;;
   PLOTALL)      plotall ;;
-  *) echo "usage: DS=c100|c10 [BITS=n] [PART=iid|niid] ./run_all.sh [honest|calibrate|reduced|sameclass|noniid|separability|PLOTALL]
+  *) echo "usage: DS=c100|c10 [BITS=n] [PART=iid|niid] ./run_all.sh [honest|calibrate|reduced|sweep|sameclass|noniid|separability|PLOTALL]
   current: DS=$DS CFG=$CFG TAG=$TAG PART=$PART alpha=$ALPHA RES=$RES SEEDS='$SEEDS' POS=$POS
   honest family: $HFAM
   eta file:      $ETA_FILE

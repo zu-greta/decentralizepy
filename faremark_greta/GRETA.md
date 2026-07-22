@@ -230,16 +230,16 @@ July21
 - Notes:
     - TODO: 
         - check what the seeds are varying over. what is the source of randomness, why is the variance so high?
-        - fix the tagging and naming of experiments for easier tracking
+        - [x] fix the tagging and naming of experiments for easier tracking
         - cleanup the logging in the code and result.json
-        - merge files that dont need to be seperated, same modules should be in a same file (eg. all plotting should be together)
+        - [x] merge files that dont need to be seperated, same modules should be in a same file (eg. all plotting should be together)
     - THRESHOLD: stress test different threshold calculations (and then prove that it is not possible for seperability)
         - adaptive clipping in warmup rounds (each round clip and adapt - until get to keep the right amount of clients in the pool)
         - median
         - trimmed mean
         -> regime of thresholds basically
     - DIFFICULTY:
-        - try better smoothing function - sin from paper ?
+        - try better smoothing function - sin function from paper 
     - DETECTION: 
         - define what consequence of crossing threshold would be
         - how many warnings before flagging
@@ -265,13 +265,17 @@ July21
     - TODO
         - check all thresholds - figure out details
         - double check the experiments they were calculated on
-        - run with non-iid and other settings too? all honest as always
+        - run with non-iid 
+            - PENDING: thresholds with 0.5
+            - PENDING: reduced attacks 3,6/1,7 with 0.5
+            - PENDING: same class reduced attacks for comparison
+            - TODO: run the different alpha values
         - READ reference.md -> understand all the new changes and experiments -> check if anything is missing from my list of things to add and run
         - check and analyse the results
         -> check how the paper tests for when too many clients compared to classes
             - table IX CIFAR-10 up to 50 clients
-            - TODO: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
-                - `./table9_check.sh check ` once the tests are done running -> this is with client_train
+            - PENDING: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
+            - TODO: `./table9_check.sh check ` once the tests are done running -> this is with client_train
         -> check if paper does non-iid => no
 
 ---

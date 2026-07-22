@@ -42,8 +42,34 @@ CAP_NC="${CAP_NC:-200}"
 CAP10_NC="${CAP10_NC:-50}"
 DO_PLOTS="${DO_PLOTS:-1}"
 PROV_ETA="${PROV_ETA:-0.065}"                # provisional eta for 'submit' (recomputed at 'plot')
-LEGS="${LEGS:-iid balanced noniid noniid_a01 noniid_a1 noniid_a100 sin bits20 classes capacity capacity_paper capacity10}"
+LEGS="${LEGS:-sanity10 sanity100 iid balanced noniid noniid_a01 noniid_a1 noniid_a100 sin bits20 classes capacity capacity_cv capacity_paper capacity10 capacity10_paper}"
 CLASS_MAP="0:9,1:19,2:29,3:39,4:49,5:59,6:69,7:79,8:89,9:99"
+MAX_INFLIGHT="${MAX_INFLIGHT:-0}"    # 0 = fire everything (no waiting, default).
+                                     # >0 = keep at most N of YOUR jobs running/pending;
+                                     #      polls `runai list jobs` and sleeps. Your project
+                                     #      deserved quota is small -- MAX_INFLIGHT=3 keeps
+                                     #      you inside it (non-preemptible, no complaints).
+THROTTLE_POLL="${THROTTLE_POLL:-60}"
+
+inflight(){   # count your Running/Pending jobs; echo -1 if runai is unavailable/unparseable
+  command -v runai >/dev/null 2>&1 || { echo -1; return; }
+  local n
+  n=$(runai list jobs 2>/dev/null | awk 'NR>1 && ($0 ~ /Running|Pending|ContainerCreating/)' | wc -l) || { echo -1; return; }
+  echo "${n:--1}"
+}
+
+throttle(){   # block until inflight < MAX_INFLIGHT (no-op when MAX_INFLIGHT=0)
+  [ "$MAX_INFLIGHT" -gt 0 ] 2>/dev/null || return 0
+  local n
+  while :; do
+    n=$(inflight)
+    [ "$n" -lt 0 ] && return 0                      # cannot measure -> do not block
+    [ "$n" -lt "$MAX_INFLIGHT" ] && return 0
+    echo "    [throttle] $n job(s) in flight >= MAX_INFLIGHT=$MAX_INFLIGHT, waiting ${THROTTLE_POLL}s..."
+    sleep "$THROTTLE_POLL"
+  done
+}
+
 nH=$(echo $HONEST_SEEDS | wc -w)
 nA=$(echo $ATTACK_SEEDS | wc -w)
 
@@ -63,10 +89,18 @@ set_leg(){
     sin)        HENV=(DS=c100 WMF=sin);                        ATKS=("POS=3,6|reduced") ;;
     bits20)     HENV=(DS=c100 BITS=20);                        ATKS=("POS=1,7|reduced" "POS=3,6|reduced") ;;
     classes)    HENV=(DS=c100 VTAG=spread TCMAP="$CLASS_MAP"); ATKS=("POS=3,6|reduced") ;;
+    # --- paper sanity rows (all honest, 10 seeds; compare with paper_check.sh) ---
+    sanity10)   HENV=(DS=c10 VTAG=sanity);                     ATKS=() ;;
+    sanity100)  HENV=(DS=c100 VTAG=sanity NUM_CLIENTS=100);    ATKS=() ;;
+    # --- capacity: all three verifier trigger-image modes, both datasets ---
     capacity)   HENV=(DS=c100 VTAG=nc200 NUM_CLIENTS="$CAP_NC"); ATKS=("POS=106,107|reduced") ;;
+    capacity_cv) HENV=(DS=c100 VTAG=nc200 NUM_CLIENTS="$CAP_NC" TRIGMODE=client WM_NUM_TRIGGERS=50)
+                 ATKS=("POS=106,107|reduced") ;;
     capacity_paper) HENV=(DS=c100 VTAG=nc200 NUM_CLIENTS="$CAP_NC" TRIGMODE=client_train WM_NUM_TRIGGERS=50)
                     ATKS=("POS=106,107|reduced") ;;
     capacity10) HENV=(DS=c10 NUM_CLIENTS="$CAP10_NC");         ATKS=("POS=16,17|reduced") ;;
+    capacity10_paper) HENV=(DS=c10 VTAG=tmtrain NUM_CLIENTS="$CAP10_NC" TRIGMODE=client_train WM_NUM_TRIGGERS=50)
+                      ATKS=("POS=16,17|reduced") ;;
     *) echo "  unknown leg '$1'"; return 1 ;;
   esac
 }
@@ -76,18 +110,22 @@ run_leg(){   # $1=leg  $2=phase
   local a extra target
   case "$2" in
     honest)
-      env "${HENV[@]}" SEEDS="$HONEST_SEEDS" bash "$RA" honest
+      local sd="$HONEST_SEEDS"
+      case "$1" in sanity10|sanity100) sd="${SANITY_SEEDS:-0 1 2 3 4 5 6 7 8 9}" ;; esac
+      throttle; env "${HENV[@]}" SEEDS="$sd" bash "$RA" honest
       ;;
     attacks)
       env "${HENV[@]}" bash "$RA" calibrate
       for a in "${ATKS[@]}"; do extra="${a%|*}"; target="${a#*|}"
-        env "${HENV[@]}" $extra SEEDS="$ATTACK_SEEDS" bash "$RA" "$target"
+        throttle; env "${HENV[@]}" $extra SEEDS="$ATTACK_SEEDS" bash "$RA" "$target"
       done
       ;;
     submit)   # honest + attacks together, provisional eta, no waiting
-      env "${HENV[@]}" SEEDS="$HONEST_SEEDS" bash "$RA" honest
+      local sd2="$HONEST_SEEDS"
+      case "$1" in sanity10|sanity100) sd2="${SANITY_SEEDS:-0 1 2 3 4 5 6 7 8 9}" ;; esac
+      throttle; env "${HENV[@]}" SEEDS="$sd2" bash "$RA" honest
       for a in "${ATKS[@]}"; do extra="${a%|*}"; target="${a#*|}"
-        env "${HENV[@]}" $extra USE_FIXED_ETA=1 FIXED_ETA="$PROV_ETA" \
+        throttle; env "${HENV[@]}" $extra USE_FIXED_ETA=1 FIXED_ETA="$PROV_ETA" \
             SEEDS="$ATTACK_SEEDS" bash "$RA" "$target"
       done
       ;;
@@ -107,17 +145,23 @@ case "$PHASE" in
     printf "%-14s %8s %8s %8s\n" leg honest attacks total
     for leg in $LEGS; do
       set_leg "$leg" || continue
-      h=$nH; a=$(( ${#ATKS[@]} * nA )); t=$((h+a)); tot=$((tot+t))
+      h=$nH
+      case "$leg" in sanity10|sanity100) h=$(echo ${SANITY_SEEDS:-0 1 2 3 4 5 6 7 8 9} | wc -w) ;; esac
+      a=$(( ${#ATKS[@]} * nA )); t=$((h+a)); tot=$((tot+t))
       printf "%-14s %8d %8d %8d\n" "$leg" "$h" "$a" "$t"
     done
     echo "-----------------------------------------------"
     printf "%-14s %26d GPU-jobs (1 GPU each)\n" TOTAL "$tot"
     echo
-    echo "check your quota before firing all of it:"
-    echo "  runai list projects                 # GPU quota for your project"
-    echo "  runai list jobs                     # what is already running/queued"
-    echo "  kubectl describe quota -n \$NAMESPACE"
-    echo "submit a few legs at a time, e.g.:  LEGS=\"iid noniid\" ./run_everything.sh submit"
+    echo "context: project sacs-zu DESERVED = 3 GPUs (guaranteed, non-preemptible)."
+    echo "         jobs beyond 3 still run if the cluster is idle, but are PREEMPTIBLE."
+    echo "         each job here requests -g 1, so #jobs == #GPUs."
+    echo
+    echo "  runai list projects   # DESERVED vs ALLOCATED right now"
+    echo "  runai list jobs       # what you already have running/queued"
+    echo
+    echo "stay inside quota automatically:   MAX_INFLIGHT=3 ./run_everything.sh submit"
+    echo "or submit a few legs at a time:    LEGS=\"iid noniid\" ./run_everything.sh submit"
     ;;
   submit|honest|attacks|plot)
     echo "=== run_everything: phase=$PHASE  legs=[$LEGS]  honest=[$HONEST_SEEDS] attack=[$ATTACK_SEEDS] BALANCED=$BALANCED${PHASE:+ } $([ "$PHASE" = submit ] && echo "PROV_ETA=$PROV_ETA") ==="
@@ -142,8 +186,10 @@ usage: ./run_everything.sh <count|submit|honest|attacks|plot>
   attacks  (after honest done) calibrate real eta + submit attacks
   plot     (results local) calibrate + separability tables + figures; set RES=<local>
 knobs: LEGS HONEST_SEEDS ATTACK_SEEDS BALANCED CAP_NC CAP10_NC DO_PLOTS PROV_ETA
-legs:  iid balanced noniid noniid_a01 noniid_a1 noniid_a100 sin bits20 classes
-       capacity capacity_paper capacity10
+       MAX_INFLIGHT=N  cap concurrent jobs (0=off/default; 3 = your deserved quota)
+       RUNAI_EXTRA="--node-pools <p>"  pin GPU type (cluster is heterogeneous)
+legs:  sanity10 sanity100 iid balanced noniid noniid_a01 noniid_a1 noniid_a100
+       sin bits20 classes capacity capacity_cv capacity_paper capacity10 capacity10_paper
 Run submit/honest/attacks from the dir with submit_experiment.sh + .env;
 run plot from your local repo root with RES pointing at the scp'd results.
 USAGE

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-TODO: remove?
+TODO: remove file if not used?
 
 Aggregate result.json files into mean +/- std summaries
 

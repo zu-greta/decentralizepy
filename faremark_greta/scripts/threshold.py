@@ -133,7 +133,8 @@ def frozen_eta(runs, tail=20):
 
 
 def adaptive_clip_eta(bers, k=3.0, max_iter=10):
-    """Iterative sigma-clip (astronomy-style) robust threshold on honest BER.
+    """TODO: test different thresholds
+    Iterative sigma-clip (astronomy-style) robust threshold on honest BER.
 
     This is the "clip-and-adapt during the calibration rounds" idea: start from the
     full honest BER set, drop every point above mu+k*sigma, recompute mu/sigma on the
@@ -246,8 +247,8 @@ def calibrate(inp, honest_family=None, tail=20, out=None):
 
 def verify(inp, honest_family=None, tail=20, eta_file=None):
     """Double-check the pipeline:
-      1. RECOMPUTE eta from the honest runs and compare to eta_calibrated.json.
-      2. Confirm every NON-honest run actually USED the frozen constant, i.e. its
+      1. recompute eta from the honest runs and compare to eta_calibrated.json.
+      2. Confirm every non-honest run actually used the frozen constant, i.e. its
          wm_eta_round is flat and == the frozen eta (post-warmup rounds).
     Prints a PASS/FAIL report. Returns True iff all checks pass."""
     runs = load(inp)

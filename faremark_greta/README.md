@@ -32,8 +32,7 @@ faremark/
   watermark.py         Eq.1-16 math (smooth/key/bits/project/embed/extract/BER)
   wm_client.py         WatermarkClient (embed + Eq.14 memory) + client factory
   attacks.py           crude baselines + FR selection
-  attacks_adaptive.py  SUBMARINE adaptive free-rider (LEGACY; warmup bug)
-  attacks_simple.py    NEW: reduced (+N) and tap_oracle attackers (warmup-correct)
+  attacks_adaptive.py  SUBMARINE adaptive free-rider (LEGACY; warmup bug) + reduced (+N) and tap_oracle attackers (warmup-correct)
   wm_verify.py         server: extract -> BER -> frozen eta -> flag + diagnostics
 scripts/
   run_experiment.py    one (config, repeat) -> result.json
@@ -210,11 +209,11 @@ boundary" in the accuracy sense — it is softmax peakiness). Effective classes
   only on (all trigger images + N per common class). No coasting. Because that data
   is trigger-enriched (~9% trigger gradient vs ~1% on the full shard), it embeds at
   least as strongly as honest and pins BER to the class floor. This is the clean
-  "presence ≠ contribution" demonstrator. (`attacks_simple.py::make_reduced_attack`)
+  "presence ≠ contribution" demonstrator. (`attacks_adaptive.py::make_reduced_attack`)
 - **`tap_oracle`** — honest-path tap/coast with the true eta handed in: coast (submit
   the global unchanged, zero compute) while the mark is safely under eta, tap (one
   reduced-data training pass) when it decays. Shows the sawtooth and the effort
-  saving. (`attacks_simple.py::make_tap_attack`)
+  saving. (`attacks_adaptive.py::make_tap_attack`)
 - **`submarine` (LEGACY)** — the original adaptive free-rider in
   `attacks_adaptive.py`. Has a known warmup bug (it mangles its loader during the
   "honest" warmup, so its mark reads BER≈0.5 there and its self-eta estimate is 0.5).
@@ -241,7 +240,7 @@ Use a FRESH `$RES` for every experiment launch
 
 ## Code edits
 1. **Attacker dispatch** present in `wm_client.py`: `reduced` → `make_reduced_attack`,
-   `tap_oracle` → `make_tap_attack` (CODE_MAP §2). Files: `faremark/attacks_simple.py`.
+   `tap_oracle` → `make_tap_attack` (CODE_MAP §2). Files: `faremark/attacks_adaptive.py`.
 2. Standalone scripts in `scripts/`: `class_difficulty_probe.py`, `honest_class_lines.py`.
 
 ---
@@ -404,7 +403,7 @@ reporting granularity, not a different metric. Show with `plots.py thresholds` p
 (b) / `honest_fpr`.
 
 ### F4 — The `reduced` (+5) attacker: non-separability, demonstrated
-Honest-path attacker, warmup then trigger+5/common every round (`attacks_simple.py`).
+Honest-path attacker, warmup then trigger+5/common every round (`attacks_adaptive.py`).
 - **Easy positions (cls 1,7):** FR BER ≈ 0 (below eta) → hides, at ~30% of honest
   image-passes. (`reduced_iid_c17`)
 - **Hard positions (cls 3,6):** FR BER ≈ 0.11 (above eta) → flagged — but an honest
@@ -510,8 +509,7 @@ faremark/
   watermark.py         watermark math (Eq.1-16): key/bits/smooth/project/embed/extract/BER  §1
   wm_client.py         WatermarkClient (honest embed + Eq.14 memory) + client factory        §2
   attacks.py           crude baselines (previous_models, gaussian) + FR selection            §3a
-  attacks_adaptive.py  SUBMARINE adaptive free-rider  (LEGACY; warmup bug)                    §3b
-  attacks_simple.py    NEW minimal attackers: reduced (+N) and tap_oracle                     §3c
+  attacks_adaptive.py  SUBMARINE adaptive free-rider  (LEGACY; warmup bug) reduced (+N) and tap_oracle                    §3bc
   wm_verify.py         server: extract -> BER -> FROZEN eta -> flag + diagnostics             §4
 scripts/
   run_experiment.py    orchestrates one (config, repeat) -> result.json                       §6
@@ -579,8 +577,8 @@ standard/correct; `exp(H)` = effective class count.
   - Sets `registry.m`, `registry.l`, `registry.unembeddable_frac`.
   - Dispatches free-rider slots by `cfg.attack`:
     - `"submarine"/"autopilot"` → `attacks_adaptive.make_submarine_attack` (LEGACY).
-    - `"reduced"` → `attacks_simple.make_reduced_attack`  ← **[EDIT NEEDED if absent]**
-    - `"tap_oracle"` → `attacks_simple.make_tap_attack`   ← **[EDIT NEEDED if absent]**
+    - `"reduced"` → `attacks_adaptive.make_reduced_attack`  ← **[EDIT NEEDED if absent]**
+    - `"tap_oracle"` → `attacks_adaptive.make_tap_attack`   ← **[EDIT NEEDED if absent]**
     - `"previous_models"/"gaussian"` → `attacks.py` baselines.
   - The two `reduced`/`tap_oracle` branches were added this session; confirm they are
     present (import `make_reduced_attack, make_tap_attack` and the two `elif` branches).
@@ -597,7 +595,7 @@ loader used *during warmup too*, so the mark doesn't generalize in warmup → se
 and self BER ≈ 0.5 there, self-eta estimate = 0.5. Superseded by §3c. Keep only for
 the self-eta-reconstruction ideas (`_freeze_own_eta`).
 
-### 3c. NEW minimal attackers — `faremark/attacks_simple.py`  [WIRED via §2 dispatch]
+### 3c. NEW minimal attackers — `faremark/attacks_adaptive.py`  [WIRED via §2 dispatch]
 Built from scratch on `WatermarkClient`, **one training path** (the honest one), so
 the warmup bug cannot occur (original loader untouched until defection).
 - `make_reduced_attack(base_cls)` → `ReducedDataFreeRider` (`attack_name="reduced"`):
