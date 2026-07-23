@@ -143,8 +143,7 @@ runai submit "$JOB_NAME" \
     printf "  %-22s %s\n" "output_dir"     "$OUTPUT_DIR"
     printf "  %-22s %s\n" "config_idx/rep" "$CONFIG_IDX / $REPEAT"
     echo "== GPU =="
-    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null \
-      | sed "s/^/  /" || echo "  nvidia-smi unavailable"
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null | sed "s/^/  /" || echo "  nvidia-smi unavailable"
 
     echo "== CODE =="
     rm -rf /tmp/decentralizepy
@@ -166,8 +165,7 @@ runai submit "$JOB_NAME" \
     echo "== ARGS =="
     printf "  %-22s %s\n" "script"  "$SCRIPT"
     # one flag per line: PY_EXTRA used to be one long unreadable string
-    echo "$PY_EXTRA" | tr " " "\n" | grep -v "^$" | paste - - 2>/dev/null | sed "s/^/  /" \
-      || echo "  $PY_EXTRA"
+    echo "$PY_EXTRA" | tr " " "\n" | grep -v "^$" | paste - - 2>/dev/null | sed "s/^/  /" || echo "  $PY_EXTRA"
     [ -n "${NOTE:-}" ] && printf "  %-22s %s\n" "note" "$NOTE"
     echo "================================================================"
 

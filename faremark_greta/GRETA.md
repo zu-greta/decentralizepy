@@ -263,7 +263,7 @@ July21
         - show impossible?
 
     - TODO
-        - july23 [] READ reference.md and changes.md 
+        - july23 [x] READ reference.md and changes.md 
             -> understand all the new changes and experiments 
             -> check if anything is missing from my list of things to add and run
             -> re-read the updated documentation and make sure everyhting is correct
