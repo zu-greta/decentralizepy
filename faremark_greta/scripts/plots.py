@@ -70,11 +70,10 @@ except Exception:
                             OKABE=OK, apply=lambda: None, finish=finish,
                             stacked_panels=stacked_panels)
 
-import threshold as th
-try:
-    import separability as sep
-except Exception:
-    sep = None
+# MERGED: threshold.py + separability.py are now one module, scripts/detection.py.
+# Both aliases point at it, so every `th.*` and `sep.*` call below is unchanged.
+import detection as th
+sep = th
 
 def lvl(r):
     m = r.get('manifest', {}) or {}
@@ -653,7 +652,7 @@ def class_dynamics(a):
         axA.set_title("(a) Watermark-embedding loss per class\n(client-side; higher = harder to embed)")
     else:
         axA.axis("off")
-        axA.text(0.5, 0.5, "no client-side wm_stats yet\n(re-run with updated wm_client)",
+        axA.text(0.5, 0.5, "no client-side wm_stats yet\n(re-run with updated clients.py)",
                  ha="center", va="center", color=GREY)
 
     # (b) trigger-class TRAIN accuracy (client-side) -- low = fuzzy boundary
@@ -707,7 +706,7 @@ def class_dynamics(a):
     finish(fig, os.path.join(a.out, f"class_dynamics_{a.family or 'all'}.png"))
     if not (have_client or have_server_diag):
         print("  NOTE: neither client wm_stats nor server diagnostics present. Re-run with")
-        print("        the updated wm_client + wm_verify to populate these panels.")
+        print("        the updated clients.py + wm_verify to populate these panels.")
     else:
         print(f"  client-side stats: {have_client} | server-side diagnostics: {have_server_diag}")
 

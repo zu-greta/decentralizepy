@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
 # run_everything.sh  --  fire the whole thesis matrix through run_all, in STAGES.
-#
-# NOTHING here waits on the cluster. Each phase submits jobs (WAIT=0, like run_all)
-# and returns immediately. Phases:
-#
-#   submit    fire EVERYTHING now (honest + attacks), no waiting.  <-- fire-and-forget
+# 
+# PHASES:
+#   submit    fire everything (honest + attacks), no waiting.  <-- fire-and-forget
 #   honest    submit only the honest jobs
 #   attacks   (after honest done) calibrate the REAL eta + submit attacks
 #   plot      (after all done, results local) calibrate + separability tables + figures
@@ -15,16 +13,7 @@
 #     # ... let the whole cluster batch run ...  then scp results to local, then:
 #     RES=~/local/results ./run_everything.sh plot
 #
-# WHY 'submit' can fire attacks before honest finishes:
-#   The reduced / sameclass attackers do NOT use eta -- they train on reduced data
-#   every round regardless. Eta is only used by the server's LIVE flagging
-#   (wm_fpr / wm_fr_recall / flagged), which separability.py recomputes offline from
-#   the logged per-client BER. So the attacks only need SOME eta value at submit time
-#   to pass run_all's bookkeeping; the logged BER is identical to a real-eta run.
-#   'submit' passes a provisional PROV_ETA (default 0.065, your calibrated ballpark);
-#   the 'plot' phase then calibrates the REAL eta and the analysis uses that.
-#
-# All runs land in run_all's flat results dir, tagged by a UNIQUE family per leg.
+# All runs land in run_all's flat results dir, tagged by a unqiue family per leg.
 # Run submit/honest/attacks from the dir with submit_experiment.sh + .env; run plot
 # from your local repo root with RES pointing at the scp'd results.
 #

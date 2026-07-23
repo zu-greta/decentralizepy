@@ -9,6 +9,7 @@ import copy
 import torch
 
 from .utils import evaluate_accuracy
+from .runlog import RoundTable
 
 
 class Aggregator:
@@ -51,6 +52,10 @@ class Server:
         self.history = []  # list of dicts: {round, test_acc, ...}
 
     def run(self, rounds: int):
+        table = RoundTable(self.logger, rounds,
+                           watermarked=self.verify_hook is not None)
+        seen_action = {}          # cid -> last trace action, for phase-change notes
+
         for r in range(1, rounds + 1):
             updates = []
             for client in self.clients:
@@ -72,15 +77,20 @@ class Server:
             acc = self._evaluate()
             record = {"round": r, "test_acc": acc, **verify_info}
             self.history.append(record)
-            msg = f"round {r:3d}/{rounds}  test_acc={acc:6.2f}%"
-            # surface watermark metrics so embedding/detection can be watched
-            if "wm_benign_ber" in verify_info:
-                msg += f"  benign_BER={verify_info['wm_benign_ber']:.3f}"
-                if verify_info.get("wm_fr_ber") is not None:
-                    msg += f"  fr_BER={verify_info['wm_fr_ber']:.3f}"
-                if verify_info.get("wm_detect_acc") is not None:
-                    msg += f"  det_acc={verify_info['wm_detect_acc']:.2f}"
-            self.logger.info(msg)
+
+            # announce free-rider phase transitions (honest -> calib -> tap / coast).
+            changes = []
+            for cid, c in enumerate(self.clients):
+                tr = getattr(c, "trace", None)
+                if not tr or tr[-1].get("round") != r:
+                    continue
+                act = tr[-1].get("action")
+                if act and seen_action.get(cid) != act:
+                    seen_action[cid] = act
+                    changes.append((cid, act))
+            table.row(r, acc, verify_info)
+            if changes:
+                table.phase_note(r, changes)
         return self.history
 
     def _evaluate(self) -> float:

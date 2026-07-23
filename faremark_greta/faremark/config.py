@@ -23,7 +23,8 @@ class ExpConfig:
     expected_acc: tuple = (0.0, 100.0)      # correctness band
 
     # ---- free-rider selection / paper baselines ----
-    attack: str = "none"                    # "none" | "previous_models" | "gaussian" | "submarine" | "reduced"
+    attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"|"tap_oracle"
+                                            # ("submarine"/"autopilot" are DISABLED -- see clients.py PART 3)
     num_free_riders: int = 0                # how many of num_clients are free-riders
     free_rider_ids: str = ""                # NEW: "3,6" pins which cids free-ride (overrides the
                                             # seeded choice). Empty => choose_free_riders(seed).
@@ -40,50 +41,50 @@ class ExpConfig:
                                             # shown to be a class property, not a key artifact).
 
     # ---- submarine adaptive free-rider ----
-    # Acts exactly like an honest client, except: 
+    # SUBMARINE attacker: acts exactly like an honest client, except: 
     # (1) it estimates the detection threshold eta (or is given it for testing), 
     # (2) it behaves honestly until the server's eta is calibrated (the forced-honest window), then defects, 
     # (3) it can train on trigger+N/common or the full shard, and 
     # (4) after warmup it coasts and taps to hold its mark; a tap's cost = the data it trains on.
     autop_oracle_eta: float = 0.0           # >0 => FR is given the true eta (testing). 0 => estimate.
-    # ---- warmup / calibration-window schedule (see attacks_adaptive.py) ----
-    autop_warmup_mode: str = "fixed"        # DEFAULT "fixed": warmup ends at round autop_honest_until (W),
-                                            # calib window [W-K, W-1]. Position-independent
-                                            # "dynamic" = end warmup when the FR's own probe BER converges
-                                            # (position-dependent: hard positions converge later, warm up
-                                            # longer, pay more, defect later)
-    autop_honest_min: int = 6               # dynamic: never defect before this round (protect window).
-    autop_warmup_cap: int = 15              # dynamic: hard stop -- defect by here even if never converges.
-    autop_conv_eps: float = 0.03            # dynamic: converged when the last (patience+1) probe BERs are
-                                            # within this tolerance (BER is coarse, 1/m steps, so this means
-                                            # "unchanged for patience+1 rounds").
-    autop_conv_patience: int = 2            # dynamic: consecutive flat rounds required to declare convergence.
+    # ---- warmup / calibration-window schedule (see clients.py SECTION 3) ----
+    # [SUBMARINE-ONLY, DISABLED] autop_warmup_mode: str = "fixed"        # DEFAULT "fixed": warmup ends at round autop_honest_until (W),
+    #     # calib window [W-K, W-1]. Position-independent
+    #     # "dynamic" = end warmup when the FR's own probe BER converges
+    #     # (position-dependent: hard positions converge later, warm up
+    #     # longer, pay more, defect later)
+    # [SUBMARINE-ONLY, DISABLED] autop_honest_min: int = 6               # dynamic: never defect before this round (protect window).
+    # [SUBMARINE-ONLY, DISABLED] autop_warmup_cap: int = 15              # dynamic: hard stop -- defect by here even if never converges.
+    # [SUBMARINE-ONLY, DISABLED] autop_conv_eps: float = 0.03            # dynamic: converged when the last (patience+1) probe BERs are
+    #     # within this tolerance (BER is coarse, 1/m steps, so this means
+    #     # "unchanged for patience+1 rounds").
+    # [SUBMARINE-ONLY, DISABLED] autop_conv_patience: int = 2            # dynamic: consecutive flat rounds required to declare convergence.
     autop_honest_until: int = 12            # W: used in fixed mode (warmup=[1,W-1]) and as the dynamic fallback.
     autop_calib_rounds: int = 4             # K: the K converged honest rounds that calibrate eta. Dynamic:
                                             # [conv, conv+K-1]; fixed: [W-K, W-1]. Used by the server and by
                                             # the free-rider's own eta estimate. Tagged "calib" in the trace.
-    autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
-    autop_eta_mode: str = "tight"           # which server threshold the FR reconstructs from its OWN
-                                            # honest BER: "tight" (mu+k*sigma/sqrt(N), the round-mean/strict
-                                            # eta -> stays under EVERY looser one), "loose" (mu+k*sigma,
-                                            # per-client), or "cumulative" (mu+k*sigma over full honest
-                                            # history, mirroring the paper's cumulative calibration).
-    autop_num_clients_est: int = 10         # N for the sqrt(N) shrink in "tight" mode
-    autop_margin0: float = 0.06             # TODO hardcoded guard: deliberate headroom (target = eta - margin0 - safety)
-    autop_safety: float = 0.02              # TODO hardcoded guard: should be DERIVED from estimation uncertainty, not fixed
-    autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
-    autop_floor: float = 0.05               # "mark is good" bar
+    # [SUBMARINE-ONLY, DISABLED] autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
+    # [SUBMARINE-ONLY, DISABLED] autop_eta_mode: str = "tight"           # which server threshold the FR reconstructs from its OWN
+    #     # honest BER: "tight" (mu+k*sigma/sqrt(N), the round-mean/strict
+    #     # eta -> stays under EVERY looser one), "loose" (mu+k*sigma,
+    #     # per-client), or "cumulative" (mu+k*sigma over full honest
+    #     # history, mirroring the paper's cumulative calibration).
+    # [SUBMARINE-ONLY, DISABLED] autop_num_clients_est: int = 10         # N for the sqrt(N) shrink in "tight" mode
+    # [SUBMARINE-ONLY, DISABLED] autop_margin0: float = 0.06             # TODO hardcoded guard: deliberate headroom (target = eta - margin0 - safety)
+    # [SUBMARINE-ONLY, DISABLED] autop_safety: float = 0.02              # TODO hardcoded guard: should be DERIVED from estimation uncertainty, not fixed
+    # [SUBMARINE-ONLY, DISABLED] autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
+    # [SUBMARINE-ONLY, DISABLED] autop_floor: float = 0.05               # "mark is good" bar
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
     autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
                                             # -1/0 = all of them; K>0 = K randomly chosen classes.
                                             # Separates "how many images" from "how much class
                                             # diversity" in the +N sweep.
-    autop_scope: str = "full"               # PARAMS per tap: full | block2 | block | head
-    autop_stay_min: bool = False            # coast (no training) while safely under target, tap only when needed.
-                                            # False => tap EVERY post-warmup round (honest-style, for the data sweep).
-    autop_holdout_ratio: float = 0.5        # fraction of trigger imgs reserved for the self-probe
-    autop_honest_clone: bool = False        # embed via the exact honest path every round
-                                            # (control: shows the ~0.11 floor is the position, not the embedder)
+    # [SUBMARINE-ONLY, DISABLED] autop_scope: str = "full"               # PARAMS per tap: full | block2 | block | head
+    # [SUBMARINE-ONLY, DISABLED] autop_stay_min: bool = False            # coast (no training) while safely under target, tap only when needed.
+    #     # False => tap EVERY post-warmup round (honest-style, for the data sweep).
+    # [SUBMARINE-ONLY, DISABLED] autop_holdout_ratio: float = 0.5        # fraction of trigger imgs reserved for the self-probe
+    # [SUBMARINE-ONLY, DISABLED] autop_honest_clone: bool = False        # embed via the exact honest path every round
+    #     # (control: shows the ~0.11 floor is the position, not the embedder)
 
     # ---- watermarking ----
     watermark: bool = False
@@ -181,8 +182,8 @@ CONFIGS = [
               attack="previous_models", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
 
-    # 14: submarine free-rider
-    #     Override autop_* / free_rider_ids / attack via CLI (see run_tests.sh)
+    # 14: CIFAR-100 attack base config.
+    #     NOTE: attack="submarine" below is the default but disabled. change to reduced when needed
     ExpConfig("submarine_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
               attack="submarine", num_free_riders=2,

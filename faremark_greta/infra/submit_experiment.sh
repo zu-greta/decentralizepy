@@ -49,39 +49,41 @@ PY_EXTRA=""
 [ -n "${NOISE_SIGMA:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_sigma ${NOISE_SIGMA}"
 [ -n "${NOISE_DECAY:-}" ]     && PY_EXTRA="$PY_EXTRA --noise_decay ${NOISE_DECAY}"
 # submarine / autopilot
+# 16 AUTOP_* hooks are commented out with the submarine attacker 
 [ -n "${AUTOP_ORACLE_ETA:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_oracle_eta ${AUTOP_ORACLE_ETA}"
-[ -n "${AUTOP_WARMUP_MODE:-}" ]     && PY_EXTRA="$PY_EXTRA --autop_warmup_mode ${AUTOP_WARMUP_MODE}"
-[ -n "${AUTOP_HONEST_MIN:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_honest_min ${AUTOP_HONEST_MIN}"
-[ -n "${AUTOP_WARMUP_CAP:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_warmup_cap ${AUTOP_WARMUP_CAP}"
-[ -n "${AUTOP_CONV_EPS:-}" ]        && PY_EXTRA="$PY_EXTRA --autop_conv_eps ${AUTOP_CONV_EPS}"
-[ -n "${AUTOP_CONV_PATIENCE:-}" ]   && PY_EXTRA="$PY_EXTRA --autop_conv_patience ${AUTOP_CONV_PATIENCE}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_WARMUP_MODE:-}" ]     && PY_EXTRA="$PY_EXTRA --autop_warmup_mode ${AUTOP_WARMUP_MODE}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_HONEST_MIN:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_honest_min ${AUTOP_HONEST_MIN}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_WARMUP_CAP:-}" ]      && PY_EXTRA="$PY_EXTRA --autop_warmup_cap ${AUTOP_WARMUP_CAP}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_CONV_EPS:-}" ]        && PY_EXTRA="$PY_EXTRA --autop_conv_eps ${AUTOP_CONV_EPS}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_CONV_PATIENCE:-}" ]   && PY_EXTRA="$PY_EXTRA --autop_conv_patience ${AUTOP_CONV_PATIENCE}"
 [ -n "${AUTOP_HONEST_UNTIL:-}" ]    && PY_EXTRA="$PY_EXTRA --autop_honest_until ${AUTOP_HONEST_UNTIL}"
 [ -n "${AUTOP_CALIB_ROUNDS:-}" ]  && PY_EXTRA="$PY_EXTRA --autop_calib_rounds ${AUTOP_CALIB_ROUNDS}"
-[ -n "${AUTOP_ETA_K:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_eta_k ${AUTOP_ETA_K}"
-[ -n "${AUTOP_ETA_MODE:-}" ]        && PY_EXTRA="$PY_EXTRA --autop_eta_mode ${AUTOP_ETA_MODE}"
-[ -n "${AUTOP_NUM_CLIENTS_EST:-}" ] && PY_EXTRA="$PY_EXTRA --autop_num_clients_est ${AUTOP_NUM_CLIENTS_EST}"
-[ -n "${AUTOP_MARGIN0:-}" ]         && PY_EXTRA="$PY_EXTRA --autop_margin0 ${AUTOP_MARGIN0}"
-[ -n "${AUTOP_SAFETY:-}" ]          && PY_EXTRA="$PY_EXTRA --autop_safety ${AUTOP_SAFETY}"
-[ -n "${AUTOP_MAX_COAST:-}" ]       && PY_EXTRA="$PY_EXTRA --autop_max_coast ${AUTOP_MAX_COAST}"
-[ -n "${AUTOP_FLOOR:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_floor ${AUTOP_FLOOR}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_ETA_K:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_eta_k ${AUTOP_ETA_K}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_ETA_MODE:-}" ]        && PY_EXTRA="$PY_EXTRA --autop_eta_mode ${AUTOP_ETA_MODE}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_NUM_CLIENTS_EST:-}" ] && PY_EXTRA="$PY_EXTRA --autop_num_clients_est ${AUTOP_NUM_CLIENTS_EST}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_MARGIN0:-}" ]         && PY_EXTRA="$PY_EXTRA --autop_margin0 ${AUTOP_MARGIN0}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_SAFETY:-}" ]          && PY_EXTRA="$PY_EXTRA --autop_safety ${AUTOP_SAFETY}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_MAX_COAST:-}" ]       && PY_EXTRA="$PY_EXTRA --autop_max_coast ${AUTOP_MAX_COAST}"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_FLOOR:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_floor ${AUTOP_FLOOR}"
 [ -n "${AUTOP_COMMON_PER_CLASS:-}" ] && PY_EXTRA="$PY_EXTRA --autop_common_per_class ${AUTOP_COMMON_PER_CLASS}"
 [ -n "${AUTOP_N_COMMON_CLASSES:-}" ] && PY_EXTRA="$PY_EXTRA --autop_n_common_classes ${AUTOP_N_COMMON_CLASSES}"
-[ -n "${AUTOP_SCOPE:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_scope ${AUTOP_SCOPE}"
-[ "${AUTOP_STAY_MIN:-}" = "1" ]     && PY_EXTRA="$PY_EXTRA --autop_stay_min"
-[ -n "${AUTOP_HOLDOUT_RATIO:-}" ]   && PY_EXTRA="$PY_EXTRA --autop_holdout_ratio ${AUTOP_HOLDOUT_RATIO}"
-[ "${AUTOP_HONEST_CLONE:-}" = "1" ] && PY_EXTRA="$PY_EXTRA --autop_honest_clone"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_SCOPE:-}" ]           && PY_EXTRA="$PY_EXTRA --autop_scope ${AUTOP_SCOPE}"
+# [SUBMARINE-ONLY, DISABLED] [ "${AUTOP_STAY_MIN:-}" = "1" ]     && PY_EXTRA="$PY_EXTRA --autop_stay_min"
+# [SUBMARINE-ONLY, DISABLED] [ -n "${AUTOP_HOLDOUT_RATIO:-}" ]   && PY_EXTRA="$PY_EXTRA --autop_holdout_ratio ${AUTOP_HOLDOUT_RATIO}"
+# [SUBMARINE-ONLY, DISABLED] [ "${AUTOP_HONEST_CLONE:-}" = "1" ] && PY_EXTRA="$PY_EXTRA --autop_honest_clone"
 # watermarking
 [ -n "${WATERMARK:-}" ]        && PY_EXTRA="$PY_EXTRA --watermark"
 [ -n "${WM_BITS:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_bits ${WM_BITS}"
 [ "${BALANCED:-}" = "1" ]      && PY_EXTRA="$PY_EXTRA --wm_balanced_keys"
 [ -n "${WM_F:-}" ]             && PY_EXTRA="$PY_EXTRA --wm_f ${WM_F}"
+[ -n "${WM_ALPHA:-}" ]         && PY_EXTRA="$PY_EXTRA --wm_alpha ${WM_ALPHA}" # tuning non-iid alpha
 [ -n "${WM_NUM_TRIGGERS:-}" ]  && PY_EXTRA="$PY_EXTRA --wm_num_triggers ${WM_NUM_TRIGGERS}"
 [ -n "${WM_TRIGGER_MODE:-}" ]  && PY_EXTRA="$PY_EXTRA --wm_trigger_mode ${WM_TRIGGER_MODE}"
 [ -n "${WM_LAMBDA:-}" ]        && PY_EXTRA="$PY_EXTRA --wm_lambda ${WM_LAMBDA}"
 [ -n "${WM_BETA:-}" ]          && PY_EXTRA="$PY_EXTRA --wm_beta ${WM_BETA}"
 [ -n "${WM_ETA_FLOOR:-}" ]     && PY_EXTRA="$PY_EXTRA --wm_eta_floor ${WM_ETA_FLOOR}"
 [ -n "${WM_ETA_FIXED:-}" ]     && PY_EXTRA="$PY_EXTRA --wm_eta_fixed ${WM_ETA_FIXED}"
-[ -n "${PAPER_FAITHFUL:-}" ]   && PY_EXTRA="$PY_EXTRA --paper_faithful"
+# [ -n "${PAPER_FAITHFUL:-}" ]   && PY_EXTRA="$PY_EXTRA --paper_faithful"
 [ "${CALIB_ON_ALL:-0}" = "1" ] && PY_EXTRA="$PY_EXTRA --calib_on_all"
 # manifest (descriptive)
 [ -n "${FAMILY:-}" ]      && PY_EXTRA="$PY_EXTRA --manifest_family ${FAMILY}"
@@ -126,14 +128,49 @@ runai submit "$JOB_NAME" \
     export USER=zu
     mkdir -p "$OUTPUT_DIR" "$DATA_ROOT"
     exec > >(tee "$OUTPUT_DIR/pod.log") 2>&1
-    echo "=== pod start: $(date) ==="
-    echo "=== node: ${NODE_NAME:-unknown} ==="
-    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null || echo "nvidia-smi unavailable"
+    # ---- pod.log structure -------------------------------------------------
+    # pod.log is the ENVIRONMENT record (what machine, what code, what flags);
+    # run.log is the EXPERIMENT record; result.json is the DATA. Previously
+    # pod.log was an undelimited tee of git-clone noise + run.log, so you could
+    # not answer "which commit produced this number?" -- the pod clones a moving
+    # branch, so two runs a week apart can be different code, identical config.
+    echo "================================================================"
+    echo "== POD =="
+    echo "================================================================"
+    printf "  %-22s %s\n" "started (UTC)"  "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf "  %-22s %s\n" "job"            "${JOB_NAME:-?}"
+    printf "  %-22s %s\n" "node"           "${NODE_NAME:-unknown}"
+    printf "  %-22s %s\n" "output_dir"     "$OUTPUT_DIR"
+    printf "  %-22s %s\n" "config_idx/rep" "$CONFIG_IDX / $REPEAT"
+    echo "== GPU =="
+    nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null \
+      | sed "s/^/  /" || echo "  nvidia-smi unavailable"
+
+    echo "== CODE =="
     rm -rf /tmp/decentralizepy
-    git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REPO" /tmp/decentralizepy
+    # NOTE: still --depth 1 (fast). rev-parse below pins the exact commit anyway.
+    git clone --depth 1 --branch "$GIT_BRANCH" "$GIT_REPO" /tmp/decentralizepy 2>&1 | sed "s/^/  /"
     if [ ! -d "/tmp/decentralizepy/$PKG_SUBDIR" ]; then
       echo "ERROR: $PKG_SUBDIR/ not found in the repo."; sync; sleep 2; exit 3
     fi
+    # ADDED: exact commit SHA. Exported so run_experiment.py records it in
+    # result.json["env"]["git_commit"] -- the run becomes self-identifying code-wise.
+    GIT_COMMIT="$(git -C /tmp/decentralizepy rev-parse HEAD 2>/dev/null || echo unknown)"
+    export GIT_COMMIT GIT_BRANCH
+    printf "  %-22s %s\n" "repo"    "$GIT_REPO"
+    printf "  %-22s %s\n" "branch"  "$GIT_BRANCH"
+    printf "  %-22s %s\n" "commit"  "$GIT_COMMIT"
+    printf "  %-22s %s\n" "python"  "$(python -V 2>&1)"
+    printf "  %-22s %s\n" "torch"   "$(python -c "import torch;print(torch.__version__)" 2>/dev/null || echo n/a)"
+
+    echo "== ARGS =="
+    printf "  %-22s %s\n" "script"  "$SCRIPT"
+    # one flag per line: PY_EXTRA used to be one long unreadable string
+    echo "$PY_EXTRA" | tr " " "\n" | grep -v "^$" | paste - - 2>/dev/null | sed "s/^/  /" \
+      || echo "  $PY_EXTRA"
+    [ -n "${NOTE:-}" ] && printf "  %-22s %s\n" "note" "$NOTE"
+    echo "================================================================"
+
     export PYTHONPATH="/tmp/decentralizepy/$PKG_SUBDIR"
     cd "/tmp/decentralizepy/$PKG_SUBDIR"
     set +e
@@ -143,7 +180,22 @@ runai submit "$JOB_NAME" \
     python -u "$SCRIPT" --config_idx "$CONFIG_IDX" --repeat "$REPEAT" --device cuda --output_dir "$OUTPUT_DIR" --data_root "$DATA_ROOT" "${EXTRA_ARR[@]}"
     EXIT=$?
     set -u; set -e
-    echo "experiment exit code: $EXIT"
+    echo "================================================================"
+    echo "== EXIT =="
+    # Exit 2 = accuracy outside the expected_acc band of the config. EXPECTED for
+    # attack runs (free-riders drag accuracy down) and result.json is already
+    # written. Only 1/3/>=4 are real failures. Spelling this out in pod.log stops
+    # `runai` job-failure noise from being mistaken for lost data.
+    case "$EXIT" in
+      0) echo "  exit 0  OK (accuracy inside expected band)" ;;
+      2) echo "  exit 2  accuracy outside expected band -- NORMAL for attack runs;"
+         echo "          result.json was written before exit, data is intact." ;;
+      3) echo "  exit 3  repo layout error (PKG_SUBDIR missing)" ;;
+      *) echo "  exit $EXIT  FAILED -- inspect run.log above" ;;
+    esac
+    printf "  %-22s %s\n" "finished (UTC)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf "  %-22s %s\n" "result" "$OUTPUT_DIR/result.json"
+    echo "================================================================"
     if [ "$DEBUG_HOLD" = "1" ]; then echo "DEBUG_HOLD: sleeping 1h"; sleep 3600; fi
     sync; sleep 2
     exit $EXIT

@@ -114,17 +114,31 @@ class ComputeMeter:
         self._cur = None
 
     # ---- readout -----------------------------------------------------------
-    def summary(self, attack_name: str = "honest", is_free_rider: bool = False) -> dict:
+    # Per-round fields kept in result.json. The full 8-field bucket is retained
+    # in memory (self.per_round) and in `total`; only the SERIALIZED per-round
+    # record is slimmed, because it is the largest object in result.json:
+    # N_clients x N_rounds x 8 fields (200 clients x 50 rounds = 80k entries).
+    # samples (the effort x-axis), gpu_ms (cluster cost), trained
+    # (the coast-vs-tap signal the timeline plot needs).
+    _PER_ROUND_KEEP = ("samples", "gpu_ms", "trained")
+
+    def summary(self, attack_name: str = "honest", is_free_rider: bool = False,
+                slim_per_round: bool = True) -> dict:
         t = dict(self.total)
         t["gpu_ms"] = round(t["gpu_ms"], 3)
         t["wall_ms"] = round(t["wall_ms"], 3)
         t["duty_cycle"] = (round(t["rounds_trained"] / t["rounds_total"], 4)
                            if t["rounds_total"] else 0.0)
+        if slim_per_round:
+            per_round = {r: {k: b[k] for k in self._PER_ROUND_KEEP if k in b}
+                         for r, b in self.per_round.items()}
+        else:
+            per_round = self.per_round          # full buckets (debugging)
         return {
             "attack_name": attack_name,
             "is_free_rider": is_free_rider,
             "total": t,
-            "per_round": self.per_round,
+            "per_round": per_round,
         }
 
 

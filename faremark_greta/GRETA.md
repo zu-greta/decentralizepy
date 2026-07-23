@@ -263,20 +263,24 @@ July21
         - show impossible?
 
     - TODO
-        - check all thresholds - figure out details
-        - double check the experiments they were calculated on
-        - run with non-iid 
-            - PENDING: thresholds with 0.5
-            - PENDING: reduced attacks 3,6/1,7 with 0.5
-            - PENDING: same class reduced attacks for comparison
-            - TODO: run the different alpha values
-        - READ reference.md -> understand all the new changes and experiments -> check if anything is missing from my list of things to add and run
-        - check and analyse the results
-        -> check how the paper tests for when too many clients compared to classes
-            - table IX CIFAR-10 up to 50 clients
+        - july23 [] READ reference.md and changes.md 
+            -> understand all the new changes and experiments 
+            -> check if anything is missing from my list of things to add and run
+            -> re-read the updated documentation and make sure everyhting is correct
+        - july23 [] check all thresholds - figure out details. double check the experiments they were calculated on
+        - july23 [] check and analyse the results
+            - [] check the results that validate the table IX in the paper
+            - [] run with non-iid 
+                - PENDING: thresholds with 0.5
+                - PENDING: reduced attacks 3,6/1,7 with 0.5
+                - PENDING: same class reduced attacks for comparison
+                - TODO: run the different alpha values
+        - july23-4 [] setup and run rest of experiments needed to have some sort of results for monday
+        - [x] check how the paper tests for when too many clients compared to classes
+            -> table IX CIFAR-10 up to 50 clients
             - PENDING: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
-            - TODO: `./table9_check.sh check ` once the tests are done running -> this is with client_train
-        -> check if paper does non-iid => no
+            - TODO: UPDATED see new CLI commands: `./table9_check.sh check ` once the tests are done running -> this is with client_train
+        -> [x] check if paper does non-iid => no
 
 ---
 ---

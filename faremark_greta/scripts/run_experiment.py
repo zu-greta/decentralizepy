@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Experiment runner.
+"""Experiment runner
 
     python -u scripts/run_experiment.py \
         --config_idx 14 --repeat 0 --device cuda \
@@ -23,14 +23,18 @@ from faremark.config import get_config, seed_for, CONFIGS
 from faremark.utils import set_seed, get_logger
 from faremark.models import build_model
 from faremark.datasets import build_data
-from faremark.attacks import build_clients
+
 from faremark.server import Server
-from faremark.wm_client import build_watermarked_clients
+from faremark.clients import build_clients, build_watermarked_clients
 from faremark.wm_verify import (WatermarkRegistry, build_trigger_bank,
                                 build_trigger_bank_per_client,
                                 build_trigger_bank_from_train, make_verifier)
 from faremark.compute_meter import estimate_flops_per_sample_fwd
 from faremark.manifest import build_manifest
+from faremark import runlog
+from faremark.config import ExpConfig
+
+SCHEMA_VERSION = 2   # keep in sync with scripts/resultio.py:SCHEMA_VERSION
 
 
 def parse_args():
@@ -66,33 +70,35 @@ def parse_args():
                    help="pin which cids free-ride, e.g. '3,6' (overrides the seeded choice)")
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
-    # ---- autopilot overrides ----
+    # ---- autopilot / submarine overrides ----
+    # 16 --autop_* flags are COMMENTED OUT below with the submarine attacker.
+    # The 5 that remain are used by the live `reduced` / `tap_oracle` attackers.
     p.add_argument("--autop_oracle_eta", type=float, default=None)
-    p.add_argument("--autop_warmup_mode", type=str, default=None,
-                   choices=["dynamic", "fixed"])
-    p.add_argument("--autop_honest_min", type=int, default=None)
-    p.add_argument("--autop_warmup_cap", type=int, default=None)
-    p.add_argument("--autop_conv_eps", type=float, default=None)
-    p.add_argument("--autop_conv_patience", type=int, default=None)
+#     p.add_argument("--autop_warmup_mode", type=str, default=None,
+#                    choices=["dynamic", "fixed"])
+#     p.add_argument("--autop_honest_min", type=int, default=None)
+#     p.add_argument("--autop_warmup_cap", type=int, default=None)
+#     p.add_argument("--autop_conv_eps", type=float, default=None)
+#     p.add_argument("--autop_conv_patience", type=int, default=None)
     p.add_argument("--autop_honest_until", type=int, default=None)
     p.add_argument("--autop_calib_rounds", type=int, default=None)
-    p.add_argument("--autop_eta_k", type=float, default=None)
-    p.add_argument("--autop_eta_mode", type=str, default=None,
-                   choices=["tight", "loose", "cumulative"])
-    p.add_argument("--autop_num_clients_est", type=int, default=None)
-    p.add_argument("--autop_margin0", type=float, default=None)
-    p.add_argument("--autop_safety", type=float, default=None)
-    p.add_argument("--autop_max_coast", type=int, default=None)
-    p.add_argument("--autop_floor", type=float, default=None)
+#     p.add_argument("--autop_eta_k", type=float, default=None)
+#     p.add_argument("--autop_eta_mode", type=str, default=None,
+#                    choices=["tight", "loose", "cumulative"])
+#     p.add_argument("--autop_num_clients_est", type=int, default=None)
+#     p.add_argument("--autop_margin0", type=float, default=None)
+#     p.add_argument("--autop_safety", type=float, default=None)
+#     p.add_argument("--autop_max_coast", type=int, default=None)
+#     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
     p.add_argument("--autop_n_common_classes", type=int, default=None,
                    help="K randomly-chosen common classes to draw from (-1/0 = all).")
-    p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
-    p.add_argument("--autop_stay_min", action="store_true", default=None,
-                   help="coast when safely under target, tap only when needed (default: tap every round)")
-    p.add_argument("--autop_holdout_ratio", type=float, default=None)
-    p.add_argument("--autop_honest_clone", action="store_true", default=None,
-                   help="DIAGNOSTIC: embed via the exact honest path every round")
+#     p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
+#     p.add_argument("--autop_stay_min", action="store_true", default=None,
+#                    help="coast when safely under target, tap only when needed (default: tap every round)")
+#     p.add_argument("--autop_holdout_ratio", type=float, default=None)
+#     p.add_argument("--autop_honest_clone", action="store_true", default=None,
+#                    help="DIAGNOSTIC: embed via the exact honest path every round")
     # ---- watermarking overrides ----
     p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
@@ -104,6 +110,10 @@ def parse_args():
     p.add_argument("--wm_f", type=str, default=None, choices=["power", "sin"],
                    help="smoothing f() in Eq.7-9: 'power' (p^alpha) or 'sin' (sin(alpha*p)). "
                         "sin is the paper's alternative; sweep --wm_alpha with it.")
+    p.add_argument("--wm_alpha", type=float, default=None,
+                   help="smoothing exponent alpha in Eq.7-9. power: 0<alpha<1 "
+                        "(0.4 default; smaller = flatter = more tail structure). "
+                        "alpha<0 selects Eq.7. With --wm_f sin it is sin(alpha*p).")
     p.add_argument("--wm_num_triggers", type=int, default=None)
     p.add_argument("--wm_trigger_mode", type=str, default=None,
                    choices=["class", "client", "client_train"],
@@ -141,14 +151,15 @@ _OVERRIDABLE = [
     "num_clients", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",
-    "autop_oracle_eta", "autop_warmup_mode", "autop_honest_min", "autop_warmup_cap",
-    "autop_conv_eps", "autop_conv_patience",
-    "autop_honest_until", "autop_calib_rounds", "autop_eta_k",
-    "autop_eta_mode", "autop_num_clients_est",
-    "autop_margin0", "autop_safety", "autop_max_coast",
-    "autop_floor", "autop_common_per_class", "autop_n_common_classes", "autop_scope",
-    "autop_stay_min", "autop_holdout_ratio", "autop_honest_clone",
-    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_num_triggers",
+    # 16 submarine-only autop_* entries removed from _OVERRIDABLE with the commented-out flags above
+    "autop_oracle_eta", 
+    
+    "autop_honest_until", "autop_calib_rounds", 
+    
+    
+    "autop_common_per_class", "autop_n_common_classes", 
+    
+    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_alpha", "wm_num_triggers",
     "wm_trigger_mode", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
 ]
@@ -156,10 +167,10 @@ _OVERRIDABLE = [
 
 @torch.no_grad()
 def evaluate_per_class(model, loader, num_classes, device):
-    """Per-class TEST accuracy and mean cross-entropy loss of the (final global)
-    model. This is the watermark-INDEPENDENT evidence that some class indexes have
+    """Per-class test accuracy and mean cross-entropy loss of the (final global)
+    model. This is the watermark-independent evidence that some class indexes have
     fuzzier decision boundaries: a hard class shows low acc / high loss here, and
-    (separately) a high watermark BER. Returns ({class: {acc, loss, n}}, overall_acc)."""
+    (separately) a high watermark BER. Returns ({class: {acc, loss, n}}, overall_acc)"""
     import torch.nn.functional as F
     model.eval()
     correct = [0] * num_classes
@@ -251,13 +262,29 @@ def main():
     if device != args.device:
         logger.info(f"CUDA not available; falling back to {device}")
 
-    logger.info(f"=== config[{args.config_idx}] {cfg.name} | repeat={args.repeat} "
-                f"| seed={seed} | device={device} ===")
-    logger.info(json.dumps(cfg.to_dict()))
+    # ---- run.log header --------------------------------------------------
+    runlog.banner(logger, config_idx=args.config_idx, cfg=cfg, repeat=args.repeat,
+                  seed=seed, device=device, gpu_name=_gpu_name(),
+                  gpu_count=(torch.cuda.device_count() if torch.cuda.is_available() else 0),
+                  family=args.manifest_family, note=args.manifest_note,
+                  output_dir=args.output_dir)
+    runlog.config_block(logger, cfg, ExpConfig)
 
     data = build_data(cfg.dataset, args.data_root, cfg.num_clients,
                       cfg.batch_size, seed, num_workers=args.num_workers,
                       partition=cfg.partition, dirichlet_alpha=cfg.dirichlet_alpha)
+
+    # shard sizes: cheap to read, and the fastest way to spot a pathological
+    # non-IID split (a client holding no images of its own trigger class)
+    try:
+        shard_sizes = [len(l.dataset) for l in data.client_loaders]
+    except Exception:
+        shard_sizes = []
+    runlog.data_block(logger, dataset=cfg.dataset, num_classes=data.num_classes,
+                      num_clients=cfg.num_clients, shard_sizes=shard_sizes,
+                      partition=cfg.partition, alpha=cfg.dirichlet_alpha,
+                      batch_size=cfg.batch_size,
+                      test_n=len(getattr(data, "test_dataset", []) or []))
 
     model = build_model(cfg.model, data.num_classes, data.in_channels).to(device)
 
@@ -276,10 +303,6 @@ def main():
         clients, free_rider_indices = build_watermarked_clients(
             cfg, data.client_loaders, model, device, seed,
             data.num_classes, registry)
-        logger.info(f"watermark ON: {len(registry)} clients, m={registry.m} bits, "
-                    f"l={registry.l}, unembeddable={registry.unembeddable_frac:.2f}")
-        if free_rider_indices:
-            logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
         verify_model = build_model(cfg.model, data.num_classes, data.in_channels)
         classes = sorted({e["trigger_class"] for e in registry.entries.values()})
         tmode = getattr(cfg, "wm_trigger_mode", "class")
@@ -296,11 +319,28 @@ def main():
             trigger_bank = build_trigger_bank(data.test_dataset, classes,
                                               cfg.wm_num_triggers, seed=seed)
         n_clients_wm = len(registry.entries)
-        logger.info(f"trigger bank: mode={tmode}, {len(trigger_bank)} banks "
-                    f"({'per client' if per_client_bank else 'per class'}), "
-                    f"N_T={cfg.wm_num_triggers}"
-                    + (f"  [WARNING: only {len(trigger_bank)}/{n_clients_wm} clients got a bank]"
-                       if per_client_bank and len(trigger_bank) < n_clients_wm else ""))
+        # clients-per-trigger-class: >1 means oversubscription (paper Table IX capacity regime)
+        cpc = {}
+        for e in registry.entries.values():
+            cpc[e["trigger_class"]] = cpc.get(e["trigger_class"], 0) + 1
+        runlog.watermark_block(
+            logger, m=registry.m, l=registry.l, num_classes=data.num_classes,
+            unembeddable_frac=registry.unembeddable_frac,
+            n_triggers=cfg.wm_num_triggers, trigger_mode=tmode,
+            n_banks=len(trigger_bank), n_clients=n_clients_wm,
+            balanced_keys=getattr(cfg, "wm_balanced_keys", False),
+            wm_lambda=cfg.wm_lambda, wm_beta=cfg.wm_beta, wm_alpha=cfg.wm_alpha,
+            wm_f=cfg.wm_f, eta_fixed=getattr(cfg, "wm_eta_fixed", 0.0),
+            clients_per_class=cpc)
+        runlog.free_rider_block(
+            logger, attack=cfg.attack, indices=free_rider_indices,
+            trigger_class_of={cid: e["trigger_class"]
+                              for cid, e in registry.entries.items()},
+            knobs={"common_per_class": cfg.autop_common_per_class,
+                   "n_common_classes": cfg.autop_n_common_classes,
+                   "honest_until (W)": cfg.autop_honest_until,
+                   "calib_rounds (K)": cfg.autop_calib_rounds}
+            if cfg.attack in ("reduced", "submarine", "autopilot", "tap_oracle") else None)
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
                                     free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,
@@ -312,8 +352,11 @@ def main():
     else:
         clients, free_rider_indices = build_clients(cfg, data.client_loaders,
                                                     model, device, seed)
-        if free_rider_indices:
-            logger.info(f"free-riders ({cfg.attack}): clients {free_rider_indices}")
+        logger.info("")
+        logger.info("== SETUP: watermark ==")
+        logger.info("  OFF -- plain FedAvg baseline; no BER, no detection.")
+        runlog.free_rider_block(logger, attack=cfg.attack,
+                                indices=free_rider_indices)
         server = Server(model, clients, data.test_loader, device, logger)
 
     if fps:
@@ -372,19 +415,54 @@ def main():
     compute = collect_compute(clients, free_rider_indices)
     manifest = build_manifest(cfg, args)
 
+    # ---- flat one-glance digest -------------------------------------
+    summary = {
+        "family": manifest.get("family"),
+        "seed": seed,
+        "rounds": len(history),
+        "num_clients": cfg.num_clients,
+        "dataset": cfg.dataset,
+        "model": cfg.model,
+        "partition": cfg.partition,
+        "attack": cfg.attack,
+        "n_free_riders": len(free_rider_indices),
+        "free_rider_indices": free_rider_indices,
+        "final_acc": final_acc,
+        "best_acc": best_acc,
+        "correctness_pass": passed,
+        "elapsed_min": round(elapsed / 60.0, 2),
+        **wm_summary,
+        "effort_ratio_gpu": compute["summary"].get("effort_ratio_gpu"),
+        "effort_ratio_samples": compute["summary"].get("effort_ratio_samples"),
+    }
+
     result = {
+        # schema_version 
+        "schema_version": SCHEMA_VERSION,
         "config_idx": args.config_idx,
         "config": cfg.to_dict(),
         "manifest": manifest,
+        "summary": summary,
         "repeat": args.repeat,
         "seed": seed,
         "device": device,
         # which physical GPU this run landed on. RCP is heterogeneous (V100 / A100-40 /
         # A100-80 / H100 / H200), and timing metrics (gpu_ms, wall_ms) are only
         # comparable across runs that used the SAME card. BER / accuracy / samples /
-        # flops do NOT depend on this. Recorded so every run self-documents.
+        # flops do not depend on this. Recorded so every run self-documents.
         "gpu_name": _gpu_name(),
         "gpu_count": (torch.cuda.device_count() if torch.cuda.is_available() else 0),
+        # software provenance. The pod clones GIT_BRANCH at submit time, so
+        # two runs a week apart can be different code with identical configs.
+        # git_commit is exported by infra/submit_experiment.sh inside the pod.
+        "env": {
+            "git_commit": os.environ.get("GIT_COMMIT"),
+            "git_branch": os.environ.get("GIT_BRANCH"),
+            "torch": getattr(torch, "__version__", None),
+            "python": sys.version.split()[0],
+            "hostname": os.environ.get("NODE_NAME") or os.uname().nodename,
+            "finished_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        },
         "attack": cfg.attack,
         "num_free_riders": cfg.num_free_riders,
         "free_rider_indices": free_rider_indices,
@@ -404,15 +482,11 @@ def main():
     with open(out_path, "w") as f:
         json.dump(result, f, indent=2)
 
-    logger.info(f"--- final_acc={final_acc:.2f}%  best={best_acc:.2f}%  "
-                f"expected={cfg.expected_acc}  elapsed={elapsed/60:.1f}min ---")
-    cs = compute["summary"]
-    logger.info(f"compute: honest {cs['honest_mean_gpu_ms']:.0f} ms/client, "
-                f"FR {cs['fr_mean_gpu_ms']:.0f} ms/client, "
-                f"effort_ratio_gpu={cs['effort_ratio_gpu']}")
-    logger.info(f"CORRECTNESS: {'PASS' if passed else 'FAIL'} "
-                f"(final {final_acc:.2f}% vs {lo}-{hi}%)")
-    logger.info(f"wrote {out_path}")
+    runlog.report(logger, final_acc=final_acc, best_acc=best_acc,
+                  expected=cfg.expected_acc, passed=passed, elapsed_sec=elapsed,
+                  wm_summary=wm_summary, compute_summary=compute["summary"],
+                  per_class=per_class, out_path=out_path,
+                  eta_used=wm_summary.get("wm_eta_used"))
     sys.exit(0 if passed else 2)
 
 

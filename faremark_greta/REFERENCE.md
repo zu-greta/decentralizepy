@@ -45,7 +45,7 @@ Rules 1–5 use **honest BER only** (they define "normal"). Rules 6–7 (EER, Yo
 **both** honest and free-rider BER — they are *oracle* rules, not deployable, included
 precisely to answer "what if you tuned η perfectly?"
 
-### 1c. The regime (`separability.py`, post-hoc, honest converged-tail BER)
+### 1c. The regime (`detection.py`, post-hoc, honest converged-tail BER)
 
 | # | rule | computed over | formula | tight ↔ loose |
 |---|------|---------------|---------|----------------|
@@ -115,7 +115,7 @@ won't match a hand calculation done with `ddof=1`.
 |---|---|---|---|
 | live η | **before** the attack runs, by `threshold.py calibrate` | honest-only runs | yes — passed as `WM_ETA_FIXED`, constant for every round of every downstream run |
 | flags in `result.json` (`flagged`, `wm_fpr`, `wm_fr_recall`) | **during** each run, per round | that round's BER vs the frozen η | — |
-| every regime rule + OVL + best-error | **after** everything, by `separability.py` | logged BER | no — recompute freely |
+| every regime rule + OVL + best-error | **after** everything, by `detection.py` | logged BER | no — recompute freely |
 
 **Why they differ, in one line each:** *coded* averages first (√N-shrunk σ → tightest);
 *loose* doesn't (→ ~3× wider); *median+MAD* and *trimmed* ignore the hard-class tail by
@@ -131,7 +131,7 @@ Every honest-only rule (coded, loose, median+MAD, trimmed, p95/p99, adaptive-cli
 **honest BER**, which is logged per client per round in `result.json`
 (`history[*].wm_per_client[*].ber`, `is_free_rider=false`). EER and Youden additionally need the
 free-rider BER, also logged. So the **entire regime is post-hoc**: to try a new threshold you
-re-run `separability.py`, never the experiment. The only value that must be fixed *before* a run
+re-run `detection.py`, never the experiment. The only value that must be fixed *before* a run
 is the single frozen η used for live flagging — but even those flags can be recomputed offline
 for any η, since BER is stored.
 
@@ -286,7 +286,7 @@ classes instead of all of them. This separates *how many images* from *how much 
 diversity* — the mark is read off the shape of the non-trigger softmax tail, so a free-rider
 touching few classes may leave most of the tail unshaped even with a large image count.
 
-**Bug fixed to make this work:** `wm_client.py` previously did
+**Bug fixed to make this work:** `clients.py` previously did
 `common_per_class=max(0, cfg.autop_common_per_class)`, which clamped `-1` to `0` — the
 full-shard anchor was silently unreachable and ran as triggers-only. Now passed through
 unclamped, with `-1` handled explicitly in `attacks_adaptive.py`.
@@ -379,6 +379,249 @@ bits (and, avoidably, the unbalanced stuck-bit lottery — subtract it with the 
 
 ---
 
+## 3a. CLI REFERENCE — every command you can run
+
+Generated against the code, not from memory. Four layers, outermost first:
+
+```
+run_everything.sh   drives the whole thesis matrix, in legs        (submits many jobs)
+  run_all.sh        one dataset/bit/partition leg, in targets      (submits a few jobs)
+    submit_experiment.sh   ENV -> CLI flags -> one RunAI job       (submits 1 job)
+      run_experiment.py    one (config, repeat) -> result.json     (the actual run)
+```
+
+Analysis is separate and runs **locally** on the scp'd results:
+`detection.py` · `detection.py` · `plots.py` · `resultio.py` · `paper_check.py`.
+
+---
+
+### A. `run_everything.sh` — the whole matrix
+
+```bash
+./run_everything.sh <count|submit|honest|attacks|plot>
+```
+
+| phase | what it does | where to run |
+|---|---|---|
+| `count` | job tally + quota context. **Submits nothing.** Run this first. | cluster |
+| `submit` | fires EVERYTHING (honest + attacks with a provisional eta), no waiting | cluster |
+| `honest` | only the honest jobs (needed before a real calibration) | cluster |
+| `attacks` | calibrate the real eta, then submit the attack jobs | cluster |
+| `plot` | calibrate + separability tables + all figures, per leg | local, `RES=<local dir>` |
+
+`submit` can fire attacks before honest finishes because the `reduced` / `sameclass`
+attackers never read eta — they train on reduced data every round regardless. Eta only
+drives the server's *live* flagging, and `detection.py` recomputes all of that
+offline from the logged per-client BER.
+
+**Legs** (`LEGS="iid noniid"`):
+
+| leg | what it tests |
+|---|---|
+| `sanity10` / `sanity100` | paper reproduction rows, all honest, 10 seeds |
+| `iid` | core argument: honest + reduced 1,7 + reduced 3,6 + sameclass 0→6 |
+| `balanced` | same with sign-balanced keys — is the overlap a key artifact? (F6) |
+| `noniid` | Dirichlet α=0.5 |
+| `noniid_a01` / `noniid_a1` / `noniid_a100` | α sweep: severe skew → IID |
+| `sin` | `sin()` smoothing, paper Eq. 9 |
+| `bits20` | m=20 bits |
+| `classes` | trigger classes 9,19,…,99 instead of 0–9 |
+| `capacity` / `capacity_cv` / `capacity_paper` | CIFAR-100 / 200 clients, the three verifier trigger modes |
+| `capacity10` / `capacity10_paper` | CIFAR-10 / 50 clients, two trigger modes |
+
+**Knobs:** `LEGS` · `HONEST_SEEDS` · `ATTACK_SEEDS` · `SANITY_SEEDS` · `BALANCED` ·
+`CAP_NC` · `CAP10_NC` · `DO_PLOTS` · `PROV_ETA` · `MAX_INFLIGHT` (cap concurrent jobs;
+`3` = your deserved quota) · `RUNAI_EXTRA="--node-pools <p>"` (pin GPU type) · `RES`.
+
+---
+
+### B. `run_all.sh` — one leg
+
+```bash
+DS=c100|c10 [BITS=n] [PART=iid|niid] ./run_all.sh <target>
+```
+
+| target | what it does |
+|---|---|
+| `honest` | all-honest runs — the calibration source |
+| `calibrate` | freeze eta from the honest family → `eta_<TAG>.json` |
+| `reduced` | the +N free-rider at `POS` |
+| `sweep` | the +N spectrum: `NS='-1 0 1 2 5 10 25 50'`, optional `KCLS=K` class-diversity axis |
+| `sameclass` | pin a free-rider onto an honest client's trigger class (the airtight non-separability slice) |
+| `noniid` | convenience: honest-niid leg with its own eta |
+| `separability` | rule-independent non-separability tables (text + json) |
+| `PLOTALL` | every figure for this tag/partition |
+
+**Variables:** `DS` (c100→cfg 14, c10→cfg 11) · `CFG_OVERRIDE` · `SEEDS` · `POS`
+(free-rider cids) · `BITS` · `WMF` (`sin`) · `BALANCED` · `PART` · `DIRICHLET_ALPHA` ·
+`TRIGMODE` · `TCMAP` · `VTAG` · `NS` / `KCLS` (sweep ladders) · `SC_FR` / `SC_CLASS`
+(sameclass) · `RES` · `OUT` · `USE_FIXED_ETA` + `FIXED_ETA` (bypass the eta file).
+
+Everything is tagged by dataset + bits + partition + variant so parallel experiments
+never collide: family `honest_<DS>_b<BITS>_<PART>`, eta file `eta_<TAG>.json`.
+
+---
+
+### C. `paper_check.sh` — grade against the published rows
+
+```bash
+ROW=<t9|c10|c100> ./paper_check.sh submit     # fire the runs
+ROW=<t9|c10|c100> ./paper_check.sh check      # grade them (+/-2pp)
+RES=~/local/results ROW=t9 ./paper_check.sh check
+```
+
+| ROW | paper row | target wm % / acc % |
+|---|---|---|
+| `c10` | Table I+II, ResNet-18 / CIFAR-10 / 10 clients | 99.72 / 90.78 |
+| `c100` | Table I+II, ResNet-18 / CIFAR-100 / 100 clients | 99.71 / 75.31 |
+| `t9` | Table IX, ResNet-18 / CIFAR-10 / 50 clients (capacity) | 95.78 / 88.42 |
+
+Knobs: `SEEDS` · `NC` · `ROUNDS` · `NT` · `MODE` · `WM_BITS` · `HELDOUT=1` (also run
+the held-out-bank twin → the memorisation-vs-generalisation gap) · `RES`.
+
+The `check` phase now delegates to `scripts/paper_check.py`, which you can also call
+directly:
+```bash
+python scripts/paper_check.py --row t9 --in 'results/*/result.json' \
+    --family paper_t9_nc50_client_train --heldout-family paper_t9_nc50_class
+```
+
+---
+
+### D. `submit_experiment.sh` — one job (ENV → flags)
+
+```bash
+[ENV=val ...] ./submit_experiment.sh <CONFIG_IDX> <REPEAT>
+ATTACK=none FAMILY=t1_all_honest ./submit_experiment.sh 14 0
+```
+
+Every variable below maps to the `run_experiment.py` flag of the same name, lowercased.
+**All 52 hooks are live** (`PAPER_FAITHFUL` was the one dead hook — it is now commented
+out; it mapped to a flag that no longer exists and would have crashed argparse).
+
+| group | ENV variables |
+|---|---|
+| general | `MODEL` `DATASET` `ROUNDS` `NUM_CLIENTS` `LOCAL_EPOCHS` `BATCH_SIZE` `LR` `PARTITION` `DIRICHLET_ALPHA` `TRIGGER_CLASS_MAP` |
+| free-riders | `ATTACK` `NUM_FREE_RIDERS` `FREE_RIDER_IDS` `NOISE_SIGMA` `NOISE_DECAY` |
+| watermark | `WATERMARK` `WM_BITS` `BALANCED` `WM_F` **`WM_ALPHA`** `WM_NUM_TRIGGERS` `WM_TRIGGER_MODE` `WM_LAMBDA` `WM_BETA` `WM_ETA_FLOOR` `WM_ETA_FIXED` `CALIB_ON_ALL` |
+| submarine | **DISABLED** — 16 `AUTOP_*` hooks commented out (CHANGES.md §7). 5 stay live for `reduced`/`tap_oracle`: `AUTOP_COMMON_PER_CLASS` `AUTOP_N_COMMON_CLASSES` `AUTOP_HONEST_UNTIL` `AUTOP_CALIB_ROUNDS` `AUTOP_ORACLE_ETA` |
+| bookkeeping | `FAMILY` `SWEEP_VAR` `SWEEP_LEVEL` `NOTE` `TAG` |
+| job control | `WAIT=0` (fire-and-forget) · `DEBUG_HOLD=1` (keep the pod 1h) · `RUNAI_EXTRA` |
+
+`WM_ALPHA` is **new** — the flag it needs did not previously exist.
+
+---
+
+### E. `run_experiment.py` — the run itself
+
+```bash
+python scripts/run_experiment.py --config_idx 14 --repeat 0 --device cuda \
+    --output_dir /path/out --data_root /path/data [overrides...]
+python scripts/run_experiment.py --list_configs
+```
+
+Required: `--config_idx` `--output_dir` `--data_root`.
+Every flag below overrides the matching `ExpConfig` field; unset = the config default.
+
+**General:** `--rounds` `--num_clients` `--model` `--dataset` `--local_epochs`
+`--batch_size` `--lr` `--partition {iid,dirichlet,noniid}` `--dirichlet_alpha`
+`--trigger_class_map "0:6,1:6"` (pin trigger classes — the same-class control)
+
+**Free-riders:** `--attack {none,previous_models,gaussian,reduced,tap_oracle}` *(`submarine`/`autopilot` are DISABLED — see CHANGES.md §7)*
+`--num_free_riders` `--free_rider_ids "3,6"` `--noise_sigma` `--noise_decay`
+
+**Watermark:** `--watermark` / `--no_watermark` · `--wm_bits` (0 = auto, m = max(2, n//10))
+· `--wm_balanced_keys` / `--no_wm_balanced_keys` · `--wm_f {power,sin}` ·
+**`--wm_alpha`** (smoothing exponent, Eq. 7–9) · `--wm_num_triggers` (N_T) ·
+`--wm_trigger_mode {class,client,client_train}` · `--wm_lambda` · `--wm_beta` ·
+`--wm_eta_floor` · `--wm_eta_fixed` · `--calib_on_all` *(inert — see CHANGES.md §5)*
+
+**Trigger modes** — which images the verifier uses:
+
+| mode | images | tests |
+|---|---|---|
+| `class` | one shared held-out bank per trigger class | generalisation (default) |
+| `client` | per-client disjoint held-out slice | paper V-F3 "client-specific trigger variations" |
+| `client_train` | the client's **own training images** | paper V-F3 "trigger sample consistency" — memorisation, and the paper's capacity protocol |
+
+**Submarine: DISABLED** (CHANGES.md §7) — 16 `--autop_*` flags commented out. The 5 live ones are used by
+`--autop_common_per_class` (−1 = full shard, 0 = trigger-only, N = +N per common class),
+`--autop_n_common_classes` (K random common classes), `--autop_honest_until` (W) and
+`--autop_calib_rounds` (K).
+
+**Manifest:** `--manifest_family` (the grouping key every plot filters on)
+`--manifest_note` `--sweep_var` `--sweep_level`
+
+**Exit codes:** `0` = accuracy inside the config's band · `2` = outside it, **normal for
+attack runs**, `result.json` is already written · `3` = repo layout error.
+
+---
+
+### F. Analysis — run locally on the scp'd results
+
+#### `detection.py` — the one scalar
+
+```bash
+python scripts/detection.py calibrate --in 'results/*/result.json' \
+    --honest-family honest_c100_bdef_iid --tail 20 --out results/eta_c100.json
+python scripts/detection.py verify --in 'results/*/result.json' \
+    --honest-family honest_c100_bdef_iid --eta-file results/eta_c100.json
+```
+`calibrate` freezes `eta = mean_s(mu_s + 3*sigma_s)` over per-round mean-over-clients
+honest BER, last `--tail` rounds. `verify` recomputes it and confirms every attack run
+used the frozen constant (flat `wm_eta_round`). Feed the result back as `WM_ETA_FIXED`.
+
+#### `detection.py` — does any threshold work?
+
+```bash
+python scripts/detection.py separability \
+    --honest-in 'results/*/result.json' --honest-family honest_c100_bdef_iid \
+    --attack-in 'results/*/result.json' --attack-family reduced_c100_bdef_iid_c36 \
+    --tail 20 --per-class --emit results/sep_c36.json
+```
+Prints 9 threshold rules (coded / loose / median+MAD / trimmed / adaptive-clip /
+p95 / p99 / EER / Youden) with FPR, recall and balanced accuracy, plus the two
+rule-independent bounds: **overlap coefficient** and **best-possible balanced error**.
+`--per-class` is the strongest slice — on a `sameclass` run it gives the clean
+impossibility result.
+
+#### `plots.py` — every figure
+
+```bash
+python scripts/plots.py <cmd> --in 'results/*/result.json' [--family F] [--out DIR]
+```
+
+| cmd | shows |
+|---|---|
+| `sanity` | TEXT: flags degenerate runs (flat/zero BER, non-frozen eta). **Run first.** |
+| `thresholds` | eta derivation, where it lands, honest FPR histogram |
+| `class_difficulty` | per-class BER vs test acc/loss (+ Pearson r) |
+| `class_dynamics` | per-class L_wm / trigger acc / BER-vs-confidence |
+| `class_probe` | per-class BER vs entropy/dominance/pmax + correlations *(was `class_difficulty_probe.py`)* |
+| `positions` | per-trigger-class BER, easy vs hard |
+| `honest_lines` | honest BER per class over rounds *(was `honest_class_lines.py`)* |
+| `fidelity` | global accuracy + per-client BER + effort |
+| `timeline` | BER over rounds, tap/coast markers, calib window, calibrated eta, honest-floor overlay |
+| `separability` | honest vs FR BER overlap + threshold-regime FPR/recall |
+| `sweep` | the +N free-riding spectrum (BER vs data budget) |
+| `honest_fpr` · `eta_stability` | FPR vs eta · per-seed eta spread |
+| `threshold` · `frontier` · `scorecard` · `test_data` | legacy, kept for reuse |
+| `all` | thresholds + class_difficulty + class_dynamics + positions + fidelity |
+
+Extra args: `--tail` `--eta` `--classes 1,7` `--per-seed` `--honest_in` `--honest_family`
+`--attack_family` `--level` `--seed` `--csv`.
+
+#### `resultio.py` — inspect runs (NEW)
+
+```bash
+python scripts/resultio.py digest   --in 'results/*/result.json' [--family F]
+python scripts/resultio.py contract --in results/<run>/result.json
+```
+`digest` = one line per run (schema version, seed, accuracy, BER, FPR, recall, eta) —
+the fastest way to scan 150 runs. `contract` = the key inventory of one run.
+
+---
+
 ## 3b. MASTER COMMAND LIST (run order + status)
 
 Run `submit`/`honest`/`attacks`/`sweep` from the dir with `submit_experiment.sh` + `.env`
@@ -410,7 +653,7 @@ Nothing waits on the cluster. **Check the load first:** `./run_everything.sh cou
 | **16** | `DS=c100 SEEDS='0 1 2' POS=3,6 NS='5 10' KCLS=5 ./run_all.sh sweep` | class-diversity axis (K random common classes) | 🆕 |
 | **17** | `RES=<local> ./run_everything.sh plot` | calibrate + separability tables + all figures, per leg | 🆕 |
 | **18** | `python scripts/plots.py sweep --in "$RES/*/result.json" --eta <η> --out fig.png` | the +N spectrum figure | 🆕 |
-| **19** | `python scripts/separability.py --honest-in … --attack-in … --per-class` | rule-independent non-separability tables | 🆕 |
+| **19** | `python scripts/detection.py separability --honest-in … --attack-in … --per-class` | rule-independent non-separability tables | 🆕 |
 
 ### Suggested order given a 3-GPU deserved quota
 ```bash
@@ -436,8 +679,9 @@ runai list jobs        # NODE column = which GPU; gpu001-032 = A100-80GB
 runai list projects    # DESERVED (3) vs ALLOCATED right now
 runai list node-pools  # pool names for RUNAI_EXTRA
 ```
-Every run now records `gpu_name` / `gpu_count` in `result.json` and an `nvidia-smi` line in
-`pod.log`. GPU type affects **only** `gpu_ms` / `wall_ms`; BER, accuracy, `samples` and
+Every run now records `gpu_name` / `gpu_count` **and `env.git_commit`** in `result.json`, and
+`pod.log` carries a delimited `== GPU ==` / `== CODE ==` block with the exact commit SHA
+(the pod clones a moving branch, so identical configs a week apart can be different code). GPU type affects **only** `gpu_ms` / `wall_ms`; BER, accuracy, `samples` and
 `flops` are unaffected, and the effort *ratios* are computed within a single run so they are
 safe regardless.
 
@@ -447,9 +691,9 @@ safe regardless.
 |---|---|---|
 | housekeeping | check what seeds vary | ✅ done (§3; diagnose via `class_probe` + `wm_unembeddable_frac`) |
 | housekeeping | fix experiment tagging/naming | ✅ done (self-identifying `RUN_TAG` from `FAMILY`) |
-| housekeeping | cleanup logging in code & `result.json` | ❌ not touched |
-| housekeeping | merge files (all plotting together) | ✅ done (merged into `plots.py`; delete the two probe scripts) |
-| threshold | stress-test threshold calcs + prove non-separable | ✅ done (`separability.py` regime + OVL/best-error) |
+| housekeeping | cleanup logging in code & `result.json` | ✅ done (see `CHANGES.md`: run.log/pod.log restructured, `result.json` −35%, `runlog.py` + `resultio.py` added) |
+| housekeeping | merge files (all plotting together) | ✅ done (`plots.py`; **delete** `class_difficulty_probe.py` + `honest_class_lines.py`). Also merged: `resultio.py` (one data contract, was duplicated 3x), `paper_check.py` (was a heredoc in the .sh) |
+| threshold | stress-test threshold calcs + prove non-separable | ✅ done (`detection.py` regime + OVL/best-error) |
 | threshold | adaptive clipping in warmup rounds | ✅ done (`adaptive_clip_eta`) |
 | threshold | median | ✅ done |
 | threshold | trimmed mean | ✅ done |
@@ -473,7 +717,7 @@ safe regardless.
 | next | hint of a solution | ❌ not touched |
 | next | show impossible | ⚠️ empirical only |
 
-**Cleanly untouched, actionable next:** (1) `result.json` / logging cleanup; (2) the whole
+**Cleanly untouched, actionable next:** (1) ~~`result.json` / logging cleanup~~ ✅ done — see `CHANGES.md`; (2) the whole
 **detection-policy** block — consequence of crossing, k-warnings-before-flag, detection window
 (biggest gap; natural next edit in `wm_verify.py`); (3) per-round trigger-class rotation +
 averaging; (4) FR-spectrum sweep over +N and source classes; (5) theory write-up + solution hint.

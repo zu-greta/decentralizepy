@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_all.sh -- CIFAR-100 (default) or CIFAR-10.
 #
-# Everything is TAGGED by dataset + bit count so runs never collide:
+# Everything is tagged by dataset + bit count so runs never collide:
 #   honest  family = honest_<DS>_b<BITS>_iid      (BITS omitted -> "bdef" = code default m)
 #   reduced family = reduced_<DS>_b<BITS>_iid_c<POS>
 #   eta file       = $RES/eta_<DS>_b<BITS>.json
@@ -45,8 +45,11 @@ TCMAP="${TCMAP:-}"                                 # optional "cid:class,..." tr
 TCENV=""; [ -n "$TCMAP" ] && TCENV="TRIGGER_CLASS_MAP=$TCMAP"  # for honest/reduced (NOT sameclass)
 ETA_SUFFIX=""; [ "$PART" = "niid" ] && ETA_SUFFIX="_${PTAG}"
 ETA_FILE="${ETA_FILE:-$RES/eta_${TAG}${ETA_SUFFIX}.json}"
-PL="python scripts/plots.py"; TH="python threshold.py"
-SEP="python scripts/separability.py"
+# FIXED: TH was "python threshold.py" while PL/SEP used the scripts/ prefix, so
+# `calibrate` only worked when run from inside scripts/. Now consistent.
+PL="python scripts/plots.py"; TH="python scripts/detection.py"
+# MERGED: separability.py + threshold.py -> detection.py (subcommands)
+SEP="python scripts/detection.py separability"
 HL="$PL honest_lines"                             
 FIXED_ETA="${FIXED_ETA:-}"; USE_FIXED_ETA="${USE_FIXED_ETA:-}"
 COMMON_E="ROUNDS=50 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4"

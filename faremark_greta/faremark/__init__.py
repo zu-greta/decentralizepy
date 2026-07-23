@@ -11,7 +11,7 @@ Honest FedAvg with no free-riders and no watermarking
 """
 
 from .config import CONFIGS, get_config, seed_for
-from .client import Client
+from .clients import Client
 from .server import Server, Aggregator
 
 __all__ = [

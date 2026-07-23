@@ -31,7 +31,7 @@ class WatermarkRegistry:
     def register(self, cid, trigger_class, key, target_bits, kind="power",
                  alpha=0.4, exclude="trigger"):
         # exclude: which projection column the verifier drops. "trigger" sentinel
-        # -> use trigger_class (our mode); None -> paper-faithful full softmax.
+        # -> use trigger_class (to be tested); None -> match the paper: full softmax
         exc = trigger_class if exclude == "trigger" else exclude
         self.entries[cid] = dict(trigger_class=trigger_class, key=key,
                                  target_bits=target_bits, kind=kind, alpha=alpha,
@@ -46,7 +46,7 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 
     Keyed by class: every client whose trigger class is c is verified on the same
     held-out images. Used whenever one class == one client. 
-    Under oversubscription (clients sharing a class) two clients differ ONLY by 
+    Under oversubscription (clients sharing a class) two clients differ only by 
     their key M^i and bits B^i 
     """
     g = torch.Generator().manual_seed(seed)
@@ -198,14 +198,30 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             measured.append((cid, ber, cid in fr_set, tc))  # +trigger class
 
         # ================= THRESHOLD =================
-        # a pre-calibrated constant (calibrate_eta.py)
-        benign_now = [b for _, b, isfr, _ in measured if not isfr]
+        # eta is a pre-calibrated CONSTANT frozen by scripts/threshold.py calibrate
+        # and injected as WM_ETA_FIXED. It never adapts during a run.
         if eta_fixed and eta_fixed > 0:
-            eta_round = float(eta_fixed) # when eta_fixed > 0 it is used for every round
+            eta_round = float(eta_fixed)
+            eta_source = "fixed"          # the canonical path
         else:
-            eta_round = eta_floor        # degenerate fallback only
+            eta_round = eta_floor
+            eta_source = "floor_fallback"  # degenerate: NOT a calibrated threshold
+        # `eta_source` is logged so `threshold.py verify` and the plots can tell a
+        # properly-frozen run from one that silently fell back to eta_floor=0.05.
+        # Before this, a run with WM_ETA_FIXED unset produced a plausible-looking
+        # flat 0.05 threshold that was indistinguishable from a real calibration.
 
-        # ---- Legacy threhsolds (for reference) ----------
+        # ---- LEGACY (dead) live-threshold variants -------------------------------
+        # Kept, commented, for reference only: these are the two ways eta used to be
+        # recomputed DURING a run, before it was frozen offline. They are dead
+        # because a live threshold calibrated on the same round it judges is
+        # circular (and `calib_on_all` made free-riders poison their own threshold,
+        # which was the point of that demo). To revive: set eta_fixed=0 and
+        # un-comment. `benign_history` and CAL_WINDOW above exist only for these,
+        # as does the `benign_now` binding restored on the next commented line
+        # (it was removed from live code because nothing else used it).
+        #
+        # benign_now = [b for _, b, isfr, _ in measured if not isfr]
         # calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now
         # if calib_now:
         #     benign_history.append(sum(calib_now) / len(calib_now))
@@ -216,7 +232,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         #     recent = benign_history[-CAL_WINDOW:]
         #     eta_round = (wm.calibrate_eta(recent, floor=eta_floor)
         #                  if recent else eta_floor)                  # sliding-window mu+3sigma
-        # -------------------------------------------------------------------------
+        # --------------------------------------------------------------------------
 
         benign_bers, fr_bers = [], []
         benign_flagged = fr_flagged = 0
@@ -241,16 +257,26 @@ def make_verifier(registry, trigger_bank, verify_model, device,
         # ================= SUMMARY =================
         n_benign = max(len(benign_bers), 1)
         n_fr = len(fr_bers)
+        # compute percentiles of the honest clients' BERs (for analysis of BER floors)
+        srt = sorted(benign_bers)
+        def _pct(q):
+            if not srt:
+                return None
+            i = min(len(srt) - 1, max(0, int(round(q * (len(srt) - 1)))))
+            return round(srt[i], 4)
+
         info = {
             "wm_benign_ber": round(sum(benign_bers) / n_benign, 4),
+            "wm_benign_ber_p90": _pct(0.90),      # hard-class tail of the honest cloud
+            "wm_benign_ber_max": _pct(1.00),      # worst honest client this round
             "wm_fr_ber": round(sum(fr_bers) / n_fr, 4) if n_fr else None,
             "wm_fpr": round(benign_flagged / n_benign, 4),
             "wm_fr_recall": round(fr_flagged / n_fr, 4) if n_fr else None,
             "wm_eta_round": round(eta_round, 4),
-            # distributions (for the false-positive / per-class analysis)
-            "wm_benign_ber_list": [round(b, 4) for b in benign_bers],
-            "wm_fr_ber_list": [round(b, 4) for b in fr_bers],
-            "wm_per_client": per_client,
+            "wm_eta_source": eta_source,          # provenance of the threshold
+            # client flagged, not just how many
+            "wm_flagged_cids": [p["cid"] for p in per_client if p["flagged"]],
+            "wm_per_client": per_client
         }
         # diagnostics: average trigger-class difficulty for honest clients (for analysis of BER floors)
         hon_diag = [diag[cid] for cid, _, is_fr, _ in measured

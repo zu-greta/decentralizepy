@@ -2,8 +2,8 @@
 
 Re-implementation and limitations analysis of **FareMark: Model-Watermark-Driven Free-Rider Detection in Federated Learning** (Li et al., IEEE IoT-J 2025).
 Centralized FedAvg simulated on one GPU, with a per-client output-layer watermark loss, a memory-enhanced update, and server-side verification. 
-The study argues that FareMark's detection reduces to a single fragile threshold that **cannot separate an embedding free-rider from an honest client** 
-at hard trigger positions — and, more ambitiously, that this is intrinsic to watermarking read from the **output (softmax) layer**.
+The study argues that FareMark's detection reduces to a single fragile threshold that **cannot separate an embedding free-rider from an honest client** and
+that this is intrinsic to watermarking read from the **output (softmax) layer**.
 
 ## Thesis
 The watermark is read from the *tail* of the trigger-class softmax. A class the model
@@ -14,6 +14,8 @@ classes, so the paper's `eta = mu + 3*sigma` threshold lands in the valley and
 false-positives honest clients at hard classes (~32% FPR on CIFAR-100). A free-rider
 that trains just enough to reach the same floor is then indistinguishable from an
 honest client: any threshold that catches it also flags honest hard-position clients.
+
+TODO question: see if the paper ever mentions bimodal or if this is a new observation/code reproduction error.
 
 ## Storyline (see [storyline](#storyline))
 1. Reproduce the FareMark method.
@@ -27,20 +29,29 @@ honest client: any threshold that catches it also flags honest hard-position cli
 ## Layout (see [codemap](#codemap))
 ```
 faremark/
-  client.py server.py datasets.py models.py robustness.py manifest.py utils.py
-  compute_meter.py plotstyle.py
-  watermark.py         Eq.1-16 math (smooth/key/bits/project/embed/extract/BER)
-  wm_client.py         WatermarkClient (embed + Eq.14 memory) + client factory
-  attacks.py           crude baselines + FR selection
-  attacks_adaptive.py  SUBMARINE adaptive free-rider (LEGACY; warmup bug) + reduced (+N) and tap_oracle attackers (warmup-correct)
+  clients.py           every client class:
+                       PART 1  honest FedAvg Client
+                       PART 2  WatermarkClient (Eq.11-12 + Eq.14) + factory
+                       PART 3a crude baselines Eq.17/18 + FR selection + build_clients
+                       PART 3b reduced/tap attackers [+ DISABLED submarine]
+  watermark.py         Eq.1-16 math -- leaf, used by clients.py AND wm_verify.py
   wm_verify.py         server: extract -> BER -> frozen eta -> flag + diagnostics
+  server.py            FedAvg aggregation + round loop
+  runlog.py            all run.log formatting (banner/setup/round table/report)
+  compute_meter.py     per-client effort accounting (gpu_ms / samples / flops)
+  config.py datasets.py models.py manifest.py utils.py plotstyle.py
+  robustness.py        [UNWIRED] finetune/prune/quantize -- paper V-E, not run yet
 scripts/
   run_experiment.py    one (config, repeat) -> result.json
-  threshold.py         canonical eta: calibrate/verify CLI
-  plots.py             all plotting (timeline patched: single calibrated-eta line + honest-floor overlay)
-  class_difficulty_probe.py  NEW standalone: per-class BER vs entropy/dominance/pmax/acc (+ correlations)
-  honest_class_lines.py      NEW standalone: honest BER per trigger class over rounds
-  run_all.sh           dataset/bit-tagged: honest -> calibrate -> reduced -> PLOTALL
+  resultio.py          result.json data contract (load/select/BER extraction)
+  detection.py         eta calibration + non-separability. subcommands: calibrate | verify | separability
+  plots.py             all plotting 
+  paper_check.py       grade runs vs the paper's rows 
+  run_robustness.py    [UNWIRED] driver for robustness.py
+infra/
+  run_everything.sh    the whole thesis matrix, in legs
+  run_all.sh           one leg: honest -> calibrate -> attacks -> separability -> PLOTALL
+  paper_check.sh       submit the paper reproduction rows (check -> paper_check.py)
   submit_experiment.sh one RunAI job (env -> CLI flags)
 ```
 
@@ -82,12 +93,6 @@ python scripts/class_difficulty_probe.py --in "$RES/*/result.json" --family hone
   what the paper does and doesn't fit at m·l=n.
 - Random keys can create unembeddable bits; balanced keys (a valid pseudo-random ±1
   matrix) remove the artifact and are what we use going forward.
-
-## KNOWN ISSUE — logging & tagging (clean up next)
-Run folders are named `cfg<idx>_rep<seed>_<timestamp>`, which does not encode dataset,
-bits, key mode, attack, positions, or eta — so parallel experiments are hard to tell
-apart, and plot families can silently collide. Planned: descriptive `RUN_TAG` /
-`FAMILY` fingerprints and per-variant eta files. Code for this to be provided next.
 
 ---
 ---
@@ -194,7 +199,7 @@ detector would need.
    t_i = cid % num_classes ; key/bits seeded from cid ; L = CE + lambda*BCE(z,B) ; memory Eq.14
 ```
 
-## Why some positions are hard (the mechanism, one paragraph)
+## HYPOTHESIS: Why some positions are hard 
 Bits are read from the smoothed **tail** of the trigger-class softmax (the non-top
 classes), projected onto the ±1 key. A peaky class (low entropy / high pmax / high
 dominance) puts ~all mass on one class and leaves a flat, structureless tail →
@@ -239,8 +244,8 @@ export RES=/.../faremark_greta/results/<fresh_dir>   # ONE dir holding all run s
 Use a FRESH `$RES` for every experiment launch
 
 ## Code edits
-1. **Attacker dispatch** present in `wm_client.py`: `reduced` → `make_reduced_attack`,
-   `tap_oracle` → `make_tap_attack` (CODE_MAP §2). Files: `faremark/attacks_adaptive.py`.
+1. **Attacker dispatch** present in `clients.py`: `reduced` → `make_reduced_attack`,
+   `tap_oracle` → `make_tap_attack` (CODE_MAP §2). Files: `faremark/clients.py`.
 2. Standalone scripts in `scripts/`: `class_difficulty_probe.py`, `honest_class_lines.py`.
 
 ---
@@ -282,7 +287,7 @@ DS=c100 ./run_all.sh PLOTALL                             # timelines w/ honest-f
 ### Threshold-rule sweep (make the FPR↔recall trade explicit, beat 4)
 On the SAME honest+attack runs, recompute FPR and FR-recall under different eta rules
 (tight round-mean, loose per-client, per-position, percentile) and tabulate. (Script
-to be added; for now `threshold.py`'s `eta_from_round_means`/`frozen_eta` plus a small
+to be added; for now `detection.py`'s `eta_from_round_means`/`frozen_eta` plus a small
 per-position variant.)
 
 ---
@@ -315,7 +320,7 @@ trust assumption — that's a discussion, not a required run.
 ## Verify / sanity (run on every batch)
 ```bash
 python scripts/plots.py sanity --in "$RES/*/result.json"
-python scripts/threshold.py verify --in "$RES/*/result.json" \
+python scripts/detection.py verify --in "$RES/*/result.json" \
        --honest-family honest_c100_bdef_iid --eta-file "$RES/eta_c100_bdef.json"
 ```
 `sanity` flags flat/zero BER, non-frozen eta, missing loss. `verify` MISMATCH usually
@@ -468,32 +473,13 @@ honest path plateaus at the same floor as any other embedder. The floor is set b
 3. **Threshold-rule sweep** (for beat 4): recompute FPR↔recall under tight / loose /
    per-position / percentile eta on the *same* runs to show the trade is unavoidable.
 
----
-
-## KNOWN ISSUES — logging & tagging (clean up next session)
-Running many experiments together currently produces results that are hard to tell
-apart. Specifics to fix (code files to be provided in the new conversation):
-- **Run directory name** is `cfg{idx}_rep{seed}_{timestamp}` (`submit_experiment.sh`
-  `RUN_TAG`). It does NOT encode dataset, m/bits, balanced-vs-random keys, attack,
-  positions, or eta — so two different experiments look identical except for a
-  timestamp. Make `RUN_TAG` descriptive, e.g.
-  `c100_b10_bal_reduced_c17_eta0640_rep0_<ts>`.
-- **Plot grouping** relies on `manifest.family` (the `FAMILY` env). Families must be
-  tagged so bit/key variants don't collide (e.g. `honest_c100_b10bal_iid`,
-  `reduced_c100_b20bal_iid_c17`). Several plot/threshold commands filter on family; a
-  loose tag mixes runs silently.
-- **eta files** should be per-variant (`eta_<tag>.json`), not a single
-  `eta_calibrated.json`, once multiple datasets/bit-counts coexist.
-- Consider writing a tiny `manifest` field with the full parameter fingerprint and a
-  short human tag, and have all plotting/calibration filter on that fingerprint.
-
 
 ---
 ---
 ---
 
 # CODEMAP
-complete technical reference 
+complete technical reference - TO BE UPDATED
 
 ```
 faremark/
@@ -562,7 +548,7 @@ standard/correct; `exp(H)` = effective class count.
 
 ---
 
-## 2. Honest client + factory — `faremark/wm_client.py`  [WIRED]
+## 2. Honest client + factory — `faremark/clients.py`  [WIRED]
 - `WatermarkClient(Client)`
   - `produce_update`: load global → `_local_train_wm` → `_memory_update` → submit.
   - `_local_train_wm`: `L = CE + wm_lambda*watermark_loss` on trigger images; logs
@@ -587,7 +573,7 @@ standard/correct; `exp(H)` = effective class count.
 
 ## 3. The attackers
 
-### 3b. SUBMARINE (LEGACY) — `faremark/attacks_adaptive.py`
+### 3b. SUBMARINE (LEGACY) — `faremark/clients.py`
 `SubmarineFreeRider(_AdaptiveMixin, WatermarkClient)`: honest during warmup, then
 coast/tap under a self-estimated or oracle eta. Rich knob set (`autop_*`, §8).
 **Known bug:** `_ensure_triggers` replaces `self.loader` with a held-out/reduced
@@ -595,7 +581,7 @@ loader used *during warmup too*, so the mark doesn't generalize in warmup → se
 and self BER ≈ 0.5 there, self-eta estimate = 0.5. Superseded by §3c. Keep only for
 the self-eta-reconstruction ideas (`_freeze_own_eta`).
 
-### 3c. NEW minimal attackers — `faremark/attacks_adaptive.py`  [WIRED via §2 dispatch]
+### 3c. NEW minimal attackers — `faremark/clients.py`  [WIRED via §2 dispatch]
 Built from scratch on `WatermarkClient`, **one training path** (the honest one), so
 the warmup bug cannot occur (original loader untouched until defection).
 - `make_reduced_attack(base_cls)` → `ReducedDataFreeRider` (`attack_name="reduced"`):
@@ -627,15 +613,19 @@ verify on a dry run that `result.json:free_rider_indices` is what you set),
      `pmax`, `entropy`, `dominance`, `trig_acc` (all per client).
   2. THRESHOLD = frozen `eta_fixed` (from `WM_ETA_FIXED`); logged flat as `wm_eta_round`.
   3. Flag each client iff `ber >= eta_round`.
-  4. Emit per round: `wm_benign_ber`, `wm_fr_ber`, `wm_eta_round`, `wm_fpr`,
-     `wm_fr_recall`, `wm_benign_ber_list`, `wm_fr_ber_list`, round-level
+  4. Emit per round: `wm_benign_ber`, **`wm_benign_ber_p90`**, **`wm_benign_ber_max`**,
+     `wm_fr_ber`, `wm_eta_round`, **`wm_eta_source`**, `wm_fpr`, `wm_fr_recall`,
+     `wm_detect_acc`, **`wm_flagged_cids`**, round-level
      `wm_benign_pmax/entropy/dominance/trig_acc`, and
      `wm_per_client = [{cid, trigger_class, ber, is_free_rider, flagged, pmax,
      entropy, dominance, trig_acc}]`.
+     (`wm_benign_ber_list` / `wm_fr_ber_list` were REMOVED — verbatim duplicates of
+     `wm_per_client[].ber`. p90/max replace them and expose the bimodality the mean
+     hides; `wm_flagged_cids` is the hook for detection-policy work.)
 
 ---
 
-## 5. Threshold code — `scripts/threshold.py`  [WIRED]
+## 5. Threshold code — `scripts/detection.py`  [WIRED]
 `calibrate(inp, honest_family, tail, out)`: per-seed `eta_s`, averages to `eta`,
 writes `eta_calibrated.json` = `{eta, eta_std_across_seeds, grand_mean, grand_std,
 n_seeds, per_seed:[{file,seed,eta,mu,sigma}], eta_pooled_for_reference,
@@ -645,7 +635,7 @@ compare to the file; (2) confirm each attack run's `wm_eta_round` is flat and eq
 the frozen eta. Prints PASS/FAIL. NOTE: verify recomputes from whatever honest runs
 match the glob — if the honest set on disk differs from what was frozen, it reports
 MISMATCH (that is provenance, not necessarily a bug).
-CLI: `python threshold.py calibrate|verify --in <glob> --honest-family <fam> [--tail N] [--out|--eta-file]`.
+CLI: `python scripts/detection.py calibrate|verify --in <glob> --honest-family <fam> [--tail N] [--out|--eta-file]`.
 
 ---
 
@@ -657,9 +647,10 @@ CLI: `python threshold.py calibrate|verify --in <glob> --honest-family <fam> [--
   `make_verifier(eta_fixed=cfg.wm_eta_fixed)` → `Server.run` → assemble `result.json`.
 - `evaluate_per_class`: per-class TEST acc + CE loss of the FINAL global model →
   `result["per_class"] = {overall_acc, matches_final_acc, by_class:{c:{acc,loss,n}}}`.
-- `result.json` top-level: `config`, `manifest`, `free_rider_indices`, `final_acc`,
-  `best_acc`, `correctness_pass`, `per_class`, `compute`, `history`, plus a `wm_summary`
-  spread in: `wm_bits_m`, `wm_group_size_l`, `wm_unembeddable_frac`, `wm_benign_ber`,
+- `result.json` top-level: `schema_version`, `config`, `manifest`, **`summary`** (flat
+  digest), **`env`** (git commit / torch / host), `free_rider_indices`, `final_acc`,
+  `best_acc`, `correctness_pass`, `per_class`, `compute`, `history`, plus the `wm_summary`
+  spread: `wm_bits_m`, `wm_group_size_l`, `wm_unembeddable_frac`, `wm_benign_ber`,
   `wm_fr_ber`, `wm_fpr`, `wm_fr_recall`, `wm_eta_used`.
 - `compute.per_client[cid]`: meter `summary` + `trace` (attacker actions) + `wm_stats`
   (per-round cls_loss/wm_loss/trig_train_acc). `record_forward_only` counts probe
@@ -692,7 +683,10 @@ CLI: `python plots.py <cmd> --in '<glob>' [--family F] [--out DIR|PREFIX] ...`
   trigger classes (from honest runs) + a dotted mean line, so the FR line is read
   against its own class, not the honest mixture. Helper `honest_class_floor(...)`.
 
-### 7b. NEW standalone analysis scripts  [STANDALONE]
+### 7b. Merged-in analysis (formerly standalone)  [WIRED]
+Both scripts below are now `plots.py` subcommands (`class_probe`, `honest_lines`) and
+the standalone files should be **deleted**. Original descriptions kept for reference:
+
 - `class_difficulty_probe.py` — pulls per-class BER + `entropy/dominance/pmax/trig_acc`
   (from `history[*].wm_per_client`) and `test_acc/test_loss` (from `per_class`),
   prints a ranked Pearson+Spearman correlation table (F1). Numpy only.
@@ -706,6 +700,8 @@ Both are candidates to fold into `plots.py`/`run_all.sh PLOTALL` later.
 
 ## 8. TUNABLES — `faremark/config.py` `ExpConfig`
 Override via `--flag` (run_experiment) or `ENV=val` (submit_experiment.sh).
+`calib_on_all` is **inert** — its only consumer is the commented-out live-calibration
+block in `wm_verify.py` (see CHANGES.md §5). `wm_alpha` is now overridable.
 Key fields: `attack` (none/previous_models/gaussian/submarine/reduced/tap_oracle),
 `num_free_riders`, `free_rider_ids`, `partition`/`dirichlet_alpha`, `wm_bits` (0=auto
 → m=max(2,n//10)), `wm_lambda/alpha/beta`, `wm_num_triggers` (N_T), `wm_eta_fixed`,
@@ -736,18 +732,45 @@ LOCAL_EPOCHS, BATCH_SIZE, LR, DATASET, MODEL, PARTITION, DIRICHLET_ALPHA, ATTACK
 NUM_FREE_RIDERS, FREE_RIDER_IDS, NOISE_*, all AUTOP_*, WATERMARK (presence-flag —
 setting =0 still enables it), WM_BITS→--wm_bits, WM_NUM_TRIGGERS, WM_LAMBDA, WM_BETA,
 WM_ETA_FLOOR, WM_ETA_FIXED, CALIB_ON_ALL, FAMILY→--manifest_family, SWEEP_*, NOTE→
---manifest_note`. **No hook for balanced keys** (code edit only). `PAPER_FAITHFUL`
-still has a hook but the flag was removed downstream — do not set it. Writes each run
+--manifest_note`. `BALANCED=1` now maps to `--wm_balanced_keys` (no code edit needed), and
+**`WM_ALPHA` was added** — its flag `--wm_alpha` did not previously exist despite being
+documented as sweepable. `PAPER_FAITHFUL`'s hook is now **commented out**: the flag was
+removed downstream, so setting it passed an unrecognised argument and argparse killed
+the job. Writes each run
 to `$MOUNT/home/zu/results/<RUN_TAG>` where `RUN_TAG=cfg<idx>_rep<seed>[-fr<n>][-<TAG>]_<ts>`
 (see logging TODO in STATUS / README).
 
 ---
 
-## Data contract — `result.json` (what plotting/threshold code reads)
-- `manifest.family` — plot/calibration filter key.
-- `free_rider_indices`, `config` (incl. `wm_bits`, `wm_eta_fixed`, `attack`).
-- `per_class.by_class[c] = {acc, loss, n}` — class difficulty (test-side).
-- `history[r].wm_per_client[i] = {cid, trigger_class, ber, is_free_rider, flagged,
-  pmax, entropy, dominance, trig_acc}`; `history[r].wm_eta_round`; `history[r].test_acc`.
-- `compute.per_client[cid] = {..., trace:[{round,action,eta_frozen,...}], wm_stats:{...}}`.
-- top-level `wm_unembeddable_frac`, `wm_bits_m`, `wm_group_size_l`, `wm_fpr`, `wm_fr_recall`.
+## Data contract — `result.json`
+
+Authoritative version, with back-compat shims, lives in **`scripts/resultio.py`** —
+import from there rather than re-implementing (it was previously copy-pasted into
+`detection.py`, `detection.py` and `plots.py`, and the copies had diverged).
+
+- `schema_version` — 1 = pre-cleanup run, 2 = current. Both coexist in one results dir.
+- `manifest.family` — the plot/calibration filter key. `manifest.{sweep_var, sweep_level}`.
+- `summary{...}` — NEW flat digest (accuracy, BER, FPR, recall, eta, bits). `resultio.summary_of()`
+  reads it and rebuilds it for v1 runs.
+- `config` (full ExpConfig snapshot), `seed`, `free_rider_indices`.
+- `env{git_commit, git_branch, torch, python, hostname, finished_utc}` — NEW provenance.
+- `per_class.by_class[c] = {acc, loss, n}` — class difficulty, test-side.
+- `history[r] = {round, test_acc, wm_eta_round, wm_eta_source, wm_benign_ber,
+  wm_benign_ber_p90, wm_benign_ber_max, wm_fr_ber, wm_fpr, wm_fr_recall, wm_detect_acc,
+  wm_flagged_cids, wm_per_client[]}`
+  where `wm_per_client[i] = {cid, trigger_class, ber, is_free_rider, flagged, pmax,
+  entropy, dominance, trig_acc}`.
+- `compute.summary{honest_mean_*, fr_mean_*, effort_ratio_*}`;
+  `compute.per_client[cid] = {attack_name, is_free_rider, total{...},
+  per_round{r:{samples, gpu_ms, trained}}, trace[{round, action, ...}], wm_stats{...}}`.
+
+Removed in v2 (nothing read them): `wm_benign_ber_list` / `wm_fr_ber_list` (verbatim
+duplicates of `wm_per_client[].ber`) and the per-round `fwd_passes` / `bwd_passes` /
+`opt_steps` / `wall_ms` / `flops` (identical to each other or exactly recomputable;
+still in `total`). See `CHANGES.md` §2.
+
+Quick look at any run:
+```bash
+python scripts/resultio.py digest   --in 'results/*/result.json'
+python scripts/resultio.py contract --in results/<run>/result.json
+```
