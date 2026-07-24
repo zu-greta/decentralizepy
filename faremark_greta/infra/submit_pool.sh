@@ -52,12 +52,38 @@ PKG_SUBDIR="faremark_greta"
 SCRIPT="${SCRIPT:-scripts/run_experiment.py}"
 
 TOTAL=$(grep -cve '^[[:space:]]*$' "$JOBS_FILE")
-echo "=== pool $POOL_TAG: $TOTAL runs -> $PODS pod(s) x $WORKERS workers = $((PODS*WORKERS)) concurrent ==="
+
+# --- validate node-pool names up front -------------------------------------
+# runai rejects an unknown pool per-job, so without this you get PODS failures
+# in a row and (before the exit-code fix below) a cheerful "submitted" banner.
+if [ "${#_POOLS[@]}" -gt 0 ]; then
+  AVAIL=$(runai list node-pools 2>/dev/null | awk 'NR>1{print $1}' | grep -v '^$')
+  if [ -z "$AVAIL" ]; then
+    echo "!! could not read 'runai list node-pools' -- skipping validation, submissions may fail"
+  else
+    for pl in "${_POOLS[@]}"; do
+      grep -qx -- "$pl" <<< "$AVAIL" || {
+        echo "!! node-pool '$pl' does not exist on this cluster."
+        echo "   available pools:"; sed 's/^/     /' <<< "$AVAIL"
+        echo
+        echo "   Either use a real name, or drop POOLS entirely and let the"
+        echo "   scheduler place the pods:"
+        echo "       WORKERS=3 PODS=2 ./submit_pool.sh"
+        echo "   (WORKERS=3 is the safe uniform value when you do not know which"
+        echo "    pod lands on the 40GB card -- see the memory note at the bottom.)"
+        exit 1; }
+    done
+    echo "node-pools validated: ${_POOLS[*]}"
+  fi
+fi
+
+echo "=== pool $POOL_TAG: $TOTAL runs -> $PODS pod(s), shared queue ==="
 
 # Every pod gets the FULL manifest and claims rows atomically from a shared
 # directory on the PVC. With mismatched GPUs this matters: a static split would
 # leave the fast pod idle while the slow one finished its half.
 FULL_B64=$(base64 -w0 < "$JOBS_FILE")
+SUBMITTED=0
 
 for ((i=0; i<PODS; i++)); do
   POD_POOL="${_POOLS[i]:-}"
@@ -67,7 +93,7 @@ for ((i=0; i<PODS; i++)); do
   JOB_NAME="faremark-${POOL_TAG}-w${i}"
   echo "--- $JOB_NAME : pool=${POD_POOL:-<any>} workers=$POD_WORKERS (shared queue of $TOTAL)"
 
-  runai submit "$JOB_NAME" \
+  if runai submit "$JOB_NAME" \
     --project "$PROJECT" -g 1 --image "$IMAGE" --pvc "$PVC:$MOUNT" \
     ${POD_EXTRA:-} \
     --run-as-uid "$USER_UID" --run-as-gid "$USER_GID" --memory "$MEMORY" \
@@ -171,17 +197,47 @@ PY
       sync; sleep 2
       exit 0
     '
+  then
+    SUBMITTED=$((SUBMITTED+1))
+    echo "    submitted OK"
+  else
+    echo "    !! runai submit FAILED for $JOB_NAME (see the error above)"
+  fi
 done
+
+echo
+if [ "$SUBMITTED" -eq 0 ]; then
+  cat <<EOF
+=== NOTHING WAS SUBMITTED ($SUBMITTED/$PODS succeeded) ===
+Fix the errors above and rerun. Nothing is running; no results were touched.
+  runai list node-pools     # the valid POOLS values
+  runai list jobs           # confirm: should show no faremark-$POOL_TAG jobs
+EOF
+  exit 1
+fi
+
+if [ "$SUBMITTED" -lt "$PODS" ]; then
+  echo "=== PARTIAL: only $SUBMITTED/$PODS pods submitted ==="
+  echo "The queue is shared, so the pod(s) that did start will still drain all"
+  echo "$TOTAL runs -- just slower. Rerun with the SAME POOL_TAG to add the rest:"
+  echo "  POOL_TAG=$POOL_TAG ./submit_pool.sh"
+else
+  echo "=== $SUBMITTED/$PODS pods submitted ==="
+fi
 
 cat <<EOF
 
-=== $PODS pod(s) submitted. Nothing else to do. ===
-
-  runai list jobs                                  # should show exactly $PODS
+  runai list jobs                                  # expect $SUBMITTED faremark-$POOL_TAG job(s)
   kubectl logs -n $NAMESPACE -l release=faremark-${POOL_TAG}-w0 -f
   ls ${MOUNT}/home/zu/results/.poollogs/           # per-pod progress logs
 
 Resume after a preemption -- safe, skips finished runs:
   POOL_TAG=$POOL_TAG ./submit_pool.sh
 (reuse the SAME POOL_TAG so the claim directory is reused)
+
+MEMORY NOTE: Eq.14 keeps a model copy PER CLIENT, so a 200-client run needs
+~9 GB on its own. Six concurrent would want ~57 GB -- fine on an 80 GB card,
+an OOM on a 40 GB one. If you cannot pin node-pools and therefore do not know
+which pod lands where, use a uniform WORKERS=3. Watch .poollogs for "OOM".
 EOF
+exit 0
