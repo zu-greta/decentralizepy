@@ -224,7 +224,7 @@ PY
       }
 
       # ---- drain the shard, WORKERS at a time ----------------------------
-      while IFS=$"\t" read -r tag cfg rep extra note; do
+      while IFS=$'\t' read -r tag cfg rep extra note; do
         [ -z "${tag:-}" ] && continue
         while [ "$(jobs -rp | wc -l)" -ge "$WORKERS" ]; do sleep 5; done
         run_one "$tag" "$cfg" "$rep" "$extra" "$note" &
