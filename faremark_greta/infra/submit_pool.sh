@@ -57,9 +57,19 @@ TOTAL=$(grep -cve '^[[:space:]]*$' "$JOBS_FILE")
 # runai rejects an unknown pool per-job, so without this you get PODS failures
 # in a row and (before the exit-code fix below) a cheerful "submitted" banner.
 if [ "${#_POOLS[@]}" -gt 0 ]; then
-  AVAIL=$(runai list node-pools 2>/dev/null | awk 'NR>1{print $1}' | grep -v '^$')
+  RAW=$(runai list node-pools 2>/dev/null | sed '/deprecat/d;/^$/d')
+  # CLI v1 has no 'list node-pools': it silently falls through to the JOB list.
+  if grep -qi 'Showing jobs' <<< "$RAW" || [ -z "$RAW" ]; then
+    echo "!! This runai CLI does not support 'list node-pools', so POOLS cannot be"
+    echo "   validated -- and pinning will almost certainly be rejected."
+    echo "   Drop POOLS and launch unpinned instead:"
+    echo "       WORKERS=3 PODS=2 ./submit_pool.sh"
+    exit 1
+  fi
+  AVAIL=$(awk 'NR>1{print $1}' <<< "$RAW" | grep -v '^$')
   if [ -z "$AVAIL" ]; then
-    echo "!! could not read 'runai list node-pools' -- skipping validation, submissions may fail"
+    echo "!! could not parse node-pool list -- drop POOLS and use WORKERS=3 PODS=2"
+    exit 1
   else
     for pl in "${_POOLS[@]}"; do
       grep -qx -- "$pl" <<< "$AVAIL" || {

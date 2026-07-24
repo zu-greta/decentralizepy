@@ -48,9 +48,12 @@ if git clone --depth 1 --branch "$BRANCH" "$REPO" "$TMP/repo" >/dev/null 2>&1; t
     grep -q 'smoothing_gain'  "$WM" && ok "  sin fix pushed (smoothing_gain guard)"  || bad "  sin fix NOT pushed"
     grep -q 'num_bits < 4'    "$WM" && ok "  make_bits fix pushed (m=1 constant)"    || bad "  make_bits fix NOT pushed -- R2 (CIFAR-10 m=1) WILL BE MEANINGLESS"
     grep -q 'balanced: bool = False' "$WM" && ok "  make_key default = False"        || bad "  make_key default still True"
-    EPSDEF=$(grep -o 'SMOOTH_EPS = float(_os.environ.get("SMOOTH_EPS", "[^"]*"' "$WM" | grep -o '[0-9e.-]*$')
-    [ "$EPSDEF" = "1e-3" ] && ok "  SMOOTH_EPS defaults to 1e-3 (legacy) -- correct for THIS batch" \
-                           || warn "  SMOOTH_EPS defaults to '$EPSDEF' -- new runs will NOT match your existing families"
+    EPSDEF=$(sed -n 's/.*SMOOTH_EPS", *"\([^"]*\)".*/\1/p' "$WM" | head -1)
+    case "$EPSDEF" in
+      1e-3) ok "  SMOOTH_EPS defaults to 1e-3 (legacy) -- correct for THIS batch" ;;
+      "")   bad "  could not read the SMOOTH_EPS default from watermark.py" ;;
+      *)    warn "  SMOOTH_EPS defaults to '$EPSDEF' -- new runs will NOT match your existing families" ;;
+    esac
   else
     bad "watermark.py not found at $PKG/faremark/watermark.py in the repo"
   fi
@@ -58,13 +61,20 @@ if git clone --depth 1 --branch "$BRANCH" "$REPO" "$TMP/repo" >/dev/null 2>&1; t
   [ -f "$RE" ] && { grep -q 'num_workers' "$RE" && ok "run_experiment.py accepts --num_workers" \
                     || bad "run_experiment.py has no --num_workers: NUM_WORKERS=0 will crash argparse"; }
   # uncommitted local edits?
-  if [ -d .git ] || git rev-parse --git-dir >/dev/null 2>&1; then
-    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-      warn "you have UNCOMMITTED local changes -- the pods will NOT see them:"
-      git status --porcelain 2>/dev/null | sed 's/^/       /'
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    DIRTY=$(git status --porcelain 2>/dev/null)
+    # The pod clones and runs faremark/ + scripts/. infra/ runs on THIS machine,
+    # so uncommitted infra edits are expected and harmless.
+    POD_DIRTY=$(grep -E '(faremark|scripts)/' <<< "$DIRTY" | grep -v '/infra/' || true)
+    INF_DIRTY=$(grep -E '/infra/' <<< "$DIRTY" || true)
+    if [ -n "$POD_DIRTY" ]; then
+      bad "uncommitted changes to code the PODS RUN -- push these or they are ignored:"
+      sed 's/^/       /' <<< "$POD_DIRTY"
     else
-      ok "working tree clean"
+      ok "no uncommitted changes to pod-executed code (faremark/, scripts/)"
     fi
+    [ -n "$INF_DIRTY" ] && printf '  \033[36mINFO\033[0m local-only infra edits (run here, never cloned -- fine):\n%s\n' \
+      "$(sed 's/^/       /' <<< "$INF_DIRTY")"
   fi
 else
   bad "could not clone $REPO -- check network / credentials"
@@ -86,7 +96,19 @@ else
 fi
 
 echo
-echo "== 4. results dir / already-done runs =="
+echo "== 4. node pools =="
+NP=$(runai list node-pools 2>/dev/null | sed '/deprecat/d;/^$/d')
+if grep -qi 'Showing jobs' <<< "$NP" || [ -z "$NP" ]; then
+  warn "'runai list node-pools' is not supported by this CLI (it fell through to the job list)."
+  warn "=> do NOT pass POOLS. Launch without pinning; see the command below."
+  PIN=0
+else
+  ok "node pools available:"; sed 's/^/       /' <<< "$NP"
+  PIN=1
+fi
+
+echo
+echo "== 5. results dir / already-done runs =="
 RES_DIR="${MOUNT:-}/home/zu/results"
 if [ -n "${MOUNT:-}" ] && [ -d "$RES_DIR" ]; then
   ok "results dir reachable: $RES_DIR ($(find "$RES_DIR" -name result.json 2>/dev/null | wc -l) existing runs)"
@@ -96,13 +118,16 @@ fi
 
 echo
 if [ "$FAIL" -eq 0 ]; then
-  cat <<'GO'
-== ALL CHECKS PASSED ==
-  ./run_now.sh
-  unset DRYRUN
-  POOLS="a100-80 a100-40" WORKERS_LIST="6 3" PODS=2 ./submit_pool.sh
-  runai list jobs        # exactly 2
-GO
+  echo "== ALL CHECKS PASSED =="
+  echo "  ./run_now.sh"
+  if [ "${PIN:-0}" = "1" ]; then
+    echo '  POOLS="<80GB-pool> <40GB-pool>" WORKERS_LIST="6 3" PODS=2 ./submit_pool.sh'
+  else
+    echo "  WORKERS=3 PODS=2 ./submit_pool.sh"
+    echo "     ^ no pool pinning available, so you cannot know which pod gets the"
+    echo "       40GB card. WORKERS=3 is the value that is safe on either."
+  fi
+  echo "  runai list jobs        # expect exactly 2"
 else
   echo "== FIX THE FAILURES ABOVE BEFORE LAUNCHING =="
   echo "   Most likely cause: Python changes are not committed+pushed."
