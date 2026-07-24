@@ -122,8 +122,19 @@ for ((i=0; i<PODS; i++)); do
       echo "== POOL WORKER $SHARD_ID =="
       printf "  %-18s %s\n" "started (UTC)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       printf "  %-18s %s\n" "node"          "${NODE_NAME:-unknown}"
-      printf "  %-18s %s\n" "workers"       "$WORKERS"
       nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | sed "s/^/  gpu: /"
+
+      # --- adapt WORKERS to the card we actually landed on -------------------
+      # The cluster has A100-80 (32 nodes), A100-40 (16) and H100-80 (3), and no
+      # node-pool labels, so you cannot request one. Eq.14 keeps a model copy PER
+      # CLIENT: a 200-client run needs ~9 GB on its own, so 6 concurrent want
+      # ~57 GB -- fine on 80 GB, an OOM on 40. Cap ourselves instead of guessing.
+      GPU_MB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
+      if [ -n "${GPU_MB:-}" ] && [ "$GPU_MB" -lt 60000 ] && [ "$WORKERS" -gt 3 ]; then
+        echo "  !! only ${GPU_MB} MiB of GPU memory -- capping WORKERS $WORKERS -> 3"
+        WORKERS=3
+      fi
+      printf "  %-18s %s\n" "workers"       "$WORKERS"
 
       # ---- code ---------------------------------------------------------
       rm -rf /tmp/decentralizepy
@@ -160,14 +171,37 @@ PY
       echo "================================================================"
 
       # mkdir is atomic on POSIX, so two pods can never take the same row.
+      # A claim also carries a HEARTBEAT. Without it, a pod killed mid-run (which
+      # is what preemption does -- SIGKILL, no cleanup) would leave the claim
+      # directory behind with no result.json, and every future pod would skip
+      # that row forever. With it, a claim whose heartbeat has gone stale is
+      # reclaimable, so preempted work is automatically retried.
       CLAIMS="$RESULTS_ROOT/.claims_${POOL_TAG}"
+      STALE="${STALE:-1200}"          # seconds without a heartbeat -> reclaimable
       mkdir -p "$CLAIMS"
+
+      claim() {   # 0 = we own it, 1 = skip
+        local tag="$1" d="$CLAIMS/$1"
+        [ -s "$RESULTS_ROOT/$tag/result.json" ] && return 1
+        if mkdir "$d" 2>/dev/null; then date +%s > "$d/hb"; return 0; fi
+        local hb age
+        hb=$(cat "$d/hb" 2>/dev/null || echo 0)
+        age=$(( $(date +%s) - hb ))
+        if [ "$age" -gt "$STALE" ]; then
+          echo "RECLAIM $tag (no heartbeat for ${age}s -- previous pod was killed)"
+          date +%s > "$d/hb"; return 0
+        fi
+        return 1
+      }
 
       run_one() {
         local tag="$1" cfg="$2" rep="$3" extra="$4" note="$5"
         local out="$RESULTS_ROOT/$tag"
-        if [ -s "$out/result.json" ]; then return 0; fi
-        mkdir "$CLAIMS/$tag" 2>/dev/null || return 0     # another pod has it
+        claim "$tag" || return 0
+        # keep the claim alive while this run works
+        ( while :; do date +%s > "$CLAIMS/$tag/hb" 2>/dev/null || exit; sleep 120; done ) &
+        local HB=$!
+        trap "kill $HB 2>/dev/null" RETURN
         mkdir -p "$out"
         local t0=$SECONDS
         echo "START $tag"
@@ -180,9 +214,9 @@ PY
         # exit 2 = accuracy outside the config band. NORMAL for attack runs and
         # result.json is written before the exit. Not a failure.
         case "$rc" in
-          0|2) echo "DONE  $tag rc=$rc $((SECONDS-t0))s" ;;
+          0|2) kill $HB 2>/dev/null; echo "DONE  $tag rc=$rc $((SECONDS-t0))s" ;;
           *)   echo "FAIL  $tag rc=$rc $((SECONDS-t0))s -- see $out/pod_run.log"
-               rmdir "$CLAIMS/$tag" 2>/dev/null          # release for a retry
+               kill $HB 2>/dev/null; rm -rf "$CLAIMS/$tag"   # release for a retry
                grep -qi "out of memory" "$out/pod_run.log" 2>/dev/null && \
                  echo "        ^ OOM: lower WORKERS for this pod (WORKERS_LIST)" ;;
         esac
@@ -244,6 +278,12 @@ cat <<EOF
 Resume after a preemption -- safe, skips finished runs:
   POOL_TAG=$POOL_TAG ./submit_pool.sh
 (reuse the SAME POOL_TAG so the claim directory is reused)
+
+PREEMPTION: only your DESERVED quota is guaranteed; pods beyond it are killed
+when the cluster gets busy. That is fine here -- claims carry a heartbeat, so a
+row abandoned by a killed pod is reclaimed after \$STALE (${STALE:-1200}s) and
+retried. Just resubmit with the SAME POOL_TAG whenever a pod disappears:
+  POOL_TAG=$POOL_TAG ./submit_pool.sh
 
 MEMORY NOTE: Eq.14 keeps a model copy PER CLIENT, so a 200-client run needs
 ~9 GB on its own. Six concurrent would want ~57 GB -- fine on an 80 GB card,
