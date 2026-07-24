@@ -51,6 +51,25 @@ GIT_BRANCH="${GIT_BRANCH:-main}"
 PKG_SUBDIR="faremark_greta"
 SCRIPT="${SCRIPT:-scripts/run_experiment.py}"
 
+# --- self-check: no single quote may appear inside the pod block -----------
+# The pod command is bash -c <single-quoted>. A stray single quote closes it and
+# the outer shell then expands $tag/$out itself, dying under set -u. Bitten twice,
+# so verify before touching the cluster. Sentinels below delimit the block.
+_B=$(grep -n "POD_BLOCK_BEGIN" "$0" | tail -1 | cut -d: -f1)
+_E=$(grep -n "POD_BLOCK_END"   "$0" | tail -1 | cut -d: -f1)
+if [ -n "${_B:-}" ] && [ -n "${_E:-}" ] && [ "$_E" -gt "$_B" ]; then
+  _BAD=$(sed -n "$((_B+1)),$((_E-1))p" "$0" | grep -c "'" || true)
+  if [ "${_BAD:-0}" -gt 0 ]; then
+    echo "!! INTERNAL BUG: $_BAD single quote(s) inside the pod block (lines $_B-$_E)."
+    sed -n "$((_B+1)),$((_E-1))p" "$0" | grep -n "'" | head
+    echo "   Replace them with double quotes. Nothing was submitted."
+    exit 1
+  fi
+  echo "self-check: pod block is quote-clean (lines $_B-$_E)"
+else
+  echo "!! could not locate the pod block sentinels -- skipping quote self-check"
+fi
+
 TOTAL=$(grep -cve '^[[:space:]]*$' "$JOBS_FILE")
 
 # --- validate node-pool names up front -------------------------------------
@@ -113,6 +132,7 @@ for ((i=0; i<PODS; i++)); do
     -e "GIT_REPO=$GIT_REPO" -e "GIT_BRANCH=$GIT_BRANCH" \
     -e "PKG_SUBDIR=$PKG_SUBDIR" -e "SCRIPT=$SCRIPT" \
     --command -- bash -c '
+      # POD_BLOCK_BEGIN  (no single quotes past this line -- see self-check above)
       set -uo pipefail
       export USER=zu
       mkdir -p "$RESULTS_ROOT" "$DATA_ROOT" "$RESULTS_ROOT/.poollogs"
@@ -165,6 +185,15 @@ PY
       rmdir "$LOCK" 2>/dev/null
 
       # ---- manifest ------------------------------------------------------
+      # NOTE: the pod command lives inside a SINGLE-QUOTED bash -c block, so no
+      # single quote may appear anywhere below -- not even in a comment. It would
+      # close the quote and the OUTER shell would then try to expand $tag under
+      # set -u. IFS=$"\t" is NOT a tab --
+      # that is bash locale-translation syntax and yields the literal two
+      # characters \ and t, so fields split on every backslash and every letter
+      # "t". That is what produced directories called "R" and
+      # "R0_paper_t9_nc50_rep0<TAB>". Build the tab with printf instead.
+      TAB=$(printf "\t")
       echo "$SHARD_B64" | base64 -d > /tmp/shard.tsv
       N=$(grep -c . /tmp/shard.tsv)
       echo "  shard: $N runs"
@@ -213,8 +242,17 @@ PY
         local rc=$?
         # exit 2 = accuracy outside the config band. NORMAL for attack runs and
         # result.json is written before the exit. Not a failure.
+        # rc=2 is ambiguous: run_experiment.py uses it for "accuracy outside the
+        # expected band" (NORMAL for attack runs, result.json already written)
+        # but argparse ALSO exits 2 on a bad command line, where nothing ran.
+        # Distinguish on whether result.json actually exists.
+        if [ "$rc" = "2" ] && [ ! -s "$out/result.json" ]; then rc=99; fi
         case "$rc" in
           0|2) kill $HB 2>/dev/null; echo "DONE  $tag rc=$rc $((SECONDS-t0))s" ;;
+          99)  echo "FAIL  $tag -- exited 2 with NO result.json: bad command line,"
+               echo "        not an accuracy band. First lines of the error:"
+               head -5 "$out/pod_run.log" 2>/dev/null | sed "s/^/          /"
+               kill $HB 2>/dev/null; rm -rf "$CLAIMS/$tag" ;;
           *)   echo "FAIL  $tag rc=$rc $((SECONDS-t0))s -- see $out/pod_run.log"
                kill $HB 2>/dev/null; rm -rf "$CLAIMS/$tag"   # release for a retry
                grep -qi "out of memory" "$out/pod_run.log" 2>/dev/null && \
@@ -224,8 +262,13 @@ PY
       }
 
       # ---- drain the shard, WORKERS at a time ----------------------------
-      while IFS=$'\t' read -r tag cfg rep extra note; do
+      while IFS="$TAB" read -r tag cfg rep extra note; do
         [ -z "${tag:-}" ] && continue
+        case "$tag" in *"$TAB"*|"") echo "SKIP  malformed manifest row: [$tag]"; continue ;; esac
+        if [ -z "${cfg:-}" ] || [ -n "${cfg//[0-9]/}" ]; then
+          echo "SKIP  row [$tag]: config field is [${cfg:-}], not an integer -- manifest malformed"
+          continue
+        fi
         while [ "$(jobs -rp | wc -l)" -ge "$WORKERS" ]; do sleep 5; done
         run_one "$tag" "$cfg" "$rep" "$extra" "$note" &
         sleep 3          # stagger cuDNN autotune / CUDA context creation
@@ -239,6 +282,7 @@ PY
       printf "  %-18s %s\n" "finished (UTC)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "================================================================"
       sync; sleep 2
+      # POD_BLOCK_END
       exit 0
     '
   then

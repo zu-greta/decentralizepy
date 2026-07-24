@@ -154,7 +154,7 @@ cat <<'NEXT'
 
 Next:
     unset DRYRUN
-    POOLS="a100-80 a100-40" WORKERS_LIST="6 3" PODS=2 ./submit_pool.sh
+    WORKERS=6 PODS=2 ./submit_pool.sh
     runai list jobs          # must show exactly 2
 Then leave. Progress: $MOUNT/home/zu/results/.poollogs/pool_w{0,1}.log
 NEXT
