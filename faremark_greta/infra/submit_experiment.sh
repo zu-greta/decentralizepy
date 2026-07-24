@@ -19,10 +19,14 @@ CONFIG_IDX="${1:-0}"
 REPEAT="${2:-0}"
 DEBUG_HOLD="${DEBUG_HOLD:-0}"
 
-if [ -f .env ]; then set -a; source .env; set +a
-else echo "Error: .env file not found!"; exit 1; fi
+DRYRUN="${DRYRUN:-0}"                      # 1 = emit a manifest line, submit nothing
+JOBS_FILE="${JOBS_FILE:-jobs.tsv}"         # where DRYRUN appends
 
-echo "=== env: PROJECT=$PROJECT IMAGE=$IMAGE PVC=$PVC MOUNT=$MOUNT NAMESPACE=$NAMESPACE ==="
+if [ -f .env ]; then set -a; source .env; set +a
+elif [ "$DRYRUN" != "1" ]; then echo "Error: .env file not found!"; exit 1; fi
+
+[ "$DRYRUN" = "1" ] || \
+  echo "=== env: PROJECT=$PROJECT IMAGE=$IMAGE PVC=$PVC MOUNT=$MOUNT NAMESPACE=$NAMESPACE ==="
 
 GIT_REPO="https://github.com/zu-greta/decentralizepy.git"
 GIT_BRANCH="main"
@@ -40,6 +44,13 @@ PY_EXTRA=""
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 [ -n "${LR:-}" ]              && PY_EXTRA="$PY_EXTRA --lr ${LR}"
 [ -n "${PARTITION:-}" ]        && PY_EXTRA="$PY_EXTRA --partition ${PARTITION}"
+# NUM_WORKERS: DataLoader workers. Default in run_experiment.py is 2, and because
+# persistent_workers is unset, 2 processes are forked and killed on EVERY iterator
+# -- i.e. num_clients x local_epochs x rounds times per run. At 200 clients that is
+# 50,000 fork/teardown cycles. At 32x32 with batch 16 the loading work is trivial and
+# the forking is not, so NUM_WORKERS=0 is usually FASTER. Always set it explicitly
+# for runs with many clients.
+[ -n "${NUM_WORKERS:-}" ]     && PY_EXTRA="$PY_EXTRA --num_workers ${NUM_WORKERS}"
 [ -n "${DIRICHLET_ALPHA:-}" ]  && PY_EXTRA="$PY_EXTRA --dirichlet_alpha ${DIRICHLET_ALPHA}"
 [ -n "${TRIGGER_CLASS_MAP:-}" ] && PY_EXTRA="$PY_EXTRA --trigger_class_map ${TRIGGER_CLASS_MAP}"
 # free-rider selection
@@ -98,7 +109,7 @@ PY_EXTRA=""
 USER_TAG="${TAG:+_${TAG}}"
 FR_TAG=""                                 # always defined (JOB_NAME uses it under set -u)
 if [ -n "${FAMILY:-}" ]; then
-  RUN_TAG="${FAMILY}${USER_TAG}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
+  RUN_TAG="${FAMILY}${USER_TAG}_rep${REPEAT}"
 else
   CORE="cfg${CONFIG_IDX}"
   BITS_TAG="";  [ -n "${WM_BITS:-}" ]           && BITS_TAG="_b${WM_BITS}"
@@ -107,8 +118,19 @@ else
   ETA_TAG="";   [ -n "${WM_ETA_FIXED:-}" ]      && ETA_TAG="_eta$(printf '%s' "${WM_ETA_FIXED}" | tr -d '.')"
   F_TAG="";     [ -n "${WM_F:-}" ]              && F_TAG="_${WM_F}"
   FR_TAG="";    [ -n "${NUM_FREE_RIDERS:-}" ]   && FR_TAG="_fr${NUM_FREE_RIDERS}"
-  RUN_TAG="${CORE}${BITS_TAG}${POS_TAG}${MAP_TAG}${FR_TAG}${ETA_TAG}${F_TAG}${USER_TAG}_rep${REPEAT}_$(date +%Y%m%d_%H%M%S)"
+  RUN_TAG="${CORE}${BITS_TAG}${POS_TAG}${MAP_TAG}${FR_TAG}${ETA_TAG}${F_TAG}${USER_TAG}_rep${REPEAT}"
 fi
+# ---- DRYRUN: append to the pool manifest and stop -------------------------
+# One row per run: the pool splits this file across pods and each pod replays
+# the rows itself. RUN_TAG must be deterministic (see above) so a restarted pod
+# can skip rows whose result.json already exists.
+if [ "$DRYRUN" = "1" ]; then
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$RUN_TAG" "$CONFIG_IDX" "$REPEAT" "${PY_EXTRA# }" "${NOTE:-}" >> "$JOBS_FILE"
+  echo "  + $RUN_TAG"
+  exit 0
+fi
+
 OUTPUT_DIR="${MOUNT}/home/zu/results/${RUN_TAG}"
 DATA_ROOT="${MOUNT}/home/zu/data"
 JOB_NAME="faremark-c${CONFIG_IDX}-r${REPEAT}${FR_TAG}${USER_TAG}-$(date +%H%M%S)"

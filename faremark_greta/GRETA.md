@@ -231,7 +231,7 @@ July21
     - TODO: 
         - check what the seeds are varying over. what is the source of randomness, why is the variance so high?
         - [x] fix the tagging and naming of experiments for easier tracking
-        - cleanup the logging in the code and result.json
+        - [x] cleanup the logging in the code and result.json
         - [x] merge files that dont need to be seperated, same modules should be in a same file (eg. all plotting should be together)
     - THRESHOLD: stress test different threshold calculations (and then prove that it is not possible for seperability)
         - adaptive clipping in warmup rounds (each round clip and adapt - until get to keep the right amount of clients in the pool)
@@ -279,8 +279,68 @@ July21
         - [x] check how the paper tests for when too many clients compared to classes
             -> table IX CIFAR-10 up to 50 clients
             - PENDING: test this exact setting (RESNET-18 on CIFAR-10 with 50 clients, 5 clients/trigger class. watermark accuracy should be 95.78% and classification accuracy should be 88.42%) with all honest to check my code is faithful. simple test first just to see if my setup is correct
-            - TODO: UPDATED see new CLI commands: `./table9_check.sh check ` once the tests are done running -> this is with client_train
         -> [x] check if paper does non-iid => no
+
+        - theory
+            - clarify the seed variation
+            - clarify the thresholds
+            - clarify the class difficulty
+
+July28
+- RESULTS
+    - theory
+        - seed variation:
+        - thresholds:
+        - class difficulty:
+    - THRESHOLDS:
+        - !!! table of tresholds tested with their provenance and how they were calculated and the setup of the runs to calibrate them + plot of the thresholds and their variance over the seeds
+    - CLASS DIFFICULTY:
+        - !!! setup of the experiments to show the class difficulty and the results + plot of the class difficulty and their variance over the seeds
+    - BASELINE RUNS:
+        - !!! setup of the experiments to show the baseline setup runs and matches the paper - explain what the experiments are and why they are important
+        - !!! plot of the baseline runs results and their variance over the seeds
+        - !!! baseline runs include: 
+            - all honest clients (CIFAR-10 and CIFAR-100)
+            - free-rider with previous model attack
+            - free-rider with gaussian noise attack
+            - table IX (more clients than classes) 
+    - ATTACK RUNS:
+        - !!! setup of experiments, what the attacks are, FR vs honest
+        - !!! plots of the timeline of the attacks and their variance over the seeds
+        - !!! show that the attacker BER can reach the honest BER with less data
+    - MORE CLIENTS THAN CLASSES:
+        - !!! setup of experiments - how it matches the paper table IX 
+        - !!! plots of the results and their variance over the seeds for all honest and free-rider attacks
+
+
+- MEETING NOTES
+
+
+- TODO
+    - leftover
+        - DETECTION: 
+            - define what consequence of crossing threshold would be
+            - how many warnings before flagging
+            - window of detection instead ?
+        - THRESHOLD: stress test different threshold calculations (and then prove that it is not possible for seperability)
+            - regime of thresholds results and written analysis for paper
+        - DIFFICULTY:
+            - comprehnsive analysis and conclusion for class difficulty - results and written conclusion for paper
+        - EXPERIMENTS: stress testing to prove our theory. come up with a meaningful set of experiments to prove/disprove that FR with threshold and output layer watermarking is possible no matter what setting (iid/non-iid, more clients, threshold...)
+            - show that no matter what the threshold is it won't work (not seperable). test all thresholds and show that everything fails
+            - assigning different trigger classes for each round (round robbin) and averaging on that ? but also overlap probably
+            - test with more clients than classes 
+            - show that different trigger classes have different BERs and variance is high
+            - show that for the same trigger class, in the same training, the BER is the same for a FR and honest client - assign the same trigger class to see
+            - FR spectrum: show different +#/common, varying what classes to take from, find the free-riding limits
+            - non-iid
+        - THEORETICAL:
+            - no threshold is possible because of noise and variance (overlap between FR and honest always). not enough freedom in the output logits - cannot prove honest clients without enough prior knowledge of the honest clients. 
+            - watermarking on output layer is impossible
+        - NEXT:
+            - hint of solution?
+            - show impossible?
+
 
 ---
 ---

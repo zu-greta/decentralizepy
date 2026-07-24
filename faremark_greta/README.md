@@ -1,32 +1,52 @@
 # FareMark — reproduction + limitations study
 
-Re-implementation and limitations analysis of **FareMark: Model-Watermark-Driven Free-Rider Detection in Federated Learning** (Li et al., IEEE IoT-J 2025).
-Centralized FedAvg simulated on one GPU, with a per-client output-layer watermark loss, a memory-enhanced update, and server-side verification. 
-The study argues that FareMark's detection reduces to a single fragile threshold that **cannot separate an embedding free-rider from an honest client** and
-that this is intrinsic to watermarking read from the **output (softmax) layer**.
+Re-implementation and limitations analysis of **FareMark: Model-Watermark-Driven
+Free-Rider Detection in Federated Learning** (Li et al., IEEE IoT-J 12(18), 2025).
+Centralized FedAvg simulated on one GPU, with a per-client output-layer watermark loss,
+a memory-enhanced update (Eq. 14), and server-side verification (Eq. 15–16).
 
-## Thesis
-The watermark is read from the *tail* of the trigger-class softmax. A class the model
-predicts confidently has a flat, structureless tail, so its watermark bits are decided
-by noise and its bit-error-rate (BER) floors well above zero — a per-class "floor" set
-by softmax shape, not by training effort. Honest BER is therefore bimodal across
-classes, so the paper's `eta = mu + 3*sigma` threshold lands in the valley and
-false-positives honest clients at hard classes (~32% FPR on CIFAR-100). A free-rider
-that trains just enough to reach the same floor is then indistinguishable from an
-honest client: any threshold that catches it also flags honest hard-position clients.
+**Read order:** this file → `REFERENCE.md` (threshold maths, CLI, experiment matrix) →
+`RUNPLAN.md` (what to run right now) → `faremark_analysis.md` (full results review).
 
-TODO question: see if the paper ever mentions bimodal or if this is a new observation/code reproduction error.
+---
 
-## Storyline (see [storyline](#storyline))
-1. Reproduce the FareMark method.
-2. Reproduce their results (clean separation vs crude free-riders; low FPR in their regime).
-3. Limitations: threshold underspecification + non-separability + data regime (IID/non-IID).
-4. **Prove non-separability:** any threshold, any setting -> FPR <-> recall trade (from the +N attacker).
-5. Stress test across settings (non-IID, FR fraction, bits, effort).
-6. Argue output-layer watermarking is impossible to separate in general (thesis; to be shown).
-7. Hint at a solution (per-position calibration / high-entropy triggers / off-output-layer).
+## Goal
 
-## Layout (see [codemap](#codemap))
+Show experimentally that under the paper's own setup **and** under extensions
+(non-IID, adaptive free-riders, more clients than classes), **no threshold separates
+honest clients from free-riders.**
+
+Two independent lines of attack, both now supported by data:
+
+1. **The threshold is unusable.** `η = μ + 3σ` is calibrated on a mean over *N* clients
+   (spread σ/√N) and applied to individual clients (spread σ). Measured across seven
+   configurations it delivers **0.07σ–0.51σ of headroom, never 3σ**, producing 7–53%
+   honest false-positive rates where a 3-sigma limit promises 0.13%. Independently,
+   whenever the mark works well η falls below `1/m` and the rule degenerates to
+   "flag if ≥1 bit wrong", making the calibrated value irrelevant.
+2. **The quantity itself carries no contribution signal.** At a fixed trigger class, a
+   free-rider spending ~30% of an honest client's compute achieves **equal or better**
+   BER. Six per-class comparisons reach `best_threshold_balanced_error = 0.500` — no
+   threshold anywhere beats a coin flip.
+
+### What we now claim, and what we retracted
+
+The original thesis was: *a confidently-predicted class has a flat, structureless tail,
+so its bits are decided by noise and its BER floors above zero — intrinsically.*
+**That mechanism is refuted by our own balanced-key runs** (STATUS F9): with zero-sum
+key rows the mark embeds perfectly on *every* class, so the model can create tail
+structure at negligible cost. The floor is a **key-row-bias × class-peakiness
+interaction**, not a property of reading from the softmax.
+
+The replacement claim is quantitative and survives: BER is a mean over *m* bits, so it
+carries binomial noise `√(p(1−p)/m)`; the disjoint grouping forces `m·l = n`, hence
+**m ≤ n**. Discriminative power is therefore capped by the number of classes in the
+dataset. On CIFAR-10 that cap is fatal (F6).
+
+---
+
+## Layout
+
 ```
 faremark/
   clients.py           every client class:
@@ -35,64 +55,165 @@ faremark/
                        PART 3a crude baselines Eq.17/18 + FR selection + build_clients
                        PART 3b reduced/tap attackers [+ DISABLED submarine]
   watermark.py         Eq.1-16 math -- leaf, used by clients.py AND wm_verify.py
+                       *** PATCHED: sin smoothing, SMOOTH_EPS, make_key default ***
   wm_verify.py         server: extract -> BER -> frozen eta -> flag + diagnostics
   server.py            FedAvg aggregation + round loop
-  runlog.py            all run.log formatting (banner/setup/round table/report)
+  runlog.py            all run.log formatting
   compute_meter.py     per-client effort accounting (gpu_ms / samples / flops)
   config.py datasets.py models.py manifest.py utils.py plotstyle.py
-  robustness.py        [UNWIRED] finetune/prune/quantize -- paper V-E, not run yet
+  fast_data.py         [OPTIONAL, NOT WIRED] GPU-resident loader, see PERFORMANCE
+  robustness.py        [UNWIRED] finetune/prune/quantize -- paper V-E, not run
 scripts/
   run_experiment.py    one (config, repeat) -> result.json
   resultio.py          result.json data contract (load/select/BER extraction)
-  detection.py         eta calibration + non-separability. subcommands: calibrate | verify | separability
-  plots.py             all plotting 
-  paper_check.py       grade runs vs the paper's rows 
-  run_robustness.py    [UNWIRED] driver for robustness.py
+  detection.py         calibrate | verify | separability
+  plots.py             all plotting (subcommands, see REFERENCE 3a-F)
+  plot_all_thresholds.py  *** NEW: every threshold rule on one timeline + .md table ***
+  paper_check.py       grade runs vs the paper's published rows
 infra/
-  run_everything.sh    the whole thesis matrix, in legs
+  run_now.sh           *** NEW: THE script. Builds jobs.tsv for the current batch ***
+  plot_now.sh          *** NEW: makes exactly the four figure groups, nothing else ***
+  submit_pool.sh       *** NEW: submits exactly PODS worker jobs that drain jobs.tsv ***
+  submit_experiment.sh *** PATCHED: deterministic RUN_TAG + DRYRUN manifest mode ***
+  run_everything.sh    the full matrix in legs (still works; superseded by run_now.sh)
   run_all.sh           one leg: honest -> calibrate -> attacks -> separability -> PLOTALL
-  paper_check.sh       submit the paper reproduction rows (check -> paper_check.py)
-  submit_experiment.sh one RunAI job (env -> CLI flags)
+  paper_check.sh       submit/grade the paper reproduction rows
 ```
 
-## Standard setup (see [runbook](#runbook) for experimental setup)
-CIFAR-100, ResNet-18, 10 clients, 50 rounds, 5 local epochs, batch 16,
-m = max(2, n//10) = 10 bits, N_T=50, lambda=5, beta=0.6, alpha=0.4, config 14.
-Threshold: `eta = mean over seeds of (mu_s + 3*sigma_s)` over per-round
-mean-over-clients honest BER, last 20 rounds; frozen to `eta_calibrated.json`,
-injected as `WM_ETA_FIXED`. CIFAR-100 frozen eta = 0.06397 (std 0.027).
+---
 
-## Quickstart (CIFAR-100, balanced keys — see RUNBOOK for the full flow)
+## Standard setup
+
+CIFAR-100, ResNet-18, 10 clients, 50 rounds, 5 local epochs, batch 16, N_T=50, λ=5,
+β=0.6, α=0.4, **unbalanced (paper-exact random ±1) keys**, config 14.
+Trigger class = `cid % n`; trigger class is **included** in the projection
+(`exclude_col = None` in `clients.py`) — this is paper-faithful.
+
+**Bit count `m`, now derived rather than guessed.** A same-sign key row is stuck
+forever, capping watermark accuracy at `100·(1 − 0.5·2^(1−l))`, `l = n//m`. Matching
+that against the paper's own tables:
+
+| dataset | m | l | stuck | ceiling | paper reports | use? |
+|---|---|---|---|---|---|---|
+| CIFAR-100 | **10** (code default) | 10 | 0.20% | 99.90% | 99.71 | ✅ **yes** |
+| CIFAR-100 | 20 | 5 | 6.25% | 96.88% | — | ✗ cannot be faithful |
+| CIFAR-10 | 2 (code default) | 5 | 6.25% | 96.88% | 99.72 | ❌ 3pp short |
+| CIFAR-10 | **1** | 10 | 0.20% | 99.90% | 99.72 | ✅ **yes** (needs the `make_bits` fix, F12) |
+
+So on CIFAR-10 the paper's headline number **forces a 1-bit watermark**, at which point
+BER ∈ {0,1} is a single coin flip. That is a finding, not a configuration choice.
+
+Threshold: `η = mean over seeds of (μ_s + 3σ_s)` over per-round mean-over-clients honest
+BER, last 20 rounds; frozen and injected as `WM_ETA_FIXED`.
+CIFAR-100 / 10 clients: **η = 0.063** (per-seed 0.017–0.115, std ≈ 40%).
+
+---
+
+## Quickstart
+
 ```bash
-# prereq: set make_key(..., balanced=True) in wm_client.py; use a fresh $RES
-export RES=/.../results/<fresh_dir>
-DS=c100 SEEDS="0 1 2 3 4 5 6 7 8 9" ./run_all.sh honest
-DS=c100 ./run_all.sh calibrate
-DS=c100 SEEDS="0 1 2" POS=1,7 ./run_all.sh reduced     # easy positions
-DS=c100 SEEDS="0 1 2" POS=3,6 ./run_all.sh reduced     # hard positions
-DS=c100 ./run_all.sh PLOTALL
-python scripts/class_difficulty_probe.py --in "$RES/*/result.json" --family honest_c100_bdef_iid --tail 20
+# 1. on the cluster login node, in infra/
+./run_now.sh                    # builds jobs.tsv, submits NOTHING
+wc -l jobs.tsv                  # expect 20
+unset DRYRUN
+RUNAI_EXTRA="--node-pools a100-80" PODS=2 WORKERS=6 ./submit_pool.sh
+runai list jobs                 # must show exactly 2 -- then walk away
+
+# 2. when done
+scp -r <cluster>:$MOUNT/home/zu/results ~/local/results
+RES=~/local/results ./plot_now.sh
 ```
 
-## Key results so far (see [status](#status))
-- **F1** per-class difficulty from softmax peakiness (entropy r=−0.67, NOT accuracy).
-- **F2** threshold low + seed-unstable (per-seed 0.017–0.115, std ≈40%).
-- **F3** bimodal honest BER → ~32% FPR; paper reports only a pooled average.
-- **F4** +5 attacker: easy hides at ~30% effort; hard = honest floor; majority passes
-  detection while accuracy drops 72%→58% ("presence ≠ contribution").
-- **F5** trigger-enriched reduced data embeds *harder* (flat BER at the floor).
-- **F6** key/bit artifacts: unembeddable random keys (fix: balanced keys), and
-  m = n//10 degenerates to 2 bits on CIFAR-10; the paper underspecifies m.
-- **F7** CIFAR-10 threshold is looser (0.265), not tighter — coarse low-bit BER.
+`run_now.sh` and `submit_pool.sh` replace the old "one RunAI job per run" model:
+one pod now drains many runs with `WORKERS` concurrent processes on its single GPU.
+`RUN_TAG` is deterministic, so a preempted pool resumes instead of restarting —
+just rerun `submit_pool.sh`. See REFERENCE §3a for every other command.
+
+---
+
+## Key results so far
+
+Full write-up in `faremark_analysis.md`; findings F1–F14 in STATUS below.
+
+**Solid:**
+- **F8** the paper's `μ+3σ` rule delivers **0.07σ–0.51σ**, never 3σ. FPR 7–53%.
+- **F9** whenever the mark works well, `η < 1/m` and the detector degenerates to
+  "≥1 bit wrong" — the calibrated value does nothing. 4 of 8 legs.
+- **F4** at a fixed trigger class a +5 free-rider on ~30% effort matches or beats
+  honest BER; six per-class comparisons hit best-balanced-error **0.500**.
+- **F13** this **directly refutes the paper's Table V**, which claims a
+  trigger-sample-only free-rider fails to generalise.
+- **F1** per-class difficulty is real and generalises (classes 9,19,…,99 reproduce
+  classes 0–9 to 3 s.f.), driven by softmax peakiness, not accuracy.
+- **F6** the grouping `m·l = n` makes CIFAR-10 unworkable in every configuration.
+- **F7** honest FPR grows with client count: 27% at N=10, **53% at N=200**.
+
+**Retracted or restated:**
+- **F3 (restated)** honest BER is **not** bimodal — it is a near-binomial discrete
+  decay (73/19.5/7/0.5% at 0/1/2/3 wrong bits). The high FPR is real; the mechanism
+  is F9, which is stronger.
+- **F9-mech (retracted)** the floor is **not** intrinsic to output-layer watermarking.
+- **F10** most honest BER spread is bit-sampling noise, not class difficulty.
+
+---
 
 ## Faithfulness caveats to state in any writeup
-- The paper **does not specify the watermark bit count m**; we chose `max(2, n//10)`.
+
+- The paper **does not state m**. We now derive it from their reported accuracies
+  (above) rather than guessing: CIFAR-100 m=10, CIFAR-10 m=1.
 - The paper's grouping is disjoint (`m ≤ n`); its "50/400 bits" refers to the FedIPR
   baseline, not FareMark.
-- Trigger class is **included** in the projection (paper-faithful); exclusion is not
-  what the paper does and doesn't fit at m·l=n.
-- Random keys can create unembeddable bits; balanced keys (a valid pseudo-random ±1
-  matrix) remove the artifact and are what we use going forward.
+- Trigger class is **included** in the projection — paper-faithful, confirmed in code.
+- The paper is **internally inconsistent on training length**: §V-A says 2 local epochs
+  / 100 global rounds, §V-B and §V-C say 5 epochs / 50 rounds. We follow the tables
+  (5/50).
+- N_T is **100** for Table I/II (§V-C) and **50** for Tables III and IX. Match per row.
+- The paper averages **ten** repeats (§V-A1). We use 3–6. State the discrepancy.
+- **§IV-D3 never says whether μ,σ are over clients, over rounds, or over round-means.**
+  Those readings differ by √N. The ambiguity is itself a finding (F8).
+
+---
+
+## Which result files to keep
+
+Everything lives flat in `$RES/<RUN_TAG>/`, one directory per run, containing
+`result.json` (the data), `run.log` (the experiment record) and `pod.log` (the
+environment record, including `env.git_commit`).
+
+| family | status | keep? |
+|---|---|---|
+| `honest_c100_bdef_iid` (6 seeds) | the baseline; F8/F9/F3 rest on it | ✅ **keep** — still the honest reference for plot group (d) |
+| `reduced_c100_bdef_iid_c17` / `_c36` | F4, F13 | ✅ keep |
+| `sameclass_c100_bdef_iid_c6` | the headline non-separability slice | ✅ keep |
+| `honest_c100_bdef_niid` + its attacks | non-IID leg | ⚠️ keep, **do not quote** until `n_trigger_samples` is logged and the starvation population is split out (F11) |
+| `honest_c100_bdef_bal_iid` + attacks | balanced-key control, OVL 1.000 | ✅ keep — this is the "even at your own operating point" control |
+| `honest_c100_bdef_spread_iid` + attack | generality of F1 | ✅ keep |
+| `honest_c10_bdef_iid` (50 clients) + `reduced_c1617` | F6, capacity10 | ✅ keep |
+| `honest_c100_bdef_nc200_iid` (3 seeds) | F7 (53% FPR) | ✅ keep, being topped up to 6 seeds by R5 |
+| `honest_c100_b20_iid` + attacks (m=20) | **superseded** — m=20 caps at 96.88%, below the paper's own number, so it can never be a faithful configuration | 🗄️ **archive**, do not use in the writeup |
+| `honest_c100_bdef_sin_iid` + attack | **invalid** — sin performed no smoothing (F12) | 🗑️ **delete**, rerun after the fix |
+
+**One global caveat:** every existing CIFAR-100 run used `eps = 1e-3` in `smooth()`,
+which erases 39–57% of the tail contrast (F12). The *structural* conclusions (F8, F9,
+F4, F6, F7) do not depend on exact BER values and stand. The exact floors will move
+when `SMOOTH_EPS=1e-8` is adopted. **The patched `watermark.py` defaults to the legacy
+1e-3 precisely so this weekend's batch stays comparable with what you already have** —
+switch only for a clean full re-run, and never mix the two inside one family.
+
+---
+
+## Performance note
+
+Runs are ~781,250 optimizer steps each (50,000 images × 5 epochs × 50 rounds ÷ batch 16)
+**regardless of client count** — more clients split the same data. Two pods × 6 workers
+≈ 3.5–4.7 runs/hour.
+
+Before optimising anything: your DataLoaders use `num_workers=2` without
+`persistent_workers`, so workers are forked and killed on every iterator —
+**2,500 fork/teardown cycles per run**. Time one run with `--num_workers 0` first; at
+32×32 and batch 16 it may well win. `fast_data.py` (GPU-resident loader, ~2–4× more)
+is written but **not wired**, and it re-rolls the augmentation RNG, so adopt it only at
+a clean family boundary.
 
 ---
 ---
@@ -100,676 +221,292 @@ python scripts/class_difficulty_probe.py --in "$RES/*/result.json" --family hone
 
 # STORYLINE
 
-> The project is a **reproduction + limitations study of FareMark's output-layer
-> watermark for free-rider detection**, building toward the claim that
-> output-space watermarking cannot separate free-riders from honest clients in general. 
-
-FareMark (Li et al., IEEE IoT-J 2025): honest FL clients embed a private m-bit
-watermark into the global model's **softmax output on a trigger class**; the
-server extracts each client's mark and flags a client as a free-rider when its
-bit-error-rate (BER) crosses a threshold eta. We reproduce it, then show where and
-why it fails.
-
 ## Plan
 
-### 1. Reproduce the FareMark method
-Faithful re-implementation: per-client trigger class, ±1 secret key, m-bit target,
-smoothing f(p)=p^alpha (TODO: test with sin function option suggested in the paper too), projection to per-bit logits, BCE embedding loss on trigger
-images, memory-enhanced update (Eq. 14), server-side extract→BER→threshold.
-Centralized FedAvg on one GPU. Configs 0–13 map to the paper's settings.
-**Status: done** (code faithful; see CODE_MAP §1–4). One faithfulness caveat we
-surfaced and must state: the paper *underspecifies the bit count m* and we chose
-`m = max(2, n//10)`; keys are drawn random (unbalanced) as the paper's text implies.
+### 1. Reproduce the FareMark method — ✅ done
+Eq. 1–16 implemented in `watermark.py`, embedding in `clients.py`, verification in
+`wm_verify.py`. Three deviations found and corrected this cycle: the `sin` branch
+(F12), `SMOOTH_EPS` (F12), and `make_key`'s default disagreeing with the config.
 
-### 2. Reproduce their results
-Table I accuracy bands, Fig. 7/8-style detection (crude free-riders at BER≈0.5
-separate cleanly from honest at BER≈0), and the paper's *low FPR* on CIFAR-10.
-**Status: partial.** We reproduce clean separation vs crude free-riders. The "low
-FPR" is reproducible only in the regime the paper reports it (few classes, averaged,
-tight honest BER) — which is itself the entry point to beat 3.
+### 2. Reproduce their results — 🔁 **in flight (R1–R4), the biggest historical gap**
+Not one run to date matched any published row, and the paper's own crude free-riders
+had never been fired. Without this, "the detector fails" has no counterpart showing it
+ever worked in our code. R1 (CIFAR-100/100 clients), R2 (CIFAR-10/m=1) target Table
+I+II; R3/R4 fire Eq. 17/18. **If R3/R4 are not cleanly caught, stop everything.**
 
-### 3. Limitations
-- **Threshold underspecification.** The paper gives eta = mu + 3*sigma of honest
-  BER and little else — no per-class analysis, no sensitivity, no statement of m.
-- **Non-separability (the core).** Per trigger class the honest BER has a *floor*
-  set by softmax shape, not effort. Floors span ~0 → ~0.2 on CIFAR-100. Honest BER
-  is therefore **bimodal** (pile at 0, bump at 0.1–0.2), so mu+3*sigma lands in the
-  valley → high honest FPR (~32% at eta≈0.064). See STATUS F1, F3.
-- **Threshold instability.** Per-seed eta ranges 0.017–0.115 (std ≈ 40% of eta).
-- **Data regime.** IID shown; non-IID (Dirichlet) expected to widen the spread.
-  Bit/key regime: unembeddable random keys and coarse low-bit BER add artifacts on
-  low-class datasets (CIFAR-10). See STATUS F6, F7.
+### 3. Limitations — ✅ done
+Threshold underspecification (F8, F9), per-class difficulty (F1), data regime (F11).
 
-### 4. Prove non-separability of the threshold (headline)
-**Claim:** no scalar threshold, however calibrated (tight round-mean, loose
-per-client, cumulative, percentile, per-position), separates an *embedding*
-free-rider from an honest client in every setting — you must trade honest FPR
-against free-rider recall.
-**Mechanism:** a free-rider that trains just enough (trigger + a few common
-samples) reaches the *same BER floor* as an honest client at the same trigger
-class. After it embeds, honest and free-rider occupy the same BER band, so any eta
-that catches the free-rider also flags honest clients at hard positions, and any
-eta that spares those honest clients lets the free-rider through.
-**Evidence (already collected):** the `reduced` (+N) attacker — easy positions
-(cls 1,7) hide at BER≈0 doing ~30% of the work; hard positions (cls 3,6) sit at
-~0.11 = the honest floor there; the 9-free-rider majority run passes detection
-entirely (FPR-side clean) while global accuracy drops 72%→58%. See STATUS F4.
+### 4. Prove non-separability — ✅ done, and it refutes Table V
+Any threshold, any setting → FPR ↔ recall trade. Six per-class comparisons at
+best-balanced-error 0.500; where a free-rider *is* catchable it costs 33–67% FPR among
+honest clients at the same class. The paper's §V-D4 explicitly predicts this attacker
+fails; it does not (F13).
 
-### 5. Stress test
-Push the non-separability across settings to show it isn't an artifact of one
-config: non-IID (Dirichlet alpha), free-rider fraction (1→9), trigger positions,
-watermark bit count m (after the key fix), coast-vs-tap effort (`tap_oracle`), and
-the honest-floor overlay so each attack line is read against its own class.
-**Status: to run.**
+### 5. Stress test — ⚠️ partial
+non-IID ✅ (blocked on F11), free-rider fraction ❌, bits ✅ (m=20 archived, F14),
+oversubscription ✅ honest / 🔁 attack in flight (R5, R6), adaptive free-rider 🔁 (R7).
 
-### 6. Prove output-layer watermarking is impossible (the thesis)
-**Target claim:** *any* watermark read from the classifier's output layer (softmax)
-inherits the per-class-floor problem, because the watermark can only live in the
-non-top probability mass ("the tail"), and confidently-predicted classes
-structurally have no tail to shape. Smoothing f() amplifies the tail but cannot
-create structure that isn't there (dominance stays <0.5 yet BER floors remain).
-Therefore for every output-space scheme there exist trigger positions where honest
-and free-rider BER are inseparable, in every data setting. **Status: argument +
-partial evidence; needs the stress test and a clean, key-artifact-free run to make
-it airtight.** This is a *hypothesis to be demonstrated*, not yet proven — mark it
-as such in the writeup.
+### 6. Argue output-layer watermarking is impossible — ⚠️ **restated**
+The tail-structure argument is refuted (F9). The surviving argument is the capacity
+inequality: separating two BER populations differing by Δ with balanced error < ε needs
+`Δ ≳ 2·z_ε·√(p(1−p)/m)` with `m ≤ n`, so discriminative power is bounded by the number
+of classes. Quantitative, provable, and independent of softmax-tail intuition.
 
-### 7. Hint at a solution
-Directions, not commitments: (a) per-position / per-client calibrated thresholds
-(measure each class's floor and threshold relative to it — but this needs trusted
-per-position honest data, which reintroduces the trust problem); (b) restrict
-trigger assignment to high-entropy classes (screen classes by entropy before use);
-(c) move the watermark off the output layer (feature/parameter space) — which
-exits FareMark's "box-free" premise. State the trade-offs; don't claim a fix.
+### 7. Hint at a solution — ❌ not touched
+Per-position calibration · high-entropy triggers · reading off the output layer.
 
-## Contribution arc (one line)
-Reproduce FareMark → show its detection reduces to a single fragile, underspecified
-threshold → prove that threshold cannot separate embedding free-riders from honest
-hard-position clients (FPR↔recall trade in every setting) → argue this is intrinsic
-to *output-layer* watermarking → sketch what a non-output-layer or per-position
-detector would need.
+## Contribution arc
+Reproduce → find the threshold is underspecified and self-defeating → show a cheap
+free-rider matches honest BER at the same trigger class → show this holds under
+non-IID, oversubscription and an adaptive attacker → bound the achievable
+discrimination by the class count.
 
-## System diagram (unchanged mechanics)
+## HYPOTHESIS: why some positions are hard — **corrected**
+
+Write the projection for bit *k* as
+
 ```
- client i               SERVER (per submitted model W_i):
- trigger t_i            bits  = extract(W_i, trigger_bank[t_i], key_i)   (Eq.15)
- key   M_i   --W_i-->   BER_i = mean(bits != target_bits_i)              (Eq.16)
- bits  B_i             flag i iff BER_i >= eta        (eta = FROZEN constant, WM_ETA_FIXED)
- embed W_wm <--W_g--   FedAvg aggregate -> W_global
-   t_i = cid % num_classes ; key/bits seeded from cid ; L = CE + lambda*BCE(z,B) ; memory Eq.14
+z_k  =  s_k · f̄   +   Σ_j M_kj · δ_j        s_k = Σ_j M_kj ,  δ_j = f(p_j) − f̄
+       └─ bias ─┘     └─ shapeable part ─┘
 ```
 
-## HYPOTHESIS: Why some positions are hard 
-Bits are read from the smoothed **tail** of the trigger-class softmax (the non-top
-classes), projected onto the ±1 key. A peaky class (low entropy / high pmax / high
-dominance) puts ~all mass on one class and leaves a flat, structureless tail →
-projection ≈ noise → bits random → BER floors high. A flatter class has a shapeable
-tail → BER≈0. Per-class predictors (10-seed CIFAR-100): entropy r=−0.67, dominance
-r=+0.65, pmax r=+0.54; classification test-accuracy r≈−0.05 (so it is NOT "fuzzy
-boundary" in the accuracy sense — it is softmax peakiness). Effective classes
-`exp(entropy)`: hardest class ~17 vs easiest ~26.
+With **unbalanced** keys `s_k ≠ 0`, so a bias term proportional to the group's average
+smoothed probability competes with the shapeable part. In a peaky class the tail values
+are nearly identical, the δ's are small, the bias wins, and the bit is effectively
+fixed — reproducing the entropy correlation of F1. With **balanced** keys `s_k = 0`, the
+bias vanishes and an arbitrarily small tail asymmetry suffices, which the model can
+manufacture at negligible accuracy cost. Hence BER → 0 for every class (F9).
+
+**So difficulty is a key–class interaction, not an intrinsic softmax property.**
 
 ## Attacks used to make the argument
-- **`reduced` (+N)** — the honest-path attacker: honest during warmup, then trains
-  only on (all trigger images + N per common class). No coasting. Because that data
-  is trigger-enriched (~9% trigger gradient vs ~1% on the full shard), it embeds at
-  least as strongly as honest and pins BER to the class floor. This is the clean
-  "presence ≠ contribution" demonstrator. (`attacks_adaptive.py::make_reduced_attack`)
-- **`tap_oracle`** — honest-path tap/coast with the true eta handed in: coast (submit
-  the global unchanged, zero compute) while the mark is safely under eta, tap (one
-  reduced-data training pass) when it decays. Shows the sawtooth and the effort
-  saving. (`attacks_adaptive.py::make_tap_attack`)
-- **`submarine` (LEGACY)** — the original adaptive free-rider in
-  `attacks_adaptive.py`. Has a known warmup bug (it mangles its loader during the
-  "honest" warmup, so its mark reads BER≈0.5 there and its self-eta estimate is 0.5).
-  Superseded by the two above; keep only for reference / self-eta-estimation ideas.
 
+| attack | what it does | role |
+|---|---|---|
+| `previous_models` (Eq. 17) | resubmits last round's model | **paper's own baseline** — must be caught cleanly, else the pipeline is broken |
+| `gaussian` (Eq. 18) | prior global + Gaussian noise | same |
+| `reduced` (+N) | honest until round 12, then trains only on all trigger images + N per common class. ~30% of honest image-passes | the main attacker. Trigger-enriched batches fire L_wm ~9× more often, so it embeds **harder** than honest |
+| `sameclass` | `reduced`, pinned onto a trigger class an honest client already holds | the clean comparison: identical position, everything else equal |
+| `tap_oracle` | given the true η, coasts (zero compute) while safely under it, taps when the mark decays | the adaptive attacker (R7) |
 
-
----
----
----
-
-# RUNBOOK
-operational commands 
-
-Ordered by the storyline beats. All commands assume the maintained, dataset/bit-tagged
-`run_all.sh` (CODE_MAP §9) and the standalone probes (§7b).
-
-## Paths
-```bash
-export RES=/.../faremark_greta/results/<fresh_dir>   # ONE dir holding all run subfolders + eta files
-# submit_experiment.sh writes to $MOUNT/home/zu/results/<RUN_TAG>; scp to local for plotting and result analysis
-```
-Use a FRESH `$RES` for every experiment launch
-
-## Code edits
-1. **Attacker dispatch** present in `clients.py`: `reduced` → `make_reduced_attack`,
-   `tap_oracle` → `make_tap_attack` (CODE_MAP §2). Files: `faremark/clients.py`.
-2. Standalone scripts in `scripts/`: `class_difficulty_probe.py`, `honest_class_lines.py`.
-
----
-
-## BEAT 1–2 — reproduce paper + results
-Configs 0–13 reproduce FedAvg baselines, crude free-riders, and watermark
-fidelity/detection. `python scripts/run_experiment.py --list_configs`.
-Crude free-rider separation (BER≈0.5 vs honest≈0) and Table-I accuracy bands are the
-reproduction targets. (These predate the new arc; keep the runs for the writeup.)
-
----
-
-## BEAT 3–4 — limitations + non-separability (CIFAR-100, balanced keys)
-### Threshold (calibrate once, 10 seeds)
-```bash
-DS=c100 SEEDS="0 1 2 3 4 5 6 7 8 9" ./run_all.sh honest
-DS=c100 ./run_all.sh calibrate          # -> eta_c100_bdef.json (prints eta ± std, per-seed)
-```
-Expect (STATUS F2/F3): a low eta with LARGE `eta_std_across_seeds`; bimodal honest BER.
-
-### Confirm the difficulty finding survives the key fix (F1 vs F6)
-```bash
-python scripts/class_difficulty_probe.py --in "$RES/*/result.json" \
-       --family honest_c100_bdef_iid --tail 20 --csv "$RES/class_difficulty.csv"
-python scripts/honest_class_lines.py --in "$RES/*/result.json" \
-       --family honest_c100_bdef_iid --tail 20 --eta <printed_eta> \
-       --out "$RES/figs/honest_class_lines.png"
-```
-Expect: entropy r≈−0.6..−0.7, dominance r≈+0.6, test_acc r≈0; `unembeddable_frac`≈0.
-
-### The +5 attacker (non-separability evidence, easy vs hard vs majority)
-```bash
-DS=c100 SEEDS="0 1 2" POS=1,7 ./run_all.sh reduced      # easy -> hides ~30% effort
-DS=c100 SEEDS="0 1 2" POS=3,6 ./run_all.sh reduced      # hard -> at honest floor
-# majority (add a target or set FR ids by hand): 9 FR + 1 honest anchor cid8
-DS=c100 ./run_all.sh PLOTALL                             # timelines w/ honest-floor overlay + fidelity
-```
-
-### Threshold-rule sweep (make the FPR↔recall trade explicit, beat 4)
-On the SAME honest+attack runs, recompute FPR and FR-recall under different eta rules
-(tight round-mean, loose per-client, per-position, percentile) and tabulate. (Script
-to be added; for now `detection.py`'s `eta_from_round_means`/`frozen_eta` plus a small
-per-position variant.)
-
----
-
-## BEAT 5 — stress test (show it's not one config)
-Vary ONE knob per batch, always vs the all-honest baseline, always with the overlay:
-```bash
-# non-IID
-DS=c100 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 SEEDS="0 1 2" POS=3,6 ./run_all.sh reduced
-# free-rider fraction: 1,7 / add more ids / majority
-# bit count: default vs BITS=20 (tagged separately, same RES)
-DS=c100 BITS=20 SEEDS="0 1 2 3 4 5 6 7 8 9" ./run_all.sh honest && DS=c100 BITS=20 ./run_all.sh calibrate
-DS=c100 BITS=20 SEEDS="0 1 2" POS=1,7 ./run_all.sh reduced
-# coast/tap effort
-#   (tap_oracle: honest-path coast/tap with the true eta) — enable its target in run_all
-```
-CIFAR-10 (n=10) only viable with balanced keys AND `BITS=5` (m=5,l=2); default m=2 is
-degenerate (STATUS F7). Use `DS=c10 BITS=5`.
-
----
-
-## BEAT 6–7 — impossibility argument + solution hint
-No new runs invent the proof; assemble it from beats 4–5 across settings + the
-mechanism (softmax tail / entropy). For the solution hint, prototype a per-position
-threshold (calibrate eta per trigger class from honest data) and show it trades the
-trust assumption — that's a discussion, not a required run.
-
----
-
-## Verify / sanity (run on every batch)
-```bash
-python scripts/plots.py sanity --in "$RES/*/result.json"
-python scripts/detection.py verify --in "$RES/*/result.json" \
-       --honest-family honest_c100_bdef_iid --eta-file "$RES/eta_c100_bdef.json"
-```
-`sanity` flags flat/zero BER, non-frozen eta, missing loss. `verify` MISMATCH usually
-means the honest set on disk differs from what was frozen (provenance), not a bug.
-
----
-
-## Command index
-```
-run_all.sh                 honest | calibrate | reduced | PLOTALL      (DS=, BITS=, SEEDS=, POS=)
-threshold.py               calibrate|verify --in <glob> --honest-family <fam> [--tail N] [--out|--eta-file]
-plots.py                   thresholds|class_difficulty|class_dynamics|positions|fidelity|timeline|sanity|honest_fpr|eta_stability
-                           timeline extra: --honest_in <glob> --honest_family <fam>   (honest-floor overlay)
-class_difficulty_probe.py  --in <glob> [--family F] [--tail N] [--csv F]
-honest_class_lines.py      --in <glob> [--family F] [--classes 1,7] [--tail N] [--eta E] [--per-seed] --out F.png
-submit_experiment.sh       <config_idx> <repeat>   (env -> CLI; see CODE_MAP §10)
-```
-
----
-
-## Logging/tagging TODO (blocking clean multi-experiment runs)
-See STATUS "KNOWN ISSUES". Before the stress test scales up, make `RUN_TAG` and
-`FAMILY` encode dataset + bits + balanced + attack + positions + eta so results are
-self-identifying and plot families never silently collide. Code files for this will
-be provided in the next conversation.
-
----
----
 ---
 
 # STATUS
-findings, results, provenance
-
-**Standard setup unless noted:** CIFAR-100, ResNet-18, 10 clients, 50 rounds,
-5 local epochs, batch 16, **m = max(2, n//10) = 10 bits** (CIFAR-100), N_T=50,
-lambda=5, beta=0.6, alpha=0.4, **random (unbalanced) keys**, **full softmax
-(trigger class included)**, config 14. Detector flags client i iff `BER_i >= eta`,
-eta a frozen constant (WM_ETA_FIXED).
-
-**Canonical threshold:** per seed, `m_r` = mean BER over the 10 clients in round r;
-`mu_s`,`sigma_s` = mean/std of the last-20 `m_r`; `eta_s = mu_s + 3*sigma_s`;
-FINAL `eta = mean_s(eta_s)`. Frozen to `eta_calibrated.json`.
-
----
 
 ## Findings
 
-### F1 — Per-class watermark difficulty is real and driven by softmax peakiness
-Honest converged BER differs sharply by trigger class. It is **not** explained by
-classification accuracy; it is explained by how peaky the trigger-class softmax is.
+### F1 — Per-class difficulty is real, driven by peakiness, and generalises ✅
+Floors span 0.000–0.105 on CIFAR-100/10 clients. Entropy r = −0.67, dominance
+r = +0.65, test accuracy r = −0.05 in the 10-client regime. Independent class sets
+(9,19,…,99) reproduce η, mean, σ and FPR to 3 s.f. In the 200-client regime accuracy
+correlates at r = −0.46 — not a contradiction: there the model is starved, so peakiness
+and accuracy become the same variable.
 
-Predictors of per-class BER (Pearson r), 3-seed probe unless noted:
-| predictor | r | meaning |
-|---|---|---|
-| entropy | −0.67 | flatter softmax → lower BER (strongest) |
-| dominance (Eq.6/10) | +0.65 | more single-max domination → higher BER |
-| pmax | +0.54 | more confident → higher BER |
-| test_loss | +0.08 | ~none |
-| test_acc | −0.05 | ~none (refutes "fuzzy boundary = low accuracy") |
+### F2 — The threshold is seed-unstable ✅
+Per-seed η 0.017–0.115, std ≈ 40% of its own value. A threshold whose calibration noise
+is 40% cannot support a fixed detection policy. Cause: the key `M` and bits `B` are
+redrawn per seed, so each seed asks a *different question*, not the same one more
+precisely (REFERENCE §3).
 
-Mechanism: bits live in the smoothed softmax **tail**; a peaky class has no tail to
-shape → bits decided by noise → BER floors above 0. `exp(entropy)` = effective
-classes: hardest ≈17, easiest ≈26. **The trigger class is INCLUDED in the
-projection** (paper Eq. 3 keeps the dominant prob; exclusion is unsupported and, at
-m·l=n on CIFAR-100, breaks the reshape). Reproduce: `class_difficulty_probe.py`.
-Provenance: `honest_iid` runs; per-class floors are seed-noisy (see F2) — report the
-*ranking and the entropy correlation*, not exact BERs.
+### F3 — High honest FPR ✅ **(mechanism restated)**
+27% (N=10), 17% (m=20), 53% (N=200). **The distribution is not bimodal** — panel (b)
+of the thresholds figure shows 73/19.5/7/0.5% at 0/1/2/3 wrong bits, close to
+Binomial(10, 0.036). The bimodality claim is withdrawn; see F9.
 
-### F2 — The threshold is low AND seed-unstable
-CIFAR-100 10-seed calibration: `eta = 0.06397`, `eta_std_across_seeds = 0.02712`
-(≈40% of eta), per-seed range **0.017–0.115**. Grand mean mu=0.036. Pooled-reference
-eta=0.097, all-rounds (warmup-inflated) eta=0.302. Source: `eta_calibrated.json`
-(10 seeds, `cfg14_rep0..9`). A threshold with ~40% calibration noise cannot support
-a fixed detection policy — a finding in itself.
+### F4 — The `reduced` attacker: non-separability, demonstrated ✅
+Per class, `best_threshold_balanced_error = 0.500` in six comparisons — no threshold
+beats a coin. In 8 of 18 the free-rider's mark is *cleaner* than an honest client's at
+the identical trigger class. Where it is catchable, recall 1.0 costs 33–67% FPR at that
+class. `sameclass_c6`: honest 0.105 vs free-rider **0.042** on 31% of the effort.
 
-### F3 — Honest BER is bimodal → high honest FPR; the paper hides this by averaging
-Honest per-client BER is two bumps: a pile at ~0 (easy classes) and a bump at
-~0.08–0.2 (peaky classes). `mu + 3*sigma` assumes a single light-tailed bump (true on
-CIFAR-10, averaged reporting); on the bimodal CIFAR-100 distribution it lands in the
-valley, so ~**32% of honest clients are flagged (FPR)** at eta≈0.064. The paper
-reports one *pooled* FPR (over clients and 10 repeats) and never breaks it down by
-trigger class, so the tail is invisible in their tables. Note: per-client == per-class
-here (one trigger class per client), so "per-class FPR breakdown" is the missing
-reporting granularity, not a different metric. Show with `plots.py thresholds` panel
-(b) / `honest_fpr`.
+### F5 — Trigger-enrichment: less data embeds the mark *harder* ✅
+The reduced shard is concentrated on the trigger class, so L_wm fires on ~9% of batches
+instead of ~1%. This is why the free-rider is often *better* than honest. Frame it as
+**"BER measures whether you trained on the trigger class, and that is the cheap part"**,
+not as "free-riders are undetectable" — which invites the reply that the attacker simply
+specialised.
 
-### F4 — The `reduced` (+5) attacker: non-separability, demonstrated
-Honest-path attacker, warmup then trigger+5/common every round (`attacks_adaptive.py`).
-- **Easy positions (cls 1,7):** FR BER ≈ 0 (below eta) → hides, at ~30% of honest
-  image-passes. (`reduced_iid_c17`)
-- **Hard positions (cls 3,6):** FR BER ≈ 0.11 (above eta) → flagged — but an honest
-  client at cls 6 floors ~0.08–0.2 too, so it is flagged for the *same* reason.
-  (`reduced_iid_c36`)
-- **Majority (9 FR + 1 honest cid8):** every client passes detection (FPR-side clean)
-  while global accuracy drops **~72% → 58%**. The detector says "all clean" while the
-  model lost 14 points to clients that contributed almost nothing. (`reduced_iid_majority`)
-This is the "presence ≠ contribution" result and the core evidence for beat 4.
+### F6 — CIFAR-10 cannot support the scheme ✅
+`m·l = n` forces: m=2 → BER ∈ {0,½,1}, threshold meaningless; m=5 → 50% stuck bits;
+m=10 → 100% stuck. m=1 reaches the paper's number but makes BER a single coin flip.
+There is no good setting, and CIFAR-10 is the paper's primary dataset.
 
-### F5 — Trigger-enrichment: less data embeds the mark *harder* (flat BER)
-Reduced data is trigger-heavy, so `L_wm` fires on ~9% of batches vs ~1% on the full
-shard. The mark is re-embedded strongly every round, so the FR BER line is **flat at
-its class floor** (0 for easy, ~0.11 for hard), unlike the honest mean which wiggles
-(honest maintains the mark weakly). Honest per-class lines are nonzero mostly because
-BER is discrete (steps of 1/m) and a "floor 0.02" means "0 most rounds, 1 bit flipped
-occasionally." Verified on `reduced_iid_c17` (one lone FR flip at round 50).
+### F7 — Honest FPR grows with client count ✅
+27% at N=10 → 53% at N=200, matching the `3/√N` headroom prediction (F8). The scheme
+degrades in exactly the direction real FL deployments go.
 
-### F6 — Key/bit artifacts (NEW; must be cleaned before F1 is airtight)
-- **Unembeddable bits.** Random key rows that are all-same-sign force a bit to a fixed
-  value regardless of training (probabilities ≥ 0). P(same-sign row) = `2^(1-l)`:
-  CIFAR-100 l=10 → 0.2% (negligible); CIFAR-10 l=5 → 6% (observed `unembeddable_frac`
-  up to 0.10). Those clients floor at 0.5 — not "hard", *impossible*. **Fix:** set
-  `balanced=True` in `wm_client.make_key` (removes it by construction; still a valid
-  pseudo-random ±1 matrix). Currently `balanced=False`.
-- **Bit count.** `m = max(2, n//10)` → CIFAR-100 m=10 (workable), **CIFAR-10 m=2**
-  (BER ∈ {0,0.5,1}, degenerate). The paper **does not specify m** and uses the same
-  disjoint grouping (m ≤ n); its "50/400 bits" refers to the *FedIPR baseline*, not
-  FareMark. So m is an underspecified hole we filled with a small value.
-- **Action:** rerun CIFAR-100 with balanced keys (default m and m=20) and check
-  whether the F1 entropy/dominance correlation survives (it should — it's a softmax
-  property independent of the key). That run separates intrinsic difficulty from the
-  key artifact. `wm_unembeddable_frac` is logged in every `result.json`.
+### F8 — `μ+3σ` delivers 0.07σ–0.51σ, never 3σ ✅ **(headline)**
+η is built from `m_r` (mean over N clients, spread σ/√N) and applied to individuals
+(spread σ). Measured `(η − μ)/σ_per-client`: iid 0.42, spread 0.42, bits20 0.31,
+noniid 0.26, capacity10 0.23, sin 0.51, capacity(N=200) **0.07**. A Shewhart 3σ limit
+promises ~0.13% false alarms; this gives 7–53%. Provable in two lines, independent of
+any experiment.
 
-### F7 — CIFAR-10 threshold is *looser*, not tighter (opposite of naive expectation)
-10-seed CIFAR-10: `eta = 0.265`, per-seed 0.12–0.49. Coarser than CIFAR-100 because
-m=2 makes BER a 2-bit coin. So "easier dataset" does NOT give a cleaner threshold; the
-instability is worse. Reinforces F6: threshold stability is governed by bit count, and
-low-class datasets force few bits.
+### F9 — The better the watermark works, the more meaningless the threshold ✅ **(headline)**
+BER only takes multiples of `1/m`. If the mark is good, μ→0 and σ→0, so η→0 and in
+particular **η < 1/m** — at which point `flag iff BER ≥ η` is exactly `flag iff ≥1 bit
+wrong` and every η in `(0, 1/m)` is the same detector. True in iid (0.063 vs 0.100),
+spread, capacity10 (0.068 vs 0.500) and balanced (η = 0, flags 100%). The calibration
+procedure is well-defined only when the scheme it protects is malfunctioning.
 
-### (still valid) F0 — Floor is structural, not the embedder
-`autop_honest_clone=1` control (legacy submarine): an FR embedding via the exact
-honest path plateaus at the same floor as any other embedder. The floor is set by
-(trigger_class, key, bits) position, not by how the mark is embedded.
+### F10 — Most honest BER spread is bit-sampling noise ✅
+Predicted binomial σ vs observed: CIFAR-10 0.134/0.131 (**all** noise), iid
+0.059/0.064, bits20 0.080/0.086. Only non-IID shows large genuine excess. The
+per-class effect is second-order on top of a quantisation noise floor.
 
----
+### F11 — Non-IID leg is contaminated ⚠️ **blocked**
+Floors 0.007–0.297 with σ 0.179 > mean 0.115, far above the binomial prediction of
+0.101. But under Dirichlet a client can be assigned trigger class *c* while holding
+almost no images of *c* → BER ≈ 0.5 for a reason unrelated to the watermark.
+**Log `n_trigger_samples` in `wm_verify.py` and split the honest population by it
+before quoting a single non-IID number.**
+
+### F12 — Three real bugs in `watermark.py` ✅ fixed
+1. **`sin` performed no smoothing.** `torch.sin(alpha*p)` with the shared `wm_alpha=0.4`
+   spans only `[0, 0.4]` radians, where sin is linear. Tail amplification: power 4.87,
+   sin@0.4 **1.01 (the identity)**, sin@π/2 1.23. So `p_max` still dominated, Eq. 10's
+   `f(max)/Σf < 0.5` was violated, and BER sat at chance and never descended. The fix
+   validates α, rejects α > π/2 (**non-monotone**) and rejects any α with gain < 1.10.
+   Second-order finding: even at its best, Eq. 9 amplifies ×1.23 against Eq. 8's ×4.87 —
+   **the paper presents them as interchangeable and they are not.**
+2. **`eps = 1e-3` erased the CIFAR-100 tail.** Tail probabilities are themselves ~1e-3,
+   so 39–57% of the contrast between tail entries was destroyed before projection. Now
+   `SMOOTH_EPS`, **defaulting to the legacy 1e-3** so in-flight families stay
+   comparable; export `SMOOTH_EPS=1e-8` for a clean full re-run.
+3. **`make_bits` returned a constant message at m=1.** `half = 1//2 = 0` gave
+   `B = [0]` for every client, so the "secret" was a constant and a free-rider guessing
+   0 scored 100%. m=1 is exactly what CIFAR-10 needs to reach the paper's 99.72%, so the
+   CIFAR-10 reproduction was **impossible** before this fix. Now uniform for m < 4.
+   Related faithfulness note: exact bit-balancing deviates from the paper at *every* m —
+   at m=10 we always emit exactly five 1s where the paper draws uniformly ("we randomly
+   set the watermark to be embedded", §V-A1). It lowers a random guesser's BER variance
+   without moving its mean of 0.5.
+
+### F13 — Our central result refutes the paper's Table V ✅ **(headline)**
+§V-D4: *"if an attacker trains solely on a small number of trigger samples, the
+watermark could not be detected … because the embedded watermark becomes overfitted to
+those specific samples and cannot be generalized to other trigger-class samples."*
+Our `reduced` attacker is exactly that, verified on a **held-out** bank (`class` mode) —
+the strictest reading — and it matches or beats honest BER. **Lead the writeup with this.**
+
+### F14 — Table IX contradicts Table V ✅
+The capacity result holds only because §V-F3 enforces *trigger sample consistency*
+("the trigger samples used during testing are identical to those employed in training").
+That is precisely the memorisation Table V calls a failure mode. The paper's scaling
+claim rests on the thing it elsewhere says does not generalise.
 
 ## What is proven vs to-be-shown
-- **Proven / measured:** F1 (mechanism + correlations), F2, F3, F4, F5, F6, F7.
-- **To-be-shown (beats 5–6):** that non-separability holds across *all* settings and
-  *any* threshold rule, and the stronger "output-layer watermarking is impossible"
-  claim. These need the stress test and a key-artifact-free rerun. Do NOT state them as
-  established yet.
 
----
+| claim | state |
+|---|---|
+| `μ+3σ` delivers ≤0.51σ in every configuration | ✅ proven, analytic + 7 legs |
+| η < 1/m makes the threshold degenerate | ✅ proven, analytic + 4 legs |
+| free-rider on ~30% effort matches honest BER at the same class | ✅ proven, 6 comparisons at 0.500 |
+| catching a free-rider costs 33–67% FPR at its class | ✅ proven |
+| per-class difficulty is real and generalises | ✅ proven |
+| honest FPR grows with N | ✅ proven (27% → 53%) |
+| CIFAR-10 cannot support the scheme | ✅ proven from `m·l = n` |
+| refutes Table V | ✅ proven, pending R3/R4 confirming the pipeline |
+| our code reproduces the paper's rows | 🔁 **in flight (R1–R4)** |
+| non-IID worsens separability | ⚠️ blocked on F11 |
+| discrimination is bounded by class count | ⚠️ inequality stated, not formalised |
+| output-layer watermarking impossible in general | ⚠️ restated, empirical only |
 
-## Immediate next experiments (see RUNBOOK for exact CLI)
-1. **Balanced-keys rerun (CIFAR-100), default m and m=20**, 10 honest seeds →
-   recalibrate → `reduced` at easy+hard → confirm F1 survives, F2/F3 improve or persist.
-2. **Stress test:** non-IID (Dirichlet), FR fraction sweep, `tap_oracle` (coast/tap
-   effort), all with the honest-floor overlay.
-3. **Threshold-rule sweep** (for beat 4): recompute FPR↔recall under tight / loose /
-   per-position / percentile eta on the *same* runs to show the trade is unavoidable.
+## Immediate next
+See `RUNPLAN.md`. In order: **R1–R8** (this batch) → log `n_trigger_samples` (F11) →
+rerun `sin` with `WM_ALPHA=1.5708` → the +N sweep (`N=-1` anchor) → clean full re-run
+with `SMOOTH_EPS=1e-8`.
 
-
----
----
 ---
 
 # CODEMAP
-complete technical reference - TO BE UPDATED
 
-```
-faremark/
-  client.py            honest FedAvg client (base class)                         §0
-  server.py            FedAvg aggregation + round loop + verify hook
-  datasets.py          IID / Dirichlet shards + trigger test set
-  models.py            build_model (resnet18/alexnet/smallcnn)
-  robustness.py        finetune/prune/quantize ops
-  manifest.py          self-describing run metadata -> result["manifest"]
-  utils.py             set_seed, get_logger, evaluate_accuracy
-  compute_meter.py     per-client effort (samples, gpu_ms, flops, duty cycle)
-  plotstyle.py         shared matplotlib style (palette, panels); exports C_HONEST etc.
-  watermark.py         watermark math (Eq.1-16): key/bits/smooth/project/embed/extract/BER  §1
-  wm_client.py         WatermarkClient (honest embed + Eq.14 memory) + client factory        §2
-  attacks.py           crude baselines (previous_models, gaussian) + FR selection            §3a
-  attacks_adaptive.py  SUBMARINE adaptive free-rider  (LEGACY; warmup bug) reduced (+N) and tap_oracle                    §3bc
-  wm_verify.py         server: extract -> BER -> FROZEN eta -> flag + diagnostics             §4
-scripts/
-  run_experiment.py    orchestrates one (config, repeat) -> result.json                       §6
-  threshold.py         ALL threshold code: canonical eta + calibrate/verify CLI               §5
-  plots.py             ALL plotting (PATCHED this session; see §7)                             §7
-  class_difficulty_probe.py  NEW standalone: per-class BER vs predictors + correlations       §7b
-  honest_class_lines.py      NEW standalone: honest BER per trigger class over rounds          §7b
-  run_all.sh           honest -> calibrate -> attacks -> PLOTALL (dataset/bit-tagged)          §9
-  submit_experiment.sh one RunAI job (env -> CLI flags)                                        §10
-```
+Legend: **[WIRED]** in the pipeline · **[NEW]** added this cycle · **[PATCHED]** changed
+this cycle · **[UNWIRED]** exists but not called.
 
-Legend: **[WIRED]** = in the running pipeline; **[EDIT NEEDED]** = requires a code
-change described here; **[STANDALONE]** = run by hand, not in run_all unless added.
+## 1. Watermark math — `faremark/watermark.py` [WIRED] [PATCHED]
 
----
-
-## 0. Threshold (the one scalar)
-eta is a **pre-calibrated constant**, computed once on honest-only multi-seed runs
-(`threshold.py calibrate`), frozen to `eta_calibrated.json`, injected into every run
-as `WM_ETA_FIXED`. Definition:
-```
-per seed s (10 honest clients, last tail=20 rounds):
-  m_r     = mean BER over the 10 clients in round r
-  mu_s    = mean_r(m_r) ;  sigma_s = std_r(m_r)
-  eta_s   = mu_s + 3*sigma_s
-eta = mean_s(eta_s)      (+ eta_std_across_seeds reported)
-```
-CIFAR-100 frozen value: **0.06397** (std 0.02712). See STATUS F2.
-
----
-
-## 1. Watermark math — `faremark/watermark.py`  [WIRED]
 | step | function | paper | notes |
 |---|---|---|---|
-| smoothing f(p)=(p+eps)^alpha | `smooth` | Eq.7-9 | alpha=0.4, eps=1e-3 |
-| secret ±1 key M [m,l] | `make_key(m,l,seed,balanced)` | §IV-A | **balanced=False now**; set True to kill unembeddable bits (F6) |
-| same-sign (stuck) rows fraction | `unembeddable_fraction` | diagnostic | P(row)=2^(1-l); logged as `wm_unembeddable_frac` |
-| target bits B in {0,1}^m | `make_bits` | Eq.2 | balanced 0/1 |
-| group size l=n//m | `grouping` | §IV-A | **m ≤ n** (disjoint chunks) — the bit ceiling (F6) |
-| project probs -> per-bit z | `project_logits(...,exclude)` | Eq.1/13 | `exclude=None` = full softmax (trigger class kept). exclude breaks reshape when m*l=n |
-| embed loss BCE(z,B) | `watermark_loss` | Eq.11-12 | |
-| extract: mean z over N_T, sign | `extract_bits` | Eq.15 | N_T=50 |
-| BER=mean(bits!=B) | `bit_error_rate` | Eq.16 | |
-| flag test BER<eta | `detected` | Eq.16 | |
-| mu+3sigma helper (legacy) | `calibrate_eta` | §IV-D3 | canonical calc is in threshold.py |
-| dominance ratio f(pmax)/Σf(p) | `dominance_ratio` | Eq.6/10 | want <0.5; predictor of BER (F1) |
+| smoothing f(p) | `smooth(p, kind, alpha, eps)` | Eq. 7–9 | **[PATCHED]** `eps` → module const `SMOOTH_EPS` (env-switchable, default legacy 1e-3); `sin` branch validates α ∈ (0, π/2] and rejects gain < 1.10 |
+| how much f() actually smooths | `smoothing_gain(kind, alpha)` | — | **[NEW]** 1.0 = f does nothing. Check any (kind, α) before spending GPU |
+| secret ±1 key M [m,l] | `make_key(m, l, seed, balanced)` | §IV-A | **[PATCHED]** default now `False`, matching `config.wm_balanced_keys` and the paper |
+| stuck-row fraction | `unembeddable_fraction` | diagnostic | `P = 2^(1−l)`; logged as `wm_unembeddable_frac`. Ceiling = `1 − 0.5·P` |
+| target bits B | `make_bits` | Eq. 2 | balanced 0/1, so a random model sits at BER 0.5 |
+| group size l = n//m | `grouping` | §IV-A | `m ≤ n` — the bit ceiling (F6) |
+| project → per-bit z | `project_logits(..., exclude)` | Eq. 1/13 | `exclude=None` = full softmax, **paper-faithful** |
+| embed loss | `watermark_loss` | Eq. 11–12 | BCE(z, B) |
+| extract | `extract_bits` | Eq. 15 | mean z over N_T, then sign |
+| BER | `bit_error_rate` | Eq. 16 | |
+| flag test | `detected(ber, eta)` | Eq. 16 | `ber < eta`. Docstring now spells out the η=0 and η<1/m degeneracies (F9) |
+| dominance ratio | `dominance_ratio` | Eq. 6/10 | want < 0.5; the diagnostic that exposed the sin bug |
 
-Entropy (F1 predictor) is computed in wm_verify, not here: `H=-Σ p ln p` (nats),
-standard/correct; `exp(H)` = effective class count.
+## 2. Honest client + factory — `faremark/clients.py` [WIRED]
+- `WatermarkClient.produce_update` → `_local_train_wm` (`L = CE + λ·wm_loss` on trigger
+  images) → `_memory_update` (Eq. 14 `W = β(memory+Δ) + (1−β)·global`).
+- `build_watermarked_clients`: `trigger_class = cid % n`; `m = cfg.wm_bits or max(2, n//10)`;
+  `l = n//m`; `exclude_col = None`; `key = make_key(..., balanced=cfg.wm_balanced_keys)`
+  seeded `seed + 1000·cid + 1`. Dispatches free-rider slots by `cfg.attack`.
+- **Open edit:** if you adopt `fast_data.py`, the reduced attacker must call
+  `self.loader.subset(idx)` instead of building a fresh CPU `DataLoader`.
 
----
+## 3. Attackers — `faremark/clients.py` PART 3
+`previous_models` / `gaussian` (Eq. 17/18) · `reduced` (+N, the main one) ·
+`tap_oracle` (coast/tap adaptive) · `submarine` **[DISABLED — warmup bug]**.
 
-## 2. Honest client + factory — `faremark/clients.py`  [WIRED]
-- `WatermarkClient(Client)`
-  - `produce_update`: load global → `_local_train_wm` → `_memory_update` → submit.
-  - `_local_train_wm`: `L = CE + wm_lambda*watermark_loss` on trigger images; logs
-    `self.wm_stats[round] = {cls_loss, wm_loss, total_loss, trig_train_acc, trigger_class}`.
-  - `_memory_update`: Eq.14 `W = beta*(memory+delta) + (1-beta)*global`; persists `self.memory`.
-- `build_watermarked_clients`:
-  - `trigger_class = cid % num_classes`; key & bits seeded from cid (the "position").
-  - `m = max(2, num_classes // 10)`; `l = n//m`; `exclude_col = None` (full softmax).
-  - `key = make_key(..., balanced=False)`  ← **[EDIT NEEDED] set `balanced=True`** to
-    remove unembeddable bits (F6). No env hook exists for this; it is a code edit. 
-    -> [UPDATE] results returned BER at 0 for everything when set to True. not sure if that is what we want or not
-  - Sets `registry.m`, `registry.l`, `registry.unembeddable_frac`.
-  - Dispatches free-rider slots by `cfg.attack`:
-    - `"submarine"/"autopilot"` → `attacks_adaptive.make_submarine_attack` (LEGACY).
-    - `"reduced"` → `attacks_adaptive.make_reduced_attack`  ← **[EDIT NEEDED if absent]**
-    - `"tap_oracle"` → `attacks_adaptive.make_tap_attack`   ← **[EDIT NEEDED if absent]**
-    - `"previous_models"/"gaussian"` → `attacks.py` baselines.
-  - The two `reduced`/`tap_oracle` branches were added this session; confirm they are
-    present (import `make_reduced_attack, make_tap_attack` and the two `elif` branches).
+## 4. Detector — `faremark/wm_verify.py` [WIRED]
+`WatermarkRegistry` (cid → trigger_class, key, bits, kind, alpha, exclude);
+`build_trigger_bank` (`class` mode, held-out, shared per class),
+`build_trigger_bank_per_client` (`client`, disjoint held-out slices),
+`build_trigger_bank_from_train` (`client_train`, the client's own training images —
+paper §V-F3). **All three are used only inside `verify_hook`, never in training**, so
+one training run can be extracted three ways (saves 18 jobs on the capacity legs).
+Per round emits `wm_benign_ber{,_p90,_max}`, `wm_fr_ber`, `wm_fpr`, `wm_fr_recall`,
+`wm_eta_round`, `wm_eta_source`, `wm_flagged_cids`, and `wm_per_client[]` with
+`{cid, trigger_class, ber, is_free_rider, flagged, pmax, entropy, dominance, trig_acc}`.
+**Missing:** `n_trigger_samples` per client per round — required for F11.
 
----
+## 5. Analysis — `scripts/detection.py` [WIRED]
+`calibrate` (freeze η) · `verify` (confirm attack runs used it) · `separability`
+(the rule-independent tables: 9 rules + OVL + best-threshold balanced error).
+**Open edit:** emit `rule=degenerate` instead of `fpr=1.0, recall=1.0` when the honest
+support is a point mass.
 
-## 3. The attackers
+## 6. Orchestration — `scripts/run_experiment.py` [WIRED]
+Every CLI flag overrides the matching `cfg` field. Writes `result.json`.
+**Exit code 2 = accuracy outside `expected_acc`** — EXPECTED for attack runs;
+`result.json` is written before the exit. `submit_pool.sh` treats 0 and 2 as success.
 
-### 3b. SUBMARINE (LEGACY) — `faremark/clients.py`
-`SubmarineFreeRider(_AdaptiveMixin, WatermarkClient)`: honest during warmup, then
-coast/tap under a self-estimated or oracle eta. Rich knob set (`autop_*`, §8).
-**Known bug:** `_ensure_triggers` replaces `self.loader` with a held-out/reduced
-loader used *during warmup too*, so the mark doesn't generalize in warmup → server
-and self BER ≈ 0.5 there, self-eta estimate = 0.5. Superseded by §3c. Keep only for
-the self-eta-reconstruction ideas (`_freeze_own_eta`).
+## 7. Plotting — `scripts/plots.py` [WIRED] + `plot_all_thresholds.py` [NEW]
+Subcommands: `thresholds`, `class_difficulty`, `class_probe`, `class_dynamics`,
+`positions`, `fidelity`, `timeline`, `honest_lines`, `separability`, `sweep`,
+`honest_fpr`, `sanity`, and legacy `threshold`/`frontier`/`scorecard`/`test_data`.
+`plot_all_thresholds.py` **[NEW]** draws *every* honest-only rule on one BER-vs-round
+timeline plus a red `1/m` line, and emits a `.md` table giving each rule's η, how it was
+computed in prose, its honest FPR, its **headroom in σ**, and whether it is degenerate.
+This is the figure `plots.py thresholds` could not make.
 
-### 3c. NEW minimal attackers — `faremark/clients.py`  [WIRED via §2 dispatch]
-Built from scratch on `WatermarkClient`, **one training path** (the honest one), so
-the warmup bug cannot occur (original loader untouched until defection).
-- `make_reduced_attack(base_cls)` → `ReducedDataFreeRider` (`attack_name="reduced"`):
-  honest full-shard until round `honest_rounds`; then `self.loader = reduced` (all
-  trigger images + `common_per_class` per common class) and `super().produce_update`
-  every round. **No coasting.** Knobs: `common_per_class` (default 5), `honest_rounds`
-  (12), `calib_rounds` (4). Trace actions: `honest`/`calib`/`tap`.
-- `make_tap_attack(base_cls)` → `OracleTapFreeRider` (`attack_name="tap_oracle"`):
-  honest warmup; then given the true eta (from `autop_oracle_eta` or, if 0, from
-  `wm_eta_fixed`), each round probes its held-out trigger BER; **coast** (submit the
-  global unchanged, zero compute) while `ber <= eta - margin`, else **tap** (one
-  reduced-data honest pass). Knobs: `oracle_eta`, `honest_rounds`, `calib_rounds`,
-  `common_per_class`, `margin` (0.02). Trace actions: `honest`/`calib`/`tap`/`coast`.
-- Both emit `self.trace = [{round, action, eta_frozen, ...}]` consumed by the timeline.
+**Open plot fixes:** the green "USED eta" line is described in `thresholds`' title but
+never drawn; `timeline` prefers `config.wm_eta_fixed` over the eta file, so figures show
+the provisional 0.050; `honest_lines` bands extend below 0; the 200-client legend covers
+60% of the canvas.
 
-### 3a. Baselines — `faremark/attacks.py`
-`PreviousModelsFreeRider` (Eq.17), `GaussianNoiseFreeRider` (Eq.18),
-`resolve_free_riders` (honours `free_rider_ids` regardless of `num_free_riders` —
-verify on a dry run that `result.json:free_rider_indices` is what you set),
-`build_clients` (non-watermark path).
-
----
-
-## 4. The detector — `faremark/wm_verify.py`  [WIRED]
-- `WatermarkRegistry`: cid → (trigger_class, key, bits, kind, alpha, exclude).
-- `build_trigger_bank`: N_T held-out test images per trigger class.
-- `make_verifier` → `verify_hook`, per round:
-  1. Extract each client's mark on the trigger bank → one BER per client + diagnostics
-     `pmax`, `entropy`, `dominance`, `trig_acc` (all per client).
-  2. THRESHOLD = frozen `eta_fixed` (from `WM_ETA_FIXED`); logged flat as `wm_eta_round`.
-  3. Flag each client iff `ber >= eta_round`.
-  4. Emit per round: `wm_benign_ber`, **`wm_benign_ber_p90`**, **`wm_benign_ber_max`**,
-     `wm_fr_ber`, `wm_eta_round`, **`wm_eta_source`**, `wm_fpr`, `wm_fr_recall`,
-     `wm_detect_acc`, **`wm_flagged_cids`**, round-level
-     `wm_benign_pmax/entropy/dominance/trig_acc`, and
-     `wm_per_client = [{cid, trigger_class, ber, is_free_rider, flagged, pmax,
-     entropy, dominance, trig_acc}]`.
-     (`wm_benign_ber_list` / `wm_fr_ber_list` were REMOVED — verbatim duplicates of
-     `wm_per_client[].ber`. p90/max replace them and expose the bimodality the mean
-     hides; `wm_flagged_cids` is the hook for detection-policy work.)
-
----
-
-## 5. Threshold code — `scripts/detection.py`  [WIRED]
-`calibrate(inp, honest_family, tail, out)`: per-seed `eta_s`, averages to `eta`,
-writes `eta_calibrated.json` = `{eta, eta_std_across_seeds, grand_mean, grand_std,
-n_seeds, per_seed:[{file,seed,eta,mu,sigma}], eta_pooled_for_reference,
-eta_all_rounds_for_reference, window, honest_family}`.
-`verify(inp, honest_family, tail, eta_file)`: (1) recompute eta from honest runs and
-compare to the file; (2) confirm each attack run's `wm_eta_round` is flat and equals
-the frozen eta. Prints PASS/FAIL. NOTE: verify recomputes from whatever honest runs
-match the glob — if the honest set on disk differs from what was frozen, it reports
-MISMATCH (that is provenance, not necessarily a bug).
-CLI: `python scripts/detection.py calibrate|verify --in <glob> --honest-family <fam> [--tail N] [--out|--eta-file]`.
-
----
-
-## 6. Orchestration + effort — `scripts/run_experiment.py`, `compute_meter.py`  [WIRED]
-- `parse_args` + `_OVERRIDABLE`: every CLI flag overrides the matching `cfg` field
-  (confirmed to include `wm_bits`, `attack` (choices include `reduced`,`tap_oracle`),
-  `free_rider_ids`, all `autop_*`, `wm_eta_fixed`, etc.).
-- `main`: build data → model → clients (`build_watermarked_clients` if watermark) →
-  `make_verifier(eta_fixed=cfg.wm_eta_fixed)` → `Server.run` → assemble `result.json`.
-- `evaluate_per_class`: per-class TEST acc + CE loss of the FINAL global model →
-  `result["per_class"] = {overall_acc, matches_final_acc, by_class:{c:{acc,loss,n}}}`.
-- `result.json` top-level: `schema_version`, `config`, `manifest`, **`summary`** (flat
-  digest), **`env`** (git commit / torch / host), `free_rider_indices`, `final_acc`,
-  `best_acc`, `correctness_pass`, `per_class`, `compute`, `history`, plus the `wm_summary`
-  spread: `wm_bits_m`, `wm_group_size_l`, `wm_unembeddable_frac`, `wm_benign_ber`,
-  `wm_fr_ber`, `wm_fpr`, `wm_fr_recall`, `wm_eta_used`.
-- `compute.per_client[cid]`: meter `summary` + `trace` (attacker actions) + `wm_stats`
-  (per-round cls_loss/wm_loss/trig_train_acc). `record_forward_only` counts probe
-  passes as fwd-only (not training) so effort ratios aren't inflated.
-- **Exit code:** `sys.exit(0 if correctness_pass else 2)`. Attack runs land below the
-  config's `expected_acc` band → exit 2 is EXPECTED; `result.json` is written before
-  the exit, so data is intact. Don't treat exit 2 as failure.
-
----
-
-## 7. Plotting — `scripts/plots.py`  [WIRED] (PATCHED this session)
-CLI: `python plots.py <cmd> --in '<glob>' [--family F] [--out DIR|PREFIX] ...`
-| cmd | shows |
+## 8. Runners — `infra/`
+| script | role |
 |---|---|
-| `thresholds` | eta derivation + where it lands + honest FPR (panel b histogram) |
-| `class_difficulty` | per-class BER vs test acc/loss (+ Pearson r) |
-| `class_dynamics` | per-class L_wm / trig acc / BER-vs-confidence curves |
-| `positions` | per-trigger-class BER + BER-vs-pmax |
-| `fidelity` | global accuracy + per-client BER (honest vs FR) + effort ratio |
-| `timeline` | BER over rounds, tap/coast markers, calib window, **calibrated eta only** |
-| `sanity` | TEXT: flat/zero BER, non-frozen eta, missing loss |
-| `eta_stability`, `honest_fpr`, `threshold` (legacy), `frontier/scorecard/test_data` (legacy) |
-
-**Patches applied this session (in the version under /outputs):**
-- `timeline` now draws ONLY the calibrated detection eta (from logged `wm_eta_round`,
-  then `config.wm_eta_fixed`, then recompute) — the old 4 lines (tight/loose/Server
-  Live/FR-Estimated) were removed.
-- `timeline` gained a **honest-floor overlay**: `--honest_in '<glob>' --honest_family
-  <fam>` draws a faint band spanning the honest BER floor of the free-rider's OWN
-  trigger classes (from honest runs) + a dotted mean line, so the FR line is read
-  against its own class, not the honest mixture. Helper `honest_class_floor(...)`.
-
-### 7b. Merged-in analysis (formerly standalone)  [WIRED]
-Both scripts below are now `plots.py` subcommands (`class_probe`, `honest_lines`) and
-the standalone files should be **deleted**. Original descriptions kept for reference:
-
-- `class_difficulty_probe.py` — pulls per-class BER + `entropy/dominance/pmax/trig_acc`
-  (from `history[*].wm_per_client`) and `test_acc/test_loss` (from `per_class`),
-  prints a ranked Pearson+Spearman correlation table (F1). Numpy only.
-  `python class_difficulty_probe.py --in '<glob>' --family honest_iid --tail 20 [--csv f]`
-- `honest_class_lines.py` — one honest-BER-over-rounds line per trigger class from the
-  honest runs; annotates each class's converged floor (== the timeline overlay values).
-  `python honest_class_lines.py --in '<glob>' --family <fam> --tail 20 [--eta E] [--classes 1,7] [--per-seed] --out f.png`
-Both are candidates to fold into `plots.py`/`run_all.sh PLOTALL` later.
-
----
-
-## 8. TUNABLES — `faremark/config.py` `ExpConfig`
-Override via `--flag` (run_experiment) or `ENV=val` (submit_experiment.sh).
-`calib_on_all` is **inert** — its only consumer is the commented-out live-calibration
-block in `wm_verify.py` (see CHANGES.md §5). `wm_alpha` is now overridable.
-Key fields: `attack` (none/previous_models/gaussian/submarine/reduced/tap_oracle),
-`num_free_riders`, `free_rider_ids`, `partition`/`dirichlet_alpha`, `wm_bits` (0=auto
-→ m=max(2,n//10)), `wm_lambda/alpha/beta`, `wm_num_triggers` (N_T), `wm_eta_fixed`,
-`calib_on_all`, and the `autop_*` submarine knobs (`autop_oracle_eta`,
-`autop_honest_until` W, `autop_calib_rounds` K, `autop_common_per_class`,
-`autop_scope`, `autop_stay_min`, `autop_margin0`, `autop_safety`, `autop_max_coast`,
-`autop_eta_mode`, `autop_holdout_ratio`, `autop_honest_clone`, warmup-mode controls).
-Relevant configs: **14** = `submarine_resnet18_cifar100` (base for CIFAR-100 attacks),
-**11** = `wm_resnet18_cifar10` (CIFAR-10 watermark), **10** = wm smoke, **0–9/12/13** =
-paper reproduction (FedAvg baselines, crude free-riders, fidelity/detection).
-
----
-
-## 9. Runner — `scripts/run_all.sh`  [WIRED]
-The maintained version (under /outputs) is dataset/bit-tagged:
-`DS=c100|c10`, `BITS=<int|empty>`, tags families `honest_<DS>_b<BITS>_iid`,
-`reduced_<DS>_b<BITS>_iid_c<POS>`, eta file `eta_<DS>_b<BITS>.json`; `PLOTALL` runs
-sanity/class_difficulty/thresholds/honest_class_lines(honest) and timeline+fidelity
-per attack family (timeline with the honest-floor overlay). Targets: `honest`,
-`calibrate`, `reduced`, `PLOTALL`. (Older versions had `tap_every`/`tap_stay`/
-`tap_oracle` targets for the submarine; the current one is trimmed to the clean path.)
-
----
-
-## 10. Job submission — `scripts/submit_experiment.sh`  [WIRED]
-Maps ENV → CLI flags for `run_experiment.py`. Confirmed mappings include: `ROUNDS,
-LOCAL_EPOCHS, BATCH_SIZE, LR, DATASET, MODEL, PARTITION, DIRICHLET_ALPHA, ATTACK,
-NUM_FREE_RIDERS, FREE_RIDER_IDS, NOISE_*, all AUTOP_*, WATERMARK (presence-flag —
-setting =0 still enables it), WM_BITS→--wm_bits, WM_NUM_TRIGGERS, WM_LAMBDA, WM_BETA,
-WM_ETA_FLOOR, WM_ETA_FIXED, CALIB_ON_ALL, FAMILY→--manifest_family, SWEEP_*, NOTE→
---manifest_note`. `BALANCED=1` now maps to `--wm_balanced_keys` (no code edit needed), and
-**`WM_ALPHA` was added** — its flag `--wm_alpha` did not previously exist despite being
-documented as sweepable. `PAPER_FAITHFUL`'s hook is now **commented out**: the flag was
-removed downstream, so setting it passed an unrecognised argument and argparse killed
-the job. Writes each run
-to `$MOUNT/home/zu/results/<RUN_TAG>` where `RUN_TAG=cfg<idx>_rep<seed>[-fr<n>][-<TAG>]_<ts>`
-(see logging TODO in STATUS / README).
-
----
+| `run_now.sh` **[NEW]** | builds `jobs.tsv` for the current batch (R1–R8). Submits nothing |
+| `submit_pool.sh` **[NEW]** | submits exactly `PODS` worker jobs; each drains its shard with `WORKERS` concurrent runs. Resume-safe |
+| `plot_now.sh` **[NEW]** | local; makes exactly the four figure groups |
+| `submit_experiment.sh` **[PATCHED]** | deterministic `RUN_TAG` (no timestamp — required for resume) + `DRYRUN=1` manifest mode |
+| `run_all.sh`, `run_everything.sh`, `paper_check.sh` | unchanged; still work for ad-hoc legs |
 
 ## Data contract — `result.json`
+Authoritative in `scripts/resultio.py`. Top level: `schema_version`, `config`,
+`manifest{family, sweep_var, sweep_level}`, `summary{}`, `env{git_commit, torch, host}`,
+`free_rider_indices`, `final_acc`, `best_acc`, `correctness_pass`, `per_class`,
+`compute`, `history[]`. Quick look:
 
-Authoritative version, with back-compat shims, lives in **`scripts/resultio.py`** —
-import from there rather than re-implementing (it was previously copy-pasted into
-`detection.py`, `detection.py` and `plots.py`, and the copies had diverged).
-
-- `schema_version` — 1 = pre-cleanup run, 2 = current. Both coexist in one results dir.
-- `manifest.family` — the plot/calibration filter key. `manifest.{sweep_var, sweep_level}`.
-- `summary{...}` — NEW flat digest (accuracy, BER, FPR, recall, eta, bits). `resultio.summary_of()`
-  reads it and rebuilds it for v1 runs.
-- `config` (full ExpConfig snapshot), `seed`, `free_rider_indices`.
-- `env{git_commit, git_branch, torch, python, hostname, finished_utc}` — NEW provenance.
-- `per_class.by_class[c] = {acc, loss, n}` — class difficulty, test-side.
-- `history[r] = {round, test_acc, wm_eta_round, wm_eta_source, wm_benign_ber,
-  wm_benign_ber_p90, wm_benign_ber_max, wm_fr_ber, wm_fpr, wm_fr_recall, wm_detect_acc,
-  wm_flagged_cids, wm_per_client[]}`
-  where `wm_per_client[i] = {cid, trigger_class, ber, is_free_rider, flagged, pmax,
-  entropy, dominance, trig_acc}`.
-- `compute.summary{honest_mean_*, fr_mean_*, effort_ratio_*}`;
-  `compute.per_client[cid] = {attack_name, is_free_rider, total{...},
-  per_round{r:{samples, gpu_ms, trained}}, trace[{round, action, ...}], wm_stats{...}}`.
-
-Removed in v2 (nothing read them): `wm_benign_ber_list` / `wm_fr_ber_list` (verbatim
-duplicates of `wm_per_client[].ber`) and the per-round `fwd_passes` / `bwd_passes` /
-`opt_steps` / `wall_ms` / `flops` (identical to each other or exactly recomputable;
-still in `total`). See `CHANGES.md` §2.
-
-Quick look at any run:
 ```bash
 python scripts/resultio.py digest   --in 'results/*/result.json'
 python scripts/resultio.py contract --in results/<run>/result.json
