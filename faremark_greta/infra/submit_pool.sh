@@ -65,7 +65,17 @@ if [ -n "${_B:-}" ] && [ -n "${_E:-}" ] && [ "$_E" -gt "$_B" ]; then
     echo "   Replace them with double quotes. Nothing was submitted."
     exit 1
   fi
-  echo "self-check: pod block is quote-clean (lines $_B-$_E)"
+  # runai strips backslashes in transit, so printf "%s\n" prints a literal n and
+  # printf "\t" yields a literal t. Ban them from the block outright.
+  _BS=$(sed -n "$((_B+1)),$((_E-1))p" "$0" | grep -c "[\\]" || true)
+  if [ "${_BS:-0}" -gt 0 ]; then
+    echo "!! INTERNAL BUG: $_BS backslash(es) inside the pod block (lines $_B-$_E)."
+    echo "   runai eats them: printf newline becomes a literal n, tab becomes t."
+    sed -n "$((_B+1)),$((_E-1))p" "$0" | grep -n "[\\]" | head
+    echo "   Use echo instead of printf, and cut -f instead of IFS. Nothing submitted."
+    exit 1
+  fi
+  echo "self-check: pod block is quote-clean and backslash-clean (lines $_B-$_E)"
 else
   echo "!! could not locate the pod block sentinels -- skipping quote self-check"
 fi
@@ -140,8 +150,8 @@ for ((i=0; i<PODS; i++)); do
 
       echo "================================================================"
       echo "== POOL WORKER $SHARD_ID =="
-      printf "  %-18s %s\n" "started (UTC)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      printf "  %-18s %s\n" "node"          "${NODE_NAME:-unknown}"
+      echo "  started (UTC)   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "  node            ${NODE_NAME:-unknown}"
       nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null | sed "s/^/  gpu: /"
 
       # --- adapt WORKERS to the card we actually landed on -------------------
@@ -154,7 +164,7 @@ for ((i=0; i<PODS; i++)); do
         echo "  !! only ${GPU_MB} MiB of GPU memory -- capping WORKERS $WORKERS -> 3"
         WORKERS=3
       fi
-      printf "  %-18s %s\n" "workers"       "$WORKERS"
+      echo "  workers         $WORKERS"
 
       # ---- code ---------------------------------------------------------
       rm -rf /tmp/decentralizepy
@@ -162,7 +172,7 @@ for ((i=0; i<PODS; i++)); do
       [ -d "/tmp/decentralizepy/$PKG_SUBDIR" ] || { echo "ERROR: $PKG_SUBDIR missing"; exit 3; }
       GIT_COMMIT="$(git -C /tmp/decentralizepy rev-parse HEAD 2>/dev/null || echo unknown)"
       export GIT_COMMIT GIT_BRANCH
-      printf "  %-18s %s\n" "commit" "$GIT_COMMIT"
+      echo "  commit          $GIT_COMMIT"
       export PYTHONPATH="/tmp/decentralizepy/$PKG_SUBDIR"
       cd "/tmp/decentralizepy/$PKG_SUBDIR"
 
@@ -185,15 +195,11 @@ PY
       rmdir "$LOCK" 2>/dev/null
 
       # ---- manifest ------------------------------------------------------
-      # NOTE: the pod command lives inside a SINGLE-QUOTED bash -c block, so no
-      # single quote may appear anywhere below -- not even in a comment. It would
-      # close the quote and the OUTER shell would then try to expand $tag under
-      # set -u. IFS=$"\t" is NOT a tab --
-      # that is bash locale-translation syntax and yields the literal two
-      # characters \ and t, so fields split on every backslash and every letter
-      # "t". That is what produced directories called "R" and
-      # "R0_paper_t9_nc50_rep0<TAB>". Build the tab with printf instead.
-      TAB=$(printf "\t")
+      # IMPORTANT: no BACKSLASH may appear anywhere in this block. runai strips
+      # them in transit, so a printf newline escape prints a literal n and a
+      # printf tab escape yields a literal t. That is why IFS splitting failed and
+      # fields split on every letter t. cut -f defaults to TAB and needs no
+      # escape at all, so fields are extracted with cut instead of read+IFS.
       echo "$SHARD_B64" | base64 -d > /tmp/shard.tsv
       N=$(grep -c . /tmp/shard.tsv)
       echo "  shard: $N runs"
@@ -236,9 +242,7 @@ PY
         echo "START $tag"
         local arr=($extra)
         [ -n "$note" ] && arr+=(--manifest_note "$note")
-        python -u "$SCRIPT" --config_idx "$cfg" --repeat "$rep" --device cuda \
-               --output_dir "$out" --data_root "$DATA_ROOT" "${arr[@]}" \
-               > "$out/pod_run.log" 2>&1
+        python -u "$SCRIPT" --config_idx "$cfg" --repeat "$rep" --device cuda --output_dir "$out" --data_root "$DATA_ROOT" "${arr[@]}" > "$out/pod_run.log" 2>&1
         local rc=$?
         # exit 2 = accuracy outside the config band. NORMAL for attack runs and
         # result.json is written before the exit. Not a failure.
@@ -255,16 +259,20 @@ PY
                kill $HB 2>/dev/null; rm -rf "$CLAIMS/$tag" ;;
           *)   echo "FAIL  $tag rc=$rc $((SECONDS-t0))s -- see $out/pod_run.log"
                kill $HB 2>/dev/null; rm -rf "$CLAIMS/$tag"   # release for a retry
-               grep -qi "out of memory" "$out/pod_run.log" 2>/dev/null && \
-                 echo "        ^ OOM: lower WORKERS for this pod (WORKERS_LIST)" ;;
+               if grep -qi "out of memory" "$out/pod_run.log" 2>/dev/null; then echo "        ^ OOM: lower WORKERS for this pod"; fi ;;
         esac
         return 0
       }
 
       # ---- drain the shard, WORKERS at a time ----------------------------
-      while IFS="$TAB" read -r tag cfg rep extra note; do
+      while IFS= read -r line; do
+        [ -z "${line:-}" ] && continue
+        tag=$(printf "%s" "$line" | cut -f1)
+        cfg=$(printf "%s" "$line" | cut -f2)
+        rep=$(printf "%s" "$line" | cut -f3)
+        extra=$(printf "%s" "$line" | cut -f4)
+        note=$(printf "%s" "$line" | cut -f5)
         [ -z "${tag:-}" ] && continue
-        case "$tag" in *"$TAB"*|"") echo "SKIP  malformed manifest row: [$tag]"; continue ;; esac
         if [ -z "${cfg:-}" ] || [ -n "${cfg//[0-9]/}" ]; then
           echo "SKIP  row [$tag]: config field is [${cfg:-}], not an integer -- manifest malformed"
           continue
@@ -279,7 +287,7 @@ PY
       echo "  (shared queue: this pod took whatever it could claim)"
       echo "================================================================"
       echo "== POOL WORKER $SHARD_ID FINISHED: $DONE/$N complete =="
-      printf "  %-18s %s\n" "finished (UTC)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "  finished (UTC)  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
       echo "================================================================"
       sync; sleep 2
       # POD_BLOCK_END

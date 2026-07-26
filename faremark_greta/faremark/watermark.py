@@ -109,7 +109,8 @@ def smooth(p: torch.Tensor, kind: str = "power", alpha: float = 0.4,
     if eps is None:
         eps = SMOOTH_EPS
     if kind == "power":
-        return (p.clamp(min=0) + eps) ** alpha
+        # eps guards 0**negative_alpha; kept at the proven 1e-3
+        return (p.clamp(min=0.0) + eps) ** alpha
     if kind == "sin":
         if not (0.0 < alpha <= SIN_ALPHA_MAX + 1e-9):
             raise ValueError(

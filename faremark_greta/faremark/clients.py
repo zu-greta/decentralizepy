@@ -159,6 +159,15 @@ class WatermarkClient(Client):
                         trig_correct += int((pred == self.trigger_class).sum())
                         trig_total += int(tmask.sum())
                 loss.backward()
+                # Guard the embedding term (the only non-standard loss). Two layers:
+                # (1) skip a batch whose loss already went non-finite, so a single
+                #     exploded watermark gradient cannot poison the weights and turn
+                #     every subsequent softmax into nan (the R2 failure);
+                # (2) clip the global grad norm as a smooth cap on spikes.
+                if not torch.isfinite(loss):
+                    opt.zero_grad(set_to_none=True)
+                    continue
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
                 opt.step()
                 cl_sum += float(cl.detach()); tot_sum += float(loss.detach())
                 n_batches += 1

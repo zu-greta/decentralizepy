@@ -12,8 +12,8 @@ set -uo pipefail
 RES="${RES:?set RES to your local results dir}"
 ALL="$RES/*/result.json"
 OUT="${OUT:-figs}"; mkdir -p "$OUT"
-PL="python scripts/plots.py"; DET="python scripts/detection.py"
-ATH="python scripts/plot_all_thresholds.py"
+PL="python ../scripts/plots.py"; DET="python ../scripts/detection.py"
+ATH="python ../scripts/plot_all_thresholds.py"
 run(){ echo "== $*"; eval "$*" || echo "   (skipped)"; }
 
 # =============================================================================
