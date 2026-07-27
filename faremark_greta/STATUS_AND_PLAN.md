@@ -338,50 +338,37 @@ output-layer watermarking and is one of the theoretical points in the meeting no
 
 ## RESULTS
 
-Batch **Group A** (proven CIFAR-100 / 10-client / m=10 config), on the fixed code
-(nan-free embedding confirmed). A1–A3 are complete; A4 and AK are running. Every figure
-name below is the file `plot_groups.sh` emits — fill in your local `results/grid1/figs/`
-path prefix.
+Batch **Group A** (proven CIFAR-100 / 10-client / m=10 config). 
 
-The story these plots tell, in order: **(1)** the watermark embeds correctly and honest
-clients converge to low BER (A1) → **(2)** but different trigger classes converge to very
-different floors, and the threshold built from them has almost no safety margin (A1
-thresholds) → **(3)** and its own value swings 30% just by changing the random key (A1
-eta-stability) → **(4)** so a free-rider doing a third of the work is invisible at easy
-classes (A2) and only catchable at hard classes by flagging honest clients too (A3).
+Group A storyline: 
+**(1)** the watermark embeds correctly and honest clients converge to low BER (A1) → 
+**(2)** but different trigger classes converge to very different floors, and the threshold built from them has almost no safety margin (A1 thresholds) → 
+**(3)** and its own value swings 30% just by changing the random key (A1 eta-stability) → 
+**(4)** so a free-rider doing a third of the work is invisible at easy classes (A2) and only catchable at hard classes by flagging honest clients too (A3).
 
 ---
 
-### R0 — the watermark embeds correctly (sanity, must hold before anything else)
+### R0 — watermark embedding on all honest clients (sanity runs)
 
-**Setup.** A1: CIFAR-100, 10 clients (one per trigger class 0–9), ResNet-18, m=10 bits,
-unbalanced random keys, 50 rounds, 5 local epochs, λ=5, all clients honest, 6 seeds.
-This is the config that worked before the refactor; the point is to confirm the fixed
-code reproduces it.
+**Setup.** A1: CIFAR-100, 10 clients (one per trigger class 0–9), ResNet-18, m=10 bits, 50 rounds, 5 local epochs, λ=5, all clients honest, 6 seeds.
 
-**Plot: `A1_class_floors.png`** — *Honest BER per trigger class over rounds.*
-- **x** = communication round (1–50). **y** = bit-error-rate; **0 = mark embeds perfectly,
-  0.5 = coin flip = no mark.** BER only takes multiples of 1/m = 0.1.
-- one **coloured line per trigger class** (10 classes); shaded band = ±1 std over 6 seeds.
+**Plot: [A1_class_floors.png](results/groupA/figs/A1_class_floors.png)** 
+— *Honest BER per trigger class over rounds.*
+- **x** = communication round (1–50). **y** = bit-error-rate; **0 = mark embeds perfectly, 0.5 = coin flip = no mark.** BER only takes multiples of 1/m = 0.1.
+- one coloured line per trigger class (10 classes); shaded band = ±1 std over 6 seeds.
 - grey block on the right = the converged tail (last 20 rounds) used for calibration.
 - the legend floor value is each class's mean BER over that tail.
 
-**How to read it.** All ten classes start near 0.3–0.45 (random, untrained) and drop
-within ~8 rounds to their floors, then stay flat. Low, stable floors = the watermark is
-embedding. **This is the health check and it passes cleanly** — final classification 73%
-(near the paper's 75%), zero nan, floors settle by round 10.
-
-**Conclusion.** The fixed code embeds exactly as the pre-refactor run did. Everything
-downstream is trustworthy. ✅
+**Information.** All ten classes start near 0.3–0.45 (random, untrained) and drop within ~8 rounds to their floors, then stay flat. 
+Low, stable floors = the watermark is embedding. Health check for all honest code — final classification 73% (near the paper's 75%), zero nan, floors settle by round 10.
 
 ---
 
-### R1 — class difficulty is real and large *(→ meeting note: DIFFICULTY)*
+### R1 — class difficulty
 
-**Same plot, read for the finding instead of the health check:** `A1_class_floors.png`.
+**Same plot:** [A1_class_floors.png](results/groupA/figs/A1_class_floors.png) 
 
-The floors are **not** all equal — they span **0.001 (class 8) to 0.114 (class 6)**, a
-**>100× range**:
+The floors arenot all equal — they span 0.001 (class 8) to 0.114 (class 6), a **>100× range**:
 
 | class | floor | | class | floor |
 |---|---|---|---|---|
@@ -391,34 +378,44 @@ The floors are **not** all equal — they span **0.001 (class 8) to 0.114 (class
 | 0 | 0.025 | | 4 | 0.094 |
 | 2 | 0.028 | | **6** | **0.114** |
 
-**What a good result looks like (and this is one):** a wide spread of floors that is
-**stable across the tail** and **consistent across seeds**. Class 6 is intrinsically ~100×
-harder to watermark than class 8, and no amount of extra training closes the gap — the
-lines are flat for 40 rounds. This is exactly the class-difficulty claim from last week,
-now on 6 seeds with the embedding confirmed. ✅
-
-*(The mechanism — peaky vs flat softmax — is in DEFINITIONS §3. The `A1_class_probe`
-figure, when you run it, gives the entropy/dominance-vs-BER correlations that prove the
-driver is softmax shape, not classification accuracy.)*
+**Good result:** a wide spread of floors that is stable across the tail** and **consistent across seeds. 
+Class 6 is intrinsically ~100×
+harder to watermark than class 8, and no amount of extra training closes the gap — the lines are flat for 40 rounds. This is exactly the class-difficulty claim from last week,
+now on 6 seeds with the embedding confirmed. 
 
 ---
 
-### R2 — the threshold has almost no safety margin *(→ meeting note: THRESHOLD regime)*
+### R2 — threshold calibration
 
-**Plot: `A1_thresholds.png`** (+ table `A1_thresholds.md`) — *every candidate threshold
-on one honest BER trace.*
+Threshold rules — `A1_honest_c100`
+- seeds: **6**, calibration window: last **20** rounds
+- honest client-rounds: **1200**, mean BER **0.0438**, per-client sd **0.0736**
+- watermark bits m = **10**, so BER can only take values 0, 0.100, 0.200, …
+
+**Plot: [A1_thresholds.png](results/groupA/figs/A1_thresholds.png)**
 - **x** = round, **y** = BER (0.5 = coin flip). **Thick blue** = honest mean BER (what η
   is built from). **Dashed / dotted blue** = per-round p90 and worst client. **Pale blue
   band** = the spread from mean up to worst client — *the population the test is actually
   applied to.*
 - each **coloured horizontal line** = one threshold rule; legend gives its η and honest FPR.
 - **red dash-dot at 0.1** = 1/m. Any η below it is degenerate (calibration does nothing).
-- grey block = calibration window (last 20 rounds).
+- grey block = calibration window (last 20 rounds). 
 
-**How to read it — this is the headline slide.** The paper's rule ("coded", orange) lands
-at **η = 0.084 with FPR 31%** and **+0.55σ of headroom** — not the 3σ the paper claims.
-The only rule that delivers the promised 3σ is "loose" (pink, η = 0.264), which computes
-σ on individual clients instead of on the mean-over-clients. From the table:
+-> threshold table (every candidate threshold on one honest BER trace.):
+
+| rule | eta | how it is computed | honest FPR | headroom | degenerate? |
+|---|---|---|---|---|---|
+| median + 3*MAD (robust location/scale) | 0.0000 | median instead of mean, 1.4826*MAD instead of sigma. Immune to outliers, but collapses to 0 when more than half the honest clients sit at BER=0. | 100.0% | -0.59σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
+| coded (paper, mean-over-clients then mu+3s over rounds, avg over seeds) | 0.0841 | for each seed: average BER over the N clients in each round -> one number per round; take mu+3*sigma of those; average across seeds. This is what the paper's text most plausibly means and what run_all.sh freezes. | 31.4% | +0.55σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
+| pooled (mu+3s over all seeds' round-means at once) | 0.1077 | same as above but pool every (seed, round) mean into one sample before mu+3*sigma. Looser, because between-seed spread is added to the sigma. | 9.9% | +0.87σ | no |
+| trimmed-10% mu+3s | 0.1596 | drop the top and bottom 10% of client-rounds, then mu+3*sigma on the rest. | 9.9% | +1.57σ | no |
+| honest p95 | 0.2000 | the 95th percentile of honest client-rounds. Fixes the false-positive rate at 5% by construction -- no distributional assumption at all. | 9.9% | +2.12σ | no |
+| adaptive sigma-clip (kept 0.98) | 0.2242 | iteratively drop points above mu+3*sigma and recompute until stable, then mu+3*sigma on what survives. Excludes the hard-class tail from its own calibration. | 2.4% | +2.45σ | no |
+| loose (mu+3s over PER-CLIENT BER) | 0.2644 | mu and sigma of individual client-round BERs -- no averaging over clients. This is the ONLY variant whose sigma matches the population the test is applied to. Roughly sqrt(N) larger than 'coded'. | 2.4% | +3.00σ | no |
+| honest p99 | 0.3000 | the 99th percentile. Targets 1% FPR. | 2.4% | +3.48σ | no |
+
+**Note:** The paper's rule ("coded", orange) lands at **η = 0.084 with FPR 31%** and **+0.55σ of headroom** - stricter threshold than the 3σ. 
+To follow 3σ, implement the "loose" (pink, η = 0.264) threshold, which computes σ on individual clients instead of on the mean-over-clients. Summary from the table:
 
 | rule | η | headroom | honest FPR |
 |---|---|---|---|
@@ -427,77 +424,48 @@ The only rule that delivers the promised 3σ is "loose" (pink, η = 0.264), whic
 | honest p95 | 0.200 | +2.12σ | 10% |
 | **loose (per-client μ+3σ)** | 0.264 | **+3.00σ** | 2% |
 
-**Conclusion.** The paper's threshold flags **31% of honest clients** because it measures
-spread on an average (σ/√N) but applies the cutoff to individuals (σ). Also note **coded
-and median+3·MAD are marked degenerate** (η < 1/m): with m=10 they reduce to "flag if ≥1
-bit wrong", so the calibrated value is doing no real work. This is the "no threshold is
-sound" beat, shown across all 8 rules at once. ✅
-
-*(Full rule-by-rule provenance and the ELI5 are in DEFINITIONS §2.)*
-
 ---
 
-### R3 — the threshold's own value is unstable across keys *(→ THRESHOLD / seed variance)*
+### R3 — threshold calibration across seeds
 
-**Plot: `eta_stability_ber_A1_honest_c100.png`** — *per-seed honest BER curves + the η each
-seed produces.*
+**Plot: [eta_stability_ber_A1_honest_c100.png](results/groupA/figs/eta_stability_ber_A1_honest_c100.png)** — *per-seed honest BER curves + the η each seed produces.*
 - **thick black** = mean honest BER over seeds; **grey band** = ±1 std across seeds.
 - **faint blue lines** = individual seeds' BER traces.
 - **green horizontal line** = the final η (averaged over seeds); **green band** = η ± its
   seed-to-seed std.
 
-**How to read it.** η = **0.084 ± 0.025** — the standard deviation is **~30% of η's own
-value**, purely from re-drawing the random key `M` and message `B` each seed (nothing else
-changes; see DEFINITIONS §1). The faint per-seed η lines are spread across roughly
-0.06–0.14.
-
-**Conclusion.** A detection threshold whose calibration wobbles by 30% cannot support a
-fixed cutoff policy — the same honest population calibrates to materially different η
-depending only on the secret each client happened to draw. This is finding F2, and it is
-the variance the paper's averaging hides. ✅
+**Results:** η = **0.084 ± 0.025** — the standard deviation is **~30% of η's own value**, purely from re-drawing the random key `M` and message `B` each seed. The faint per-seed η lines are spread across roughly 0.06–0.14.
 
 ---
 
-### R4 — a free-rider is invisible at easy classes *(→ non-separability, EASY case)*
+### R4 — Reduced free-rider (easy classes)
 
-**Setup.** A2: same base, but clients at trigger classes **1 and 7** are `reduced`
-free-riders — honest for 12 warmup rounds, then training on only their trigger class + 5
-images per other class (**31% of an honest client's data**). 3 seeds. η frozen at the
-calibrated 0.064.
+**Setup.** A2: same base, but clients at trigger classes **1 and 7** are reduced free-riders 
+—> honest for 12 warmup rounds, then training on only their trigger class + 5 images per other class (**31% of an honest client's data**). 
+3 seeds. η frozen at the calibrated 0.064.
 
-**Plot: `A2_easy_timeline.png`** — *BER vs round, honest vs free-rider, with η.*
+**Plot: [A2_easy_timeline.png](results/groupA/figs/A2_easy_timeline.png)** — *BER vs round, honest vs free-rider, with η.*
 - **thick blue** = honest mean BER; **thick orange** = free-rider mean BER; bands = ±1 std.
-- **black dashed** = calibrated η = 0.064. **Pale blue dotted band** = honest floor at the
-  free-rider's own classes (1, 7) — *the fair comparison.*
-- yellow = warmup; green = calibration window; grey dashed = free-riding starts (round 12);
-  orange ▽ = re-embed taps.
+- **black dashed** = calibrated η = 0.064. **Pale blue dotted band** = honest floor at the free-rider's own classes (1, 7) for comparison
+- yellow = warmup; green = calibration window; grey dashed = free-riding starts (round 12); orange ▽ = re-embed taps.
 
-**How to read it.** After defection the free-rider's BER drops to **0.00 and stays there** —
-*below* both the honest curve and η — for all 40 post-defection rounds. It re-embeds its
-mark harder than honest clients because its shrunken data is concentrated on the trigger
-class.
+**Results.** After defection the free-rider's BER drops to 0.00 and stays there, which is below both the honest curve and η — for all 40 post-defection rounds. 
+It re-embeds its mark harder than honest clients because its shrunken data is concentrated on the trigger class.
 
-**The numbers (`A2_easy_sep.json`):** per class 1, honest 0.020 vs **FR 0.000**; per class
-7, honest 0.061 vs **FR 0.000**. Both classes: **best-threshold balanced error = 0.500** —
-no threshold, not even the cheating Youden rule, beats a coin. Every deployable rule has
-**recall 0.000**: the free-rider is never flagged.
+**The numbers (`A2_easy_sep.json`):** per class 1, honest 0.020 vs **FR 0.000**; per class 7, honest 0.061 vs **FR 0.000**. 
+Both classes: **best-threshold balanced error = 0.500** — no threshold.
 
-**Conclusion.** A free-rider doing a third of the work has a *better* watermark than honest
-clients at the same position. This is non-separability in its strongest form, and it is
-exactly what you set out to show. ✅
+**Conclusion.** A free-rider doing a third of the work has a stronger watermark than honest clients at the same position.
 
 ---
 
-### R5 — at hard classes, catching the free-rider means flagging honest clients *(→ non-separability, HARD case)*
+### R5 — Reduced free-rider (hard classes)
 
-**Setup.** A3: identical to A2 but free-riders at the **hard** classes **3 and 6**.
+**Setup.** A3: identical to A2 but free-riders at the hard classes 3 and 6
 
-**Plot: `A3_hard_timeline.png`** — same layout as A2.
+**Plot: [A3_hard_timeline.png](results/groupA/figs/A3_hard_timeline.png)** — same layout as A2.
 
-**How to read it.** After defection the free-rider rides at **~0.11–0.13**, sitting *on top
-of* the honest-floor band for classes 3/6 (pale blue dotted) and oscillating around η. It
-is neither cleanly below (invisible) nor cleanly above (catchable) — it is *tangled with*
-the honest floor.
+**Results.** After defection the free-rider rides at ~0.11–0.13, sitting on top of the honest-floor band for classes 3/6 (pale blue dotted) and oscillating around η. 
 
 **The numbers (`A3_hard_sep.json`), read per class — the fair comparison:**
 
@@ -506,20 +474,9 @@ the honest floor.
 | **3** | 0.057 | 0.037 | 0.88 | **0.500** | FR *cleaner* than honest → inseparable |
 | **6** | 0.114 | 0.220 | 0.53 | 0.267 | FR separable — but at a cost (below) |
 
-At class 3 the free-rider is again *cleaner* than honest and **no threshold beats a coin**.
-Class 6 is the one place the free-rider is catchable — and the price is explicit: the
-paper's coded rule gets **recall 0.867 only by flagging FPR 0.400 of honest clients at that
-same class.** To catch the free-rider you falsely accuse 40% of honest clients sharing its
-position.
-
-**Conclusion.** Even where a free-rider is detectable, detection costs a 40% honest
-false-positive rate at that class — the FPR↔recall trade with no good operating point. And
-at the other hard class it is not detectable at all. ✅
-
-*(Note the global vs per-class gap: A3 "global" balanced error looks like 0.315, but that
-pools free-riders at hard classes against a mixture of all honest classes including the
-0.001 easy ones — manufactured separation. The server knows each client's class, so
-per-class is the honest read. This gap is itself worth a sentence in the writeup.)*
+At class 3 the free-rider is cleaner than honest and no threshold can be drawn.
+Class 6 is the one place the free-rider is catchable but with recall 0.867 only by flagging FPR 0.400 of honest clients at that same class. 
+To catch the free-rider you falsely accuse 40% of honest clients sharing its position.
 
 ---
 
@@ -563,6 +520,7 @@ Solidifies class difficulty + reduced non-separability on the config that alread
 | A2 | reduced +5, classes 1,7, 3 seeds | non-sep at EASY classes (FR cleaner than honest) |
 | A3 | reduced +5, classes 3,6, 3 seeds | non-sep at HARD classes |
 | A4 | sameclass, FR on class 6, 3 seeds | FR vs honest, SAME trigger class, same training |
+| AK | sameclass, same key/message, FR on class 6, 3 seeds | FR vs honest, SAME trigger class, SAME key/message |
 
 ### Group B — thresholds (notes: THRESHOLD regime)
 All computed offline from A1 — **no new runs needed**. `plot_all_thresholds.py` + the

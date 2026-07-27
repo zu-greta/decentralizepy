@@ -289,14 +289,20 @@ July21
 
     TODO monday:
     1. clarify all the definitions and theory questions: create status and plan theory section
-    2. get results from probe fix run and get results from run A [x]
+        - review all definitions and theory questions
+        - understand the thresholds!!!
+    [x] 2. get results from probe fix run and get results from run A 
     3. get results from A4 and AK + using results from run A make plotting section
+        - new plotting script - replace all and add A4 and Ak
+        - analyse everything and make sure everything is clear and correct
+        - finalize the results section and add the plots here for the meeting
     4. go over all plans for new experiments, make sure they are implemented and ready to be run
-    5. create presentation and plan for tuesday meeting
+        - also create a section for plans for next week in details and expected results - nearing the end of the project
+    5. create presentation and plan for tuesday meeting 
 
 
 July28
-- RESULTS
+- RESULTS -> status and plan md for now !!!
     - theory
         - seed variation:
         - thresholds:

@@ -786,7 +786,19 @@ def timeline(a):
     # Collect honest and free-rider mean BERs for every seed, every round
     honest_means_per_seed = []
     freer_means_per_seed = []
+    # ALSO collect each individual free-rider's BER trace, keyed by (seed_idx, cid),
+    # so we can draw thin reference lines showing per-FR spread behind the mean.
+    fr_indiv = {}   # (seed_idx, cid) -> list of ber per round
+    # AND the honest client(s) sharing a trigger class with any free-rider -- the
+    # true same-class comparison (blue mean is over ALL honest clients, too coarse).
+    fr_classes = set()
     for r in runs:
+        for h in r.get("history", []):
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider") and p.get("trigger_class") is not None:
+                    fr_classes.add(p["trigger_class"])
+    honest_sameclass = {}   # (seed_idx, cid) -> list of ber per round
+    for si, r in enumerate(runs):
         h_means, f_means = [], []
         for h in r.get("history", []):
             pcs = (h.get("wm_per_client") or [])
@@ -794,6 +806,11 @@ def timeline(a):
             f_vals = [p["ber"] for p in pcs if p.get("is_free_rider")]
             h_means.append(np.mean(h_vals) if h_vals else np.nan)
             f_means.append(np.mean(f_vals) if f_vals else np.nan)
+            for p in pcs:
+                if p.get("is_free_rider"):
+                    fr_indiv.setdefault((si, p.get("cid")), []).append(p["ber"])
+                elif p.get("trigger_class") in fr_classes:
+                    honest_sameclass.setdefault((si, p.get("cid")), []).append(p["ber"])
         honest_means_per_seed.append(h_means)
         freer_means_per_seed.append(f_means)
 
@@ -823,7 +840,25 @@ def timeline(a):
         ax.fill_between(rounds, f_mean - f_std, f_mean + f_std, 
                          color=ps.C_FR, alpha=0.2, lw=0, label="free-rider mean ± std")
         ax.plot(rounds, f_mean, color=ps.C_FR, lw=3, label="free-rider mean BER")
-        
+
+        # thin per-free-rider reference lines (one per cid per seed). Shows how much
+        # of the mean is spread: individual FRs can straddle eta even when the mean does not.
+        _lbl_done = False
+        for (si, cid), trace in sorted(fr_indiv.items()):
+            n = min(len(trace), len(rounds))
+            ax.plot(rounds[:n], trace[:n], color=ps.C_FR, lw=0.7, alpha=0.35,
+                    zorder=2, label=("individual free-riders" if not _lbl_done else None))
+            _lbl_done = True
+        # honest client(s) at the SAME trigger class as the free-rider -- the real
+        # apples-to-apples comparison, drawn as thin blue lines (mean is over ALL honest).
+        _lbl_h = False
+        for (si, cid), trace in sorted(honest_sameclass.items()):
+            n = min(len(trace), len(rounds))
+            ax.plot(rounds[:n], trace[:n], color=ps.C_HONEST, lw=0.9, alpha=0.5,
+                    ls=(0, (4, 2)), zorder=3,
+                    label=("honest client(s) at FR's class" if not _lbl_h else None))
+            _lbl_h = True
+
         # Plot tap/coast markers if at least 50% of seeds performed that action in a round
         if len(taps) > 0:
             tap_x = [rd for rd, cnt in taps.items() if cnt > num_seeds / 2]
@@ -851,6 +886,12 @@ def timeline(a):
         # Plot single seed mean
         ax.plot(rounds, h_mean, color=ps.C_HONEST, lw=2.8, label="honest mean BER")
         ax.plot(rounds, f_mean, color=ps.C_FR, lw=2.8, label="free-rider mean BER")
+        _lbl_done = False
+        for (si, cid), trace in sorted(fr_indiv.items()):
+            n = min(len(trace), len(rounds))
+            ax.plot(rounds[:n], trace[:n], color=ps.C_FR, lw=0.7, alpha=0.4,
+                    zorder=2, label=("individual free-riders" if not _lbl_done else None))
+            _lbl_done = True
         
         # Single Seed markers
         tap_x = [rd for rd in rounds if rd in taps]
