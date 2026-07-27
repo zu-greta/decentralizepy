@@ -16,3 +16,4 @@ miniforge.sh
 .env
 logs/
 out/
+*jobs*.tsv

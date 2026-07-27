@@ -3,7 +3,6 @@
 ## project description
 The overall project goal is to analyse and find a solution for free-rider detection in decentralized federated learning.
 
-
 **Free-rider detection in decentralized learning models using watermarks**
 Decentralized learning has emerged as a promising alternative to centralized and federated paradigms for training machine learning models without relying on a central server. In fully decentralized settings, nodes collaboratively optimize a shared objective through local computations and peer-to-peer communication. However, free-rider behavior remains a critical challenge: some nodes may benefit from the global model while contributing low-quality updates, random gradients, stale parameters, or no meaningful computation at all. Such behavior can degrade convergence, compromise fairness, and undermine trust in the system. This project aims to design a robust watermark-based accountability framework to detect, quantify, and mitigate free-riding in decentralized learning systems. The core idea is to leverage model watermarking techniques to embed verifiable signals into the training process, enabling each client to claim legitimate safeguarding of intellectual property rights of the FL models. 
 Research questions: – Can watermarking techniques developed in federated learning (e.g., [1]) be adapted to fully decentralized settings without a central coordinator? – How robust are watermark-based detection mechanisms against adversarial behaviours, such as collusion, gradient manipulation, or attempts to forge the watermark? 
@@ -12,7 +11,6 @@ To contribute effectively to this project, we highly value:
 * Strong ML fundamentals and proficiency in ML implementation
 * Strong mathematical foundation and interest in probability theory, algebra, and analysis 
 [1] Li, Li, Xinpeng Zhang, Hanzhou Wu, Guorui Feng, and Weiming Zhang. “FareMark: Model-Watermark-Driven Free-Rider Detection in Federated Learning Model.” IEEE Internet of Things Journal (2025)
-
 
 
 ## sections
@@ -28,15 +26,15 @@ To contribute effectively to this project, we highly value:
 | Date | Updates | Notes |
 |------|-------|-------|
 | June 2 | [x] brainstorm session  | - |
-| June 9 | [x] initial code exploration <br> [x] initial concepts and FareMark paper review | - |
+| June 9 | [x] initial code exploration <br> [x] initial concepts and FareMark paper review | - [notes](#june9) |
 | June 11 | [1] check which papers cite FareMark <br> [x] [paper deep dive](FareMark.md) and watermarking procedure <br> [x] potential issues for DFL vs. FL <br> [2] trigger classes (do they need to be unique for each client) <br> [3] trigger class weaknesses | [1] only 2 papers cite it. they talk about [AIIP-Chain: Fair Copyright Sharing With Credible Ownership Verification in AI Model Trading](https://ieeexplore.ieee.org/abstract/document/11239438) (brief mention of watermarking as a method to detect free-riders) and [Intellectual property protection for deep learning model and dataset intelligence](https://www.sciencedirect.com/science/article/pii/S0952197625030556#b64) (table 7 quick mention) <br> [2] best case scenario yes (server just stores the class label at verification and picls any images in the class to verify). in case there are more, the empirical data shows that it's fine and the server just pre-specify and stores the exact imaes used by each client (storage increase). **potential better solution**: different paritition based on features instead <br> [3] **potential issue 1**: partial free-rider attack by only training the trigger classes + trigger class needs to remain the same throughout training and testing - **potential issue 2**: mainly for DFL, dynamic client participation |
-| June 16 | [X] emailed Xinpeng Zhang and Li Li for code <br> [X] basic re-implementation using Claude | - |
-| June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper |
-| July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples |
-| July 7 | [1] no working results yet - needs more tuning for the new attacks | [1] testing how much training is needed to start with (cannot just do trigger samples, need a full shard to warm up) <br> testing some autopilot dynamic way |
-| July 16 | [x] threshold and different knobs experiments for submarine attack to be refined | - |
-| July 21 | [x] threshold fixed <br> [x] baseline submarine attack results for iid, full scope, tap/coast, and +5/common <br> [x] have basic plots for results - just prove that on iid, with the harsh threshold, free-riding is possible with either tap/coast or +5/common | - |
-| July 28 | - | - |
+| June 16 | [X] emailed Xinpeng Zhang and Li Li for code <br> [X] basic re-implementation using Claude | - [notes](#june16) |
+| June 23 | [x] build basic federated learning framework <br> [1] test to make sure everything is correct <br> [] document and present <br> [2] build the free-rider attacks <br> [x] build the watermarking algorithm <br> [3] test and validate everything is correct and matches the paper <br> [x] document + double check with paper + present | [1] stage 1 tests: smoke test good + CIFAR-10 baseline (just FL) good + ResNet-18/MNIST (just FL) good <br> [2] stage 2 tests: smoke test good + prev_attack good + gaussian_noise attacks good -> have to show decline <br> [3] stage 3 tests: smoke test + watermarking algorithm + stage 4 tests <br> [] test and run experiments from the paper <br> - [notes](#june23) |
+| July 2 | [x] paper experiments reproduced <br> [1] new attacks basic run | [1] things tried: non-iid, threshold testing, mixed attack based on trigger only + common samples <br> - [notes](#july2) |
+| July 7 | [1] no working results yet - needs more tuning for the new attacks | [1] testing how much training is needed to start with (cannot just do trigger samples, need a full shard to warm up) <br> testing some autopilot dynamic way <br> - [notes](#july7) |
+| July 16 | [x] threshold and different knobs experiments for submarine attack to be refined | - [notes](#july16) |
+| July 21 | [x] threshold fixed <br> [x] baseline submarine attack results for iid, full scope, tap/coast, and +5/common <br> [x] have basic plots for results - just prove that on iid, with the harsh threshold, free-riding is possible with either tap/coast or +5/common | - [notes](#july21) |
+| July 28 | - | - [notes](#july28) |
 
 ---
 
@@ -65,7 +63,7 @@ To contribute effectively to this project, we highly value:
 
 
 ### NOTES/questions
-June9:
+#### June9:
 - graph colouring - number of nodes and number of colours = number of unique classes needed for watermarking
 - federated learning but no data privacy ?
 - goal: attack method that utilizes the least amount of resources (eg. only train on the trigger class) to be a free-rider and then test the detection method on it that based on watermarking in outer layer. no matter the data boundary, the free-rider will be detected. => watermaking/fingerprinting on output layer is impossible (with certain conditions).
@@ -75,7 +73,7 @@ June9:
 - facking fairness paper ? optimal transport ?
 - attack: threshold is averaged
 
-June16:
+#### June16:
 - NOTE FOR DATA PARTITIONING - IID for controlled -> QUESTION: more clients than classes table IX
 - NOTE FOR calibrating n threshold + sliding window ?
 - TODO: test on non-iid
@@ -84,7 +82,7 @@ June16:
 - IDEA: plotting attack effort vs detection accuracy - worth the effort or not. how to measure this?
     - num samples, compute it takes
 
-June23:
+#### June23:
 - QUESTION: what is the clear goal - proving paper has weakness/limitation ? or that paper's definition of effort vs. free-riding is too low for worth ? the paper seems to assume a lot of things - brushing the rest aside as too high effort to be worth free riding - can we challenge that ?
     - ANSWER: yes, we start with challenging paper's assumptions by building an attack that is low effort and but can break through the watermarking detection. explore different attacks and measure the effort vs. detection accuracy. the global goal is to prove thoretically that it is impossible to have watermarking robust in the output layer. 
 - QUESTION: non-iid tested in paper ? + data partition the paper does for when too many clients vs clasess - they claim it still works fine
@@ -105,7 +103,7 @@ attack ideas:
 - attack timing - train-then-attack and trigger-sample-only
     - detection functino, watermark hgih - vs num samples used (num queries)
 
-July2:
+#### July2:
 - for every plot from now on add standard deviation based on the seeds
 - only do one axis plots from now on, no dual y-axis plots
 - note for non-iid: interesting. its not an attack but it shows weakness from the paper that we can build and improve on. free rider power doesn't depend on non-iid but it also shows that free-rider doesn't break down during non iid
@@ -124,7 +122,7 @@ July2:
     - check the memory enhanced, if its done by the client and if that can be exploited. free-riders can take advantage and just never take the global?
 
 
-July7:
+#### July7:
 P:
 - S1:
     - submarine attack: warmup by training rounds on full shard until under threshold, then coast until needed to tap again
@@ -140,7 +138,7 @@ P:
 - start fixing the threshold when the free-rider starts free-riding (assumption - no one will free ride before first 10)
 - estimated threshold minus some delta to be safer -> how close you are to the surface (defense)
 
-July9:
+#### July9:
 - TODO
     - update STATUS.MD
     - finish the slides and plots for the meeting
@@ -162,7 +160,7 @@ July9:
 - write the algorithm - pseudo - schematic diagram => next meeting have a storyline with algorithm and research question
 - double check the block - do exact and check that block code is right -> doesnt make sense that it keeps dipping down instead of submarine
 
-July16
+#### July16
 - current issues
     - estimation of threshold: 
         - how to estimate the threshold better - should stay under the actual (maybe adjust the delta?)
@@ -182,7 +180,7 @@ July16
 
 repeated prisoner dilemna
 
-July21
+#### July21
 - threshold 
     - the way its calculated now + how low it is 
     - calculation: mean over the clients BERs in a round and then mean over those for multiple rounds + 3 standard deviation over the last 20 rounds. 10 seeds and averaged eta over these 10: 0.06397 for CIFAR-100.
@@ -301,16 +299,22 @@ July21
     5. create presentation and plan for tuesday meeting 
 
 
-July28
-- RESULTS -> status and plan md for now !!!
-    - theory
-        - seed variation:
-        - thresholds:
-        - class difficulty:
+#### July28
+- RESULTS 
     - THRESHOLDS:
-        - !!! table of tresholds tested with their provenance and how they were calculated and the setup of the runs to calibrate them + plot of the thresholds and their variance over the seeds
-    - CLASS DIFFICULTY:
-        - !!! setup of the experiments to show the class difficulty and the results + plot of the class difficulty and their variance over the seeds
+        - plan of thresholds (+ take suggestions) (see [table](#july28-thresholds-table) below)
+        - currently using the tight calibrated threshold from last week at 0.06397 for CIFAR-100: [eta_stability_ber_A1_honest_c100.png](results/groupA/figs/A1_eta_stability/eta_stability_ber_A1_honest_c100.png)
+        - **NOTE**: thresholds need to be calculated and plotted once the code and calculations have been checked. for now, implementation is there but not verified. the thresholds are calculated based on the honest runs (already done) - this will be done ASAP and plotted. for now, using the tight calibrated threshold from last week at 0.06397 for CIFAR-100. 
+        - *TODO*: calculate and plot thresholds + think of more possible cases
+    - CLASS DIFFICULTY:  
+        - [A1_class_floors.png](results/groupA/figs/A1_class_floors.png) - all honest clients, 6 seeds, 10 clients, CIFAR-100, ResNet-18, IID. shows class difficulty as discussed last week
+        - *TODO*: class difficulty for all classes not just the first 10 from CIFAR-100
+    - ATTACK RUNS:
+        - [A2_easy_timeline.png](results/groupA/figs/A2_easy_timeline.png) easy classes reduced attacker (same as last week results) 
+        - [A3_hard_timeline.png](results/groupA/figs/A3_hard_timeline.png) hard classes reduced attacker (same as last week results)
+        - [A4_sameclass_timeline.png](results/groupA/figs/A4_sameclass_timeline.png) assigned the single free-rider to the same trigger class as an honest client (class 6)
+        - *TODO*: same experiment as above with the same trigger class but with the same key too just to check if that reinforces the hypothesis 
+        - **NOTE**: planned [experiments]() below
     - BASELINE RUNS:
         - !!! setup of the experiments to show the baseline setup runs and matches the paper - explain what the experiments are and why they are important
         - !!! plot of the baseline runs results and their variance over the seeds
@@ -319,14 +323,72 @@ July28
             - free-rider with previous model attack
             - free-rider with gaussian noise attack
             - table IX (more clients than classes) 
-    - ATTACK RUNS:
-        - !!! setup of experiments, what the attacks are, FR vs honest
-        - !!! plots of the timeline of the attacks and their variance over the seeds
-        - !!! show that the attacker BER can reach the honest BER with less data
     - MORE CLIENTS THAN CLASSES:
         - !!! setup of experiments - how it matches the paper table IX 
         - !!! plots of the results and their variance over the seeds for all honest and free-rider attacks
 
+
+##### july28 thresholds table
+| rule | eta | how it is computed | honest FPR | headroom | degenerate? |
+|---|---|---|---|---|---|
+| median + 3*MAD (robust location/scale) | 0.0000 | median instead of mean, 1.4826*MAD instead of sigma. Immune to outliers, but collapses to 0 when more than half the honest clients sit at BER=0. | 100.0% | -0.59σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
+| coded (paper, mean-over-clients then mu+3s over rounds, avg over seeds) | 0.0841 | for each seed: average BER over the N clients in each round -> one number per round; take mu+3*sigma of those; average across seeds. This is what the paper's text most plausibly means and what run_all.sh freezes. | 31.4% | +0.55σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
+| pooled (mu+3s over all seeds' round-means at once) | 0.1077 | same as above but pool every (seed, round) mean into one sample before mu+3*sigma. Looser, because between-seed spread is added to the sigma. | 9.9% | +0.87σ | no |
+| trimmed-10% mu+3s | 0.1596 | drop the top and bottom 10% of client-rounds, then mu+3*sigma on the rest. | 9.9% | +1.57σ | no |
+| honest p95 | 0.2000 | the 95th percentile of honest client-rounds. Fixes the false-positive rate at 5% by construction -- no distributional assumption at all. | 9.9% | +2.12σ | no |
+| adaptive sigma-clip (kept 0.98) | 0.2242 | iteratively drop points above mu+3*sigma and recompute until stable, then mu+3*sigma on what survives. Excludes the hard-class tail from its own calibration. | 2.4% | +2.45σ | no |
+| loose (mu+3s over PER-CLIENT BER) | 0.2644 | mu and sigma of individual client-round BERs -- no averaging over clients. This is the ONLY variant whose sigma matches the population the test is applied to. Roughly sqrt(N) larger than 'coded'. | 2.4% | +3.00σ | no |
+| honest p99 | 0.3000 | the 99th percentile. Targets 1% FPR. | 2.4% | +3.48σ | no |
+
+**Note:** The paper's rule ("coded", orange) lands at **η = 0.084 with FPR 31%** and **+0.55σ of headroom** - stricter threshold than the 3σ. 
+To follow 3σ, implement the "loose" (pink, η = 0.264) threshold, which computes σ on individual clients instead of on the mean-over-clients. Summary from the table:
+
+| rule | η | headroom | honest FPR |
+|---|---|---|---|
+| **coded (paper's rule)** | 0.084 | **+0.55σ** | **31%** |
+| pooled | 0.108 | +0.87σ | 10% |
+| honest p95 | 0.200 | +2.12σ | 10% |
+| **loose (per-client μ+3σ)** | 0.264 | **+3.00σ** | 2% |
+
+##### july28 planned experiments 
+**Group A — proven baselines**
+| label | setting | proves (notes ref) | status |
+|---|---|---|---|
+| A1 | honest, cifar100, 10cl, 6 seeds | class difficulty; threshold calibration | done |
+| A2 | reduced +5, classes 1,7, 3 seeds | non-sep at EASY classes (FR cleaner than honest) | done |
+| A3 | reduced +5, classes 3,6, 3 seeds | non-sep at HARD classes | done | 
+| A4 | sameclass, FR on class 6, 3 seeds | FR vs honest, SAME trigger class, same training | done - need to replot |
+| AK | sameclass, same key/message, FR on class 6, 3 seeds | FR vs honest, SAME trigger class, SAME key/message | TODO |
+
+**Group B — thresholds** 
+All computed offline from A1 
+TODO: verify the threshold implementations and calculations - add more if they make sense
+
+**Group C — difficulty**
+| label | setting | proves |
+|---|---|---|
+| C1 | honest, sin smoothing from FareMark paper, 3 seeds | does a different f() make a difference |
+
+**Group D — +N free-riding** 
+| label | setting | proves |
+|---|---|---|
+| D1 | reduced, classes 3,6, N ∈ {-1,0,1,2,5,10,25,50}, 3 seeds | price of invisibility; N=-1 (full data) |
+
+**Group E — non-IID** 
+| label | setting | proves |
+|---|---|---|
+| E1 | honest, Dirichlet α=0.5, 3 seeds | label skew effect |
+| E2 | reduced, classes 3,6, α=0.5, 3 seeds | non-sep under non-iid |
+| E3 | reduced, different α values, 3 seeds | non-sep under non-iid |
+
+**Group F — more clients than classes** 
+| label | setting | proves |
+|---|---|---|
+| F1 | honest, 200 clients, MORE ROUNDS (100), 3 seeds | capacity — but needs enough rounds to train |
+| F2 | reduced, 200cl, classes 6,7, 3 seeds | forced class-sharing overlap |
+
+**Group G — detection policy TODO later**
+consequence of crossing η, k-warnings-before-flag, detection window ?
 
 - MEETING NOTES
 
