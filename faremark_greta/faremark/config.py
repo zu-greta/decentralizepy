@@ -32,6 +32,9 @@ class ExpConfig:
     noise_decay: float = 0.0                # >0 -> sigma_t = sigma0 * t^(-decay)
     partition: str = "iid"                  # 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
+    wm_key_twins: str = ""                  # "fr_cid:honest_cid,..." -> the free-rider derives
+                                            # its key M AND message B from the honest client's
+                                            # cid instead of its own
     trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default
                                             # trigger_class = cid % num_classes for those cids.
                                             # Enables the same-trigger-class control: pin a
