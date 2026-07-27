@@ -285,6 +285,15 @@ July21
             - clarify the seed variation
             - clarify the thresholds
             - clarify the class difficulty
+            - clarify how paper does more cients than classes
+
+    TODO monday:
+    1. clarify all the definitions and theory questions: create status and plan theory section
+    2. get results from probe fix run and get results from run A
+    3. using results from run A make plotting section
+    4. go over all plans for new experiments, make sure they are implemented and ready to be run
+    5. create presentation and plan for tuesday meeting
+
 
 July28
 - RESULTS

@@ -62,6 +62,11 @@ def parse_args():
     p.add_argument("--trigger_class_map", type=str, default=None,
                    help="pin trigger classes, e.g. '0:6' forces cid 0 onto class 6 "
                         "(same-trigger-class control; overrides cid%%num_classes)")
+    p.add_argument("--wm_key_twins", type=str, default=None,
+                   help="give a free-rider the SAME key+message as an honest client, "
+                        "e.g. '0:6' makes cid 0 reuse cid 6's key and bits. Combined "
+                        "with --trigger_class_map it isolates training effort as the "
+                        "only difference between the two clients.")
     # ---- free-rider selection ----
     p.add_argument("--attack", type=str, default=None,
                    choices=["none", "previous_models", "gaussian", "submarine", "autopilot", "reduced", "tap_oracle"])
@@ -147,7 +152,7 @@ def _gpu_name():
 
 
 _OVERRIDABLE = [
-    "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map",
+    "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map", "wm_key_twins",
     "num_clients", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",

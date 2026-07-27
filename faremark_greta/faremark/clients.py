@@ -238,15 +238,28 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             a, b = tok.split(":")
             tmap[int(a)] = int(b) % num_classes
 
+    # KEY-TWIN map (for the controlled same-class experiment): if cfg.wm_key_twins
+    # is set to "fr_cid:honest_cid,..." then the free-rider derives its key AND
+    # message from the HONEST client's cid instead of its own. Same trigger class
+    # (via TRIGGER_CLASS_MAP) + same key + same message => the ONLY difference
+    # between the two clients is whether they actually trained. 
+    key_twin = {}
+    _kt = getattr(cfg, "wm_key_twins", None)
+    if _kt:
+        for pair in str(_kt).split(","):
+            if ":" in pair:
+                a, b = pair.split(":"); key_twin[int(a)] = int(b)
+
     clients, unembed = [], []
     # build each client with its trigger class, key, and target bits
     for cid, loader in enumerate(client_loaders):
         trigger_class = tmap.get(cid, cid % num_classes)  # round-robin, unless overridden
         # key balance config: balanced=True removes structurally-unembeddable same-sign rows 
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
-        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)  # TODO hardcoded seed offset 1000*cid+1
+        key_cid = key_twin.get(cid, cid)   # derive key/bits from the twin's cid if set
+        key = wm.make_key(m, l, seed=seed + 1000 * key_cid + 1, balanced=bal)
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
-        bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
+        bits = wm.make_bits(m, seed=seed + 1000 * key_cid + 1) # random target bits for the watermark
         reg_exclude = None                     # full softmax
         registry.register(cid, trigger_class, key, bits,
                           kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude) # register the client's watermark parameters in the registry

@@ -53,6 +53,10 @@ PY_EXTRA=""
 [ -n "${NUM_WORKERS:-}" ]     && PY_EXTRA="$PY_EXTRA --num_workers ${NUM_WORKERS}"
 [ -n "${DIRICHLET_ALPHA:-}" ]  && PY_EXTRA="$PY_EXTRA --dirichlet_alpha ${DIRICHLET_ALPHA}"
 [ -n "${TRIGGER_CLASS_MAP:-}" ] && PY_EXTRA="$PY_EXTRA --trigger_class_map ${TRIGGER_CLASS_MAP}"
+# WM_KEY_TWINS="fr_cid:honest_cid,..." -> free-rider derives its key AND message
+# from the honest client's cid, so a same-class free-rider is identical in every
+# watermark parameter and only differs by training effort (the controlled test).
+[ -n "${WM_KEY_TWINS:-}" ]     && PY_EXTRA="$PY_EXTRA --wm_key_twins ${WM_KEY_TWINS}"
 # free-rider selection
 [ -n "${ATTACK:-}" ]          && PY_EXTRA="$PY_EXTRA --attack ${ATTACK}"
 [ -n "${NUM_FREE_RIDERS:-}" ] && PY_EXTRA="$PY_EXTRA --num_free_riders ${NUM_FREE_RIDERS}"
@@ -115,6 +119,7 @@ else
   BITS_TAG="";  [ -n "${WM_BITS:-}" ]           && BITS_TAG="_b${WM_BITS}"
   POS_TAG="";   [ -n "${FREE_RIDER_IDS:-}" ]    && POS_TAG="_c${FREE_RIDER_IDS//,/}"
   MAP_TAG="";   [ -n "${TRIGGER_CLASS_MAP:-}" ] && MAP_TAG="_map$(printf '%s' "${TRIGGER_CLASS_MAP}" | tr -d ':,' )"
+  TWIN_TAG="";  [ -n "${WM_KEY_TWINS:-}" ]     && TWIN_TAG="_twin$(printf '%s' "${WM_KEY_TWINS}" | tr -d ':,' )"
   ETA_TAG="";   [ -n "${WM_ETA_FIXED:-}" ]      && ETA_TAG="_eta$(printf '%s' "${WM_ETA_FIXED}" | tr -d '.')"
   F_TAG="";     [ -n "${WM_F:-}" ]              && F_TAG="_${WM_F}"
   FR_TAG="";    [ -n "${NUM_FREE_RIDERS:-}" ]   && FR_TAG="_fr${NUM_FREE_RIDERS}"
