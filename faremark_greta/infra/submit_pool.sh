@@ -37,6 +37,8 @@ read -r -a _POOLS   <<< "${POOLS:-}"        # optional per-pod node-pool
 read -r -a _WORKERS <<< "${WORKERS_LIST:-}" # optional per-pod worker count
 JOBS_FILE="${JOBS_FILE:-jobs.tsv}"
 POOL_TAG="${POOL_TAG:-pool$(date +%m%d%H%M)}"
+_sanitize(){ printf '%s' "$1" | tr '[:upper:]_' '[:lower:]-' | sed 's/[^a-z0-9-]/-/g; s/^[^a-z]*//; s/^$/pool/'; }
+POOL_TAG_SAFE="$(_sanitize "$POOL_TAG")"
 
 if [ -f .env ]; then set -a; source .env; set +a
 else echo "Error: .env file not found!"; exit 1; fi
@@ -129,7 +131,7 @@ for ((i=0; i<PODS; i++)); do
   POD_WORKERS="${_WORKERS[i]:-$WORKERS}"
   POD_EXTRA="${RUNAI_EXTRA:-}"
   [ -n "$POD_POOL" ] && POD_EXTRA="$POD_EXTRA --node-pools $POD_POOL"
-  JOB_NAME="faremark-${POOL_TAG}-w${i}"
+  JOB_NAME="faremark-${POOL_TAG_SAFE}-w${i}"
   echo "--- $JOB_NAME : pool=${POD_POOL:-<any>} workers=$POD_WORKERS (shared queue of $TOTAL)"
 
   if runai submit "$JOB_NAME" \
