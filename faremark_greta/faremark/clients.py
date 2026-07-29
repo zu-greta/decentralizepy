@@ -11,6 +11,7 @@ inheritance chain:
       +-- WatermarkClient           ... + L_wm on trigger-class samples + Eq.14 memory update
         +-- ReducedFreeRider        ... but trains on a reduced shard after round W
         +-- OracleTapFreeRider      ... but taps only when its own BER nears eta
+        +-- AdaptiveTapFreeRider   ... but taps only when its own BER nears eta, and estimates eta adaptively
         +-- [SubmarineFreeRider -- DISABLED]
 
 imports:
@@ -312,6 +313,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     n_common_classes=int(getattr(cfg, "autop_n_common_classes", -1)),
                     honest_rounds=getattr(cfg, "autop_honest_until", 12),
                     calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
+                    trigger_train_n=int(getattr(cfg, "autop_trigger_train_n", -1)),
                     **wm_args, **common))
             elif attack == "tap_oracle":
                 cls = make_tap_attack(WatermarkClient)
@@ -320,6 +322,24 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     honest_rounds=getattr(cfg, "autop_honest_until", 12),
                     calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
                     common_per_class=max(0, getattr(cfg, "autop_common_per_class", 5)),
+                    **wm_args, **common))
+            elif attack == "adaptive_tap":
+                cls = make_adaptive_tap_attack(WatermarkClient)
+                clients.append(cls(
+                    oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0) or getattr(cfg, "wm_eta_fixed", 0.0),
+                    honest_rounds=getattr(cfg, "autop_honest_until", 12),
+                    calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
+                    eta_source=getattr(cfg, "tap_eta_source", "oracle"),
+                    eta_k=getattr(cfg, "tap_eta_k", 3.0),
+                    margin=getattr(cfg, "tap_margin", 0.02),
+                    when=getattr(cfg, "tap_when", "threshold"),
+                    period=getattr(cfg, "tap_period", 1),
+                    max_coast=getattr(cfg, "tap_max_coast", 999),
+                    data_cpc=getattr(cfg, "tap_data_cpc", 5),
+                    scope=getattr(cfg, "tap_scope", "full"),
+                    coast_mode=getattr(cfg, "tap_coast_mode", "resend"),
+                    probe_holdout=getattr(cfg, "tap_probe_holdout", 64),
+                    trigger_train_n=int(getattr(cfg, "autop_trigger_train_n", -1)),
                     **wm_args, **common))
             elif attack in ATTACKS:
                 # paper baselines (previous_models / gaussian) - no embedding
@@ -337,7 +357,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                         if attack in ("submarine", "autopilot") else "")
                 raise ValueError(
                     f"attack='{attack}' not supported in the watermark path "
-                    f"(use 'reduced', 'tap_oracle', 'previous_models', 'gaussian', "
+                    f"(use 'reduced', 'tap_oracle', 'adaptive_tap', 'previous_models', 'gaussian', "
                     f"or 'none').{hint}")
         else:
             clients.append(WatermarkClient(
@@ -505,7 +525,7 @@ class _SimpleFRMixin:
     a self-BER probe on held-out trigger images. Nothing here touches training."""
 
     def _prepare(self, common_per_class: int, n_probe_holdout: int = 0,
-                 n_common_classes: int = -1):
+                 n_common_classes: int = -1, trigger_train_n: int = -1):
         """Build the reduced loader once. Optionally hold out a few trigger
         images (never trained on) so the probe measures generalisation, matching
         how the server tests on a separate trigger bank."""
@@ -527,6 +547,10 @@ class _SimpleFRMixin:
         k = min(n_probe_holdout, max(0, len(allt) - 1)) if n_probe_holdout else 0
         self._probe_x = allt[:k].clone() if k > 0 else None # probe on held-out triggers
         trig_train = allt[k:] if k > 0 else allt # trigger images for training
+        # num of trigger class images trained on - -1 = all
+        if trigger_train_n is not None and trigger_train_n >= 0:
+            trig_train = trig_train[:trigger_train_n]
+        self._trigger_train_n = len(trig_train)
 
         xs = [trig_train] # the reduced loader is trigger images + N common-class images
         ys = [torch.full((len(trig_train),), self.trigger_class, dtype=torch.long)] # labels for trigger images
@@ -581,10 +605,12 @@ def make_reduced_attack(base_cls):
         attack_name = "reduced"
 
         def __init__(self, *a, common_per_class: int = 5, honest_rounds: int = 12,
-                     calib_rounds: int = 4, n_common_classes: int = -1, **kw):
+                     calib_rounds: int = 4, n_common_classes: int = -1,
+                     trigger_train_n: int = -1, **kw):
             super().__init__(*a, **kw)
             self.common_per_class = int(common_per_class)
             self.n_common_classes = int(n_common_classes)
+            self.trigger_train_n = int(trigger_train_n)
             self.honest_rounds = int(honest_rounds)
             self.calib_rounds = int(calib_rounds)
             self._prepared = False
@@ -604,13 +630,15 @@ def make_reduced_attack(base_cls):
                     return submit, n
                 # REDUCED SHARD: switch to the reduced shard and keep training like an honest client on less data
                 self._prepare(self.common_per_class,
-                              n_common_classes=self.n_common_classes) # build the reduced loader once
+                              n_common_classes=self.n_common_classes,
+                              trigger_train_n=self.trigger_train_n) # build the reduced loader once
                 self.loader = self._reduced_loader # switch to the reduced loader
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx) # train on the reduced loader
                 self.trace.append({"round": round_idx, "action": "tap",
                                    "eta_frozen": None, "reduced_n": self._reduced_n,
                                    "common_per_class": self.common_per_class,
                                    "n_common_classes": self.n_common_classes,
+                                   "trigger_train_n": self.trigger_train_n,
                                    "common_classes_used": getattr(self, "_common_classes_used", None)}) # re-embeds every round
                 return submit, n
             # warmup / calibration window: pure honest client on the original shard
@@ -678,6 +706,166 @@ def make_tap_attack(base_cls):
             return submit, n
 
     return OracleTapFreeRider
+
+
+# ------------------------------------------------------------------------------ #
+#  Adaptive Tap Attack: the submarine (attack="adaptive_tap")                    #  
+#  honest, then train (full or reduced) when nearing (estimated) threshold       #
+#    - threshold estimation ...... tap_eta_source ("oracle" | "self"), tap_eta_k
+#    - when to tap ............... tap_when ("threshold" | "always" | "every_k"),
+#                                  tap_period, tap_max_coast, tap_margin
+#    - how much data on a tap .... tap_data_cpc (-1 full | 0 trigger-only | N)
+#    - how much MODEL on a tap ... tap_scope ("full" | "block2" | "block" | "head")
+#    - free-riding between taps .. tap_coast_mode ("resend" global | 
+#                                  "decay" own last)
+# ------------------------------------------------------------------------------ #
+def make_adaptive_tap_attack(base_cls):
+
+    class AdaptiveTapFreeRider(_SimpleFRMixin, base_cls):
+        is_free_rider = True
+        attack_name = "adaptive_tap"
+
+        # full => everything trainable (identical to the honest path).
+        _SCOPE_KEEP = {"full": None, "block2": 20, "block": 8, "head": 2}
+
+        def __init__(self, *a, oracle_eta: float = 0.0, honest_rounds: int = 12,
+                     calib_rounds: int = 4, eta_source: str = "oracle",
+                     eta_k: float = 3.0, margin: float = 0.02,
+                     when: str = "threshold", period: int = 1, max_coast: int = 999,
+                     data_cpc: int = 5, scope: str = "full",
+                     coast_mode: str = "resend", probe_holdout: int = 64,
+                     trigger_train_n: int = -1, **kw):
+            super().__init__(*a, **kw)
+            self.oracle_eta = float(oracle_eta)
+            self.honest_rounds = int(honest_rounds)
+            self.calib_rounds = int(calib_rounds)
+            self.eta_source = str(eta_source)
+            self.eta_k = float(eta_k)
+            self.margin = float(margin)
+            self.when = str(when)
+            self.period = max(1, int(period))
+            self.max_coast = int(max_coast)
+            self.data_cpc = int(data_cpc)
+            self.scope = str(scope)
+            self.coast_mode = str(coast_mode)
+            self.probe_holdout = int(probe_holdout)
+            self.trigger_train_n = int(trigger_train_n)
+            self._prepared = False
+            self._orig_loader = self.loader
+            self._calib_bers = []       # own probe BER over the calib window -> "self" eta
+            self._eta_frozen = None     # frozen once, at defection
+            self._coast_streak = 0
+            self._last_submit = None    # for coast_mode="decay"
+            self._ber_before = None
+            self.trace = []
+
+        # ---- scope freeze/restore --------------------------------------------
+        def _freeze_scope(self):
+            keep = self._SCOPE_KEEP.get(self.scope)
+            named = list(self.model.named_parameters())
+            if keep is None:
+                for _, p in named:
+                    p.requires_grad_(True)
+                return
+            cut = len(named) - int(keep)
+            for i, (_, p) in enumerate(named):
+                p.requires_grad_(i >= cut)
+
+        def _restore_scope(self):
+            for p in self.model.parameters():
+                p.requires_grad_(True)
+
+        # ---- eta to use ------------------------------------------
+        def _resolve_eta(self):
+            if self.eta_source == "self" and self._calib_bers:
+                import statistics as _st
+                mu = _st.mean(self._calib_bers)
+                sd = _st.pstdev(self._calib_bers) if len(self._calib_bers) > 1 else 0.0
+                return max(0.0, mu + self.eta_k * sd)
+            return self.oracle_eta                     # oracle / fallback
+
+        # ---- one tap (scope-limited, reduced- or full-shard) -----------------
+        def _do_tap(self, global_state, prev_global_state, round_idx, eta, target):
+            self.loader = (self._reduced_loader if (self.data_cpc >= 0
+                           and getattr(self, "_reduced_loader", None) is not None)
+                           else self._orig_loader)
+            self._freeze_scope()
+            try:
+                submit, n = super().produce_update(global_state, prev_global_state, round_idx) # train on the reduced loader or full loader
+            finally:
+                self._restore_scope() 
+                self.loader = self._orig_loader
+            self._last_submit = {k: v.clone() for k, v in submit.items()} 
+            self._coast_streak = 0
+            ba = self._probe_ber(submit) # probe the BER after the tap
+            self.trace.append({"round": round_idx, "action": "tap",
+                               "eta_frozen": round(eta, 4), "target": round(target, 4),
+                               "scope": self.scope, "data_cpc": self.data_cpc,
+                               "reduced_n": getattr(self, "_reduced_n", self.num_samples),
+                               "ber_before": self._ber_before,
+                               "ber_after": None if ba is None else round(ba, 4)})
+            return submit, n
+
+        # ---- one coast (no training) -----------------------------------------
+        def _do_coast(self, global_state, round_idx, eta, target, ber_now):
+            self._coast_streak += 1 # increment the coast streak
+            if self.coast_mode == "decay" and self._last_submit is not None: # resubmit the last tap with no training
+                out = {k: v.clone() for k, v in self._last_submit.items()}
+            else: # resubmit the global state with no training
+                out = {k: v.clone() for k, v in global_state.items()}
+            self.meter.start_round(round_idx); self.meter.end_round(trained=False)
+            self.trace.append({"round": round_idx, "action": "coast",
+                               "eta_frozen": round(eta, 4), "target": round(target, 4),
+                               "coast_mode": self.coast_mode,
+                               "coast_streak": self._coast_streak,
+                               "ber_before": None if ber_now is None else round(ber_now, 4),
+                               "ber_after": None if ber_now is None else round(ber_now, 4)})
+            return out, self.num_samples
+
+        # ---- main ------------------------------------------------------------
+        def produce_update(self, global_state, prev_global_state, round_idx):
+            phase = self._phase_action(round_idx)
+
+            # warmup + calibration window: pure honest client on the full shard
+            if phase != "freeride":
+                submit, n = super().produce_update(global_state, prev_global_state, round_idx)
+                if phase == "calib":
+                    # prepare the probe holdout and record own BER for "self" eta
+                    self._prepare(max(0, self.data_cpc), n_probe_holdout=self.probe_holdout,
+                                  trigger_train_n=self.trigger_train_n)
+                    b = self._probe_ber(submit)
+                    if b is not None:
+                        self._calib_bers.append(b)
+                self.trace.append({"round": round_idx, "action": phase, "eta_frozen": None})
+                return submit, n
+
+            # first free-ride round: build loaders + freeze eta once
+            self._prepare(max(0, self.data_cpc), n_probe_holdout=self.probe_holdout,
+                          trigger_train_n=self.trigger_train_n)
+            if self._eta_frozen is None:
+                self._eta_frozen = self._resolve_eta()
+            eta = self._eta_frozen
+            target = max(0.0, eta - self.margin)
+
+            ber_now = self._probe_ber(global_state)     # check if mark is still present in the global model
+            self._ber_before = None if ber_now is None else round(ber_now, 4)
+
+            # decide: tap or coast
+            force = self._coast_streak >= self.max_coast
+            if self.when == "always":
+                tap = True
+            elif self.when == "every_k":
+                tap = (round_idx % self.period == 0)
+            else:  # "threshold"
+                tap = (ber_now is None) or (ber_now > target)
+            if force:
+                tap = True
+
+            if tap:
+                return self._do_tap(global_state, prev_global_state, round_idx, eta, target) # tap on the reduced shard (or full shard if data_cpc < 0)
+            return self._do_coast(global_state, round_idx, eta, target, ber_now)
+
+    return AdaptiveTapFreeRider
 
 
 # =============================================================================

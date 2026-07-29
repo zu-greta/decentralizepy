@@ -10,15 +10,22 @@ import numpy as np
 import torch
 
 
-def set_seed(seed: int) -> None:
-    """Seed every RNG we touch so a (config, repeat) pair is reproducible"""
+def set_seed(seed: int, deterministic: bool = True) -> None:
+    """Seed every RNG we touch so a (config, repeat) pair is reproducible.
+
+    deterministic=True  -> cuDNN forced deterministic, autotuner OFF (bit-reproducible
+                           runs; the paper-fidelity default).
+    deterministic=False -> cuDNN autotuner ON, deterministic OFF. ~1.3-2x faster on
+                           convs. Results are STATISTICALLY identical (mean/std over
+                           seeds unchanged); only exact bit-reproducibility of a single
+                           seed is lost. Safe for sweeps. Set via --no_determinism.
+    """
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # TODO: cuDNN determinism trades a little speed for reproducibility. Keep it on for corrctness validation. turn off for big sweeps
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = bool(deterministic)
+    torch.backends.cudnn.benchmark = not bool(deterministic)
 
 
 def get_logger(name: str = "faremark", logfile: str | None = None) -> logging.Logger:

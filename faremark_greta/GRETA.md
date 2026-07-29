@@ -312,36 +312,24 @@ repeated prisoner dilemna
     - ATTACK RUNS:
         - [A2_easy_timeline.png](results/groupA/figs/A2_easy_timeline.png) easy classes reduced attacker (same as last week results) 
         - [A3_hard_timeline.png](results/groupA/figs/A3_hard_timeline.png) hard classes reduced attacker (same as last week results)
-        - [A4_sameclass_timeline.png](results/groupA/figs/A4_sameclass_timeline.png) assigned the single free-rider to the same trigger class as an honest client (class 6)
+        - [A4_sameclass_timeline.png](results/groupA/figs/A4_sameclass_timeline.png) assigned the single free-rider to the same trigger class as an honest client (class 6). better view with just the honest client at class 6 compared with the free-rider at class 6 [A4_pair.png](results/groupA/figs/A4_pair.png)
         - *TODO*: same experiment as above with the same trigger class but with the same key too just to check if that reinforces the hypothesis 
-        - **NOTE**: planned [experiments]() below
-    - BASELINE RUNS:
-        - !!! setup of the experiments to show the baseline setup runs and matches the paper - explain what the experiments are and why they are important
-        - !!! plot of the baseline runs results and their variance over the seeds
-        - !!! baseline runs include: 
-            - all honest clients (CIFAR-10 and CIFAR-100)
-            - free-rider with previous model attack
-            - free-rider with gaussian noise attack
-            - table IX (more clients than classes) 
-    - MORE CLIENTS THAN CLASSES:
-        - !!! setup of experiments - how it matches the paper table IX 
-        - !!! plots of the results and their variance over the seeds for all honest and free-rider attacks
+        - **NOTE**: planned [experiments](#july28-planned-experiments) below
 
 
 ##### july28 thresholds table
-| rule | eta | how it is computed | honest FPR | headroom | degenerate? |
-|---|---|---|---|---|---|
-| median + 3*MAD (robust location/scale) | 0.0000 | median instead of mean, 1.4826*MAD instead of sigma. Immune to outliers, but collapses to 0 when more than half the honest clients sit at BER=0. | 100.0% | -0.59σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
-| coded (paper, mean-over-clients then mu+3s over rounds, avg over seeds) | 0.0841 | for each seed: average BER over the N clients in each round -> one number per round; take mu+3*sigma of those; average across seeds. This is what the paper's text most plausibly means and what run_all.sh freezes. | 31.4% | +0.55σ | **yes** — below 1/m, so this is exactly 'flag if ≥1 bit wrong'; the value of eta does nothing |
-| pooled (mu+3s over all seeds' round-means at once) | 0.1077 | same as above but pool every (seed, round) mean into one sample before mu+3*sigma. Looser, because between-seed spread is added to the sigma. | 9.9% | +0.87σ | no |
-| trimmed-10% mu+3s | 0.1596 | drop the top and bottom 10% of client-rounds, then mu+3*sigma on the rest. | 9.9% | +1.57σ | no |
-| honest p95 | 0.2000 | the 95th percentile of honest client-rounds. Fixes the false-positive rate at 5% by construction -- no distributional assumption at all. | 9.9% | +2.12σ | no |
-| adaptive sigma-clip (kept 0.98) | 0.2242 | iteratively drop points above mu+3*sigma and recompute until stable, then mu+3*sigma on what survives. Excludes the hard-class tail from its own calibration. | 2.4% | +2.45σ | no |
-| loose (mu+3s over PER-CLIENT BER) | 0.2644 | mu and sigma of individual client-round BERs -- no averaging over clients. This is the ONLY variant whose sigma matches the population the test is applied to. Roughly sqrt(N) larger than 'coded'. | 2.4% | +3.00σ | no |
-| honest p99 | 0.3000 | the 99th percentile. Targets 1% FPR. | 2.4% | +3.48σ | no |
+| rule | eta | how it is computed | honest FPR | headroom |
+|---|---|---|---|---|
+| median + 3*MAD (robust location/scale) | 0.0000 | median instead of mean, 1.4826*MAD instead of sigma. Immune to outliers, but collapses to 0 when more than half the honest clients sit at BER=0. | 100.0% | -0.59σ |
+| coded (paper, mean-over-clients then mu+3s over rounds, avg over seeds) | 0.0841 | for each seed: average BER over the N clients in each round -> one number per round; take mu+3*sigma of those; average across seeds. This is what the paper's text most plausibly means and what run_all.sh freezes. | 31.4% | +0.55σ | 
+| pooled (mu+3s over all seeds' round-means at once) | 0.1077 | same as above but pool every (seed, round) mean into one sample before mu+3*sigma. Looser, because between-seed spread is added to the sigma. | 9.9% | +0.87σ |
+| trimmed-10% mu+3s | 0.1596 | drop the top and bottom 10% of client-rounds, then mu+3*sigma on the rest. | 9.9% | +1.57σ | 
+| honest p95 | 0.2000 | the 95th percentile of honest client-rounds. Fixes the false-positive rate at 5% by construction -- no distributional assumption at all. | 9.9% | +2.12σ | 
+| adaptive sigma-clip (kept 0.98) | 0.2242 | iteratively drop points above mu+3*sigma and recompute until stable, then mu+3*sigma on what survives. Excludes the hard-class tail from its own calibration. | 2.4% | +2.45σ | 
+| loose (mu+3s over PER-CLIENT BER) | 0.2644 | mu and sigma of individual client-round BERs -- no averaging over clients. This is the ONLY variant whose sigma matches the population the test is applied to. Roughly sqrt(N) larger than 'coded'. | 2.4% | +3.00σ | 
+| honest p99 | 0.3000 | the 99th percentile. Targets 1% FPR. | 2.4% | +3.48σ | 
 
-**Note:** The paper's rule ("coded", orange) lands at **η = 0.084 with FPR 31%** and **+0.55σ of headroom** - stricter threshold than the 3σ. 
-To follow 3σ, implement the "loose" (pink, η = 0.264) threshold, which computes σ on individual clients instead of on the mean-over-clients. Summary from the table:
+Summary from the table:
 
 | rule | η | headroom | honest FPR |
 |---|---|---|---|
@@ -386,12 +374,28 @@ TODO: verify the threshold implementations and calculations - add more if they m
 |---|---|---|
 | F1 | honest, 200 clients, MORE ROUNDS (100), 3 seeds | capacity — but needs enough rounds to train |
 | F2 | reduced, 200cl, classes 6,7, 3 seeds | forced class-sharing overlap |
+| F3 | table IX reproduction from FareMark paper | prove the settings are correct and match with the paper |
 
 **Group G — detection policy TODO later**
 consequence of crossing η, k-warnings-before-flag, detection window ?
 
-- MEETING NOTES
+**Group H - baselines**
+- BASELINE RUNS:
+    - !!! setup of the experiments to show the baseline setup runs and matches the paper - explain what the experiments are and why they are important
+    - !!! plot of the baseline runs results and their variance over the seeds
+    - !!! baseline runs include: 
+        - all honest clients (CIFAR-10 and CIFAR-100)
+        - free-rider with previous model attack
+        - free-rider with gaussian noise attack
+        - table IX (more clients than classes) 
 
+- MEETING NOTES
+    - define a generic setting for the experiments where watermarking is in the output layer and then show that it is impossible to have a free-rider that can be detected with this watermarking
+    - check related works - find more flawed mechanism (find earlier works)
+    - TODO: build the submarine attack and see if it can break the detection mechanism - play around with the settings. see how quick you dip and how quick you recover.
+    - keep a high and low threshold generic for now - can be done later
+    - try trigger samples only and see about reproducing the paper table V
+    - non-iidt
 
 - TODO
     - leftover
@@ -418,6 +422,13 @@ consequence of crossing η, k-warnings-before-flag, detection window ?
             - hint of solution?
             - show impossible?
 
+TODO:
+- [x] review all the new code and make sure everything is correct 
+2. check the new expeirments and what is left to run - reduce as much as possible 
+3. launch the new jobs once the previous one is done running - make sure its the faster version now
+4. analyse the graphs from previous runs - cleanup status and plan and send prelim results to slack
+5. read related papers linked
+- [x] cleanup codebase
 
 ---
 ---

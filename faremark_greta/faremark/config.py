@@ -77,6 +77,7 @@ class ExpConfig:
     # [SUBMARINE-ONLY, DISABLED] autop_safety: float = 0.02              # TODO hardcoded guard: should be DERIVED from estimation uncertainty, not fixed
     # [SUBMARINE-ONLY, DISABLED] autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
     # [SUBMARINE-ONLY, DISABLED] autop_floor: float = 0.05               # "mark is good" bar
+    autop_trigger_train_n: int = -1         # TABLE V: num of trigger imgs trained on
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
     autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
                                             # -1/0 = all of them; K>0 = K randomly chosen classes.
@@ -88,6 +89,25 @@ class ExpConfig:
     # [SUBMARINE-ONLY, DISABLED] autop_holdout_ratio: float = 0.5        # fraction of trigger imgs reserved for the self-probe
     # [SUBMARINE-ONLY, DISABLED] autop_honest_clone: bool = False        # embed via the exact honest path every round
     #     # (control: shows the ~0.11 floor is the position, not the embedder)
+
+    # ---- adaptive tap free-rider  (attack="adaptive_tap")  ----
+    # FR that trains only on rounds when its own BER nears the estimated eta (submarine)
+    tap_eta_source: str = "oracle"   # which eta the FR aims under: "oracle" = the true server eta
+                                     # (wm_eta_fixed / autop_oracle_eta, for controlled tests);
+                                     # "self" = the FR estimates it from its OWN calib-window probe BER
+    tap_eta_k: float = 3.0           # self mode: eta_hat = mu + k*sigma over the FR's own calib probe BERs
+    tap_margin: float = 0.02         # aim this far below eta:  target = eta - margin
+    tap_when: str = "threshold"      # when to tap: "threshold" (tap iff probe BER > target, else coast),
+                                     # "always" (tap every post-warmup round), "every_k" (tap every tap_period)
+    tap_period: int = 1              # period P for tap_when="every_k"
+    tap_max_coast: int = 999         # force a tap after this many consecutive coasts (safety cap)
+    tap_data_cpc: int = 5            # amount of data per tap: images/common-class (-1 full shard, 0 trigger-only, N=+N)
+    tap_scope: str = "full"          # model scope a tap trains: "full" | "block2" (last 20 tensors) |
+                                     # "block" (last 8) | "head" (last 2). Backbone frozen => cheaper tap
+    tap_coast_mode: str = "resend"   # how the FR free-rides between taps: "resend" = submit the global
+                                     # unchanged (zero compute); "decay" = resend its own last tapped
+                                     # weights (mark fades slower, but it submits stale weights)
+    tap_probe_holdout: int = 64      # held-out trigger images for the FR's self-BER probe (generalisation)
 
     # ---- watermarking ----
     watermark: bool = False

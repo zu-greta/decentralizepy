@@ -92,6 +92,18 @@ GREY = OK.get("grey", "#888888")
 BLACK = OK.get("black", "#000000")
 TAIL = 20   # "converged" window = last N rounds
 
+# Two canonical detection thresholds kept for reference and drawn on EVERY timeline:
+#   ETA_TIGHT = the frozen aggressive line the server actually used (WM_ETA_FIXED, ~0.064,
+#               below 1/m so degenerate: "flag if >= 1 bit wrong").
+#   ETA_LOOSE = the loosest sane deployable rule = POOLED mu+3sigma over honest round-means
+#               (~0.264, non-degenerate). If honest runs are passed via --honest_in the loose
+#               line is recomputed from them (detection.py 'pooled'); otherwise this default
+#               is used. Override either with --eta_tight / --eta_loose.
+ETA_TIGHT_DEFAULT = 0.064
+ETA_LOOSE_DEFAULT = 0.264   # loose reference = per-client mu+3s (true 3-sigma, ~2% honest FPR).
+                            # (was 0.264 pooled round-means; switched to the lenient per-client
+                            # bound so the timelines bracket 0.064 aggressive .. 0.264 lenient.)
+
 
 # ---------------------------------------------------------------- io / helpers
 def load(globs):
@@ -926,9 +938,30 @@ def timeline(a):
         eta_cal = float(cfg_fixed)
     else:
         eta_cal = E.get("eta_fixed")
-    if eta_cal is not None:
-        ax.axhline(eta_cal, color=BLACK, ls="--", lw=2.2,
-                   label=f"calibrated η (detection threshold) = {eta_cal:.3f}")
+    # tight (frozen) eta -- what the server actually used
+    eta_tight = getattr(a, "eta_tight", None)
+    if eta_tight is None:
+        eta_tight = eta_cal if eta_cal is not None else ETA_TIGHT_DEFAULT
+    if eta_tight is not None:
+        ax.axhline(eta_tight, color=BLACK, ls="--", lw=2.2,
+                   label=f"η tight (frozen, used) = {eta_tight:.3f}")
+
+    # loose (pooled) eta -- the loosest sane deployable rule; drawn on EVERY timeline.
+    # Recompute pooled mu+3s over honest round-means from --honest_in when available.
+    eta_loose = getattr(a, "eta_loose", None)
+    if eta_loose is None and getattr(a, "honest_in", None):
+        try:
+            href2 = [r for r in load(a.honest_in) if th.is_honest_run(r)
+                     and (a.honest_family is None or fam(r) == a.honest_family)]
+            rms = converged_roundmeans(href2, tail=getattr(a, "tail", TAIL))
+            if len(rms):
+                eta_loose = mu3s(rms)
+        except Exception:
+            eta_loose = None
+    if eta_loose is None:
+        eta_loose = ETA_LOOSE_DEFAULT
+    ax.axhline(eta_loose, color="#3B6FB5", ls=(0, (5, 2)), lw=2.0,
+               label=f"η loose (pooled μ+3σ) = {eta_loose:.3f}")
 
     # --- OVERLAY: honest floor for the free-rider's OWN trigger classes ---------
     # Read the FR line against an honest client at the SAME class, not the honest
@@ -974,8 +1007,8 @@ def timeline(a):
     ax.set_title(a.title or f"BER vs round  ·  {fam(r_ref)}  ·  cpc={lvl(r_ref)}  ·  {agg_seed_str}")
     ax.legend(loc="upper right", fontsize=7.5, ncol=2)
 
-    note = ("Dashed line = the calibrated detection threshold η (frozen constant the server used, "
-            "WM_ETA_FIXED).\nA free-rider whose BER stays below it is not flagged. "
+    note = ("Black dashed = tight η (frozen, WM_ETA_FIXED, ~0.064, degenerate). Blue dashed = loose "
+            "η (pooled μ+3σ, ~0.264).\nA free-rider whose BER stays below a line is not flagged by it. "
             "Warmup (yellow) = forced-honest; green = calibration window; grey dashed = free-riding starts.")
     ax.text(0.005, -0.18, note, transform=ax.transAxes, fontsize=8.5, color=GREY)
     ps.finish(fig, a.out + ".png")
@@ -1705,22 +1738,44 @@ def sweep_plot(a):
     """
     tail = getattr(a, "tail", None) or TAIL
     runs = load(a.inp)
-    # collect sweep runs: manifest.sweep_var == common_per_class
+    # collect sweep runs. The +N level normally lives in manifest.sweep_var/
+    # sweep_level, but older/renamed runs encode it only in the family-name suffix
+    # `_n<val>` (e.g. D1_reduced_c100_c36_n5, _n-1 = full shard). Recover it either
+    # way so a completed batch never needs re-running just to plot.
+    import re as _re
+
+    def _sweep_level(man):
+        # 1) explicit manifest field (paper-faithful path)
+        if man.get("sweep_var") == "common_per_class":
+            try:
+                return int(man.get("sweep_level"))
+            except (TypeError, ValueError):
+                pass
+        # 2) fall back to the `_n<val>` suffix on the family name
+        mobj = _re.search(r"_n(-?\d+)$", man.get("family") or "")
+        return int(mobj.group(1)) if mobj else None
+
+    # which families to include: explicit --families list, else --family as a prefix,
+    # else any family that carries an `_n<val>` sweep suffix.
+    want = set(a.families) if getattr(a, "families", None) else None
+    prefix = a.family if (want is None and a.family) else None
+
     byN = defaultdict(list)
     for r in runs:
         man = r.get("manifest", {}) or {}
-        if man.get("sweep_var") != "common_per_class":
+        family = man.get("family") or ""
+        if want is not None and family not in want:
             continue
-        if a.family and not (man.get("family") or "").startswith(a.family):
+        if prefix is not None and not family.startswith(prefix):
             continue
-        try:
-            n = int(man.get("sweep_level"))
-        except (TypeError, ValueError):
+        n = _sweep_level(man)
+        if n is None:
             continue
         byN[n].append(r)
     if not byN:
-        print("no +N sweep runs found (need manifest.sweep_var=common_per_class). "
-              "run:  ./run_all.sh sweep"); return
+        print("no +N sweep runs found: need either manifest.sweep_var=common_per_class "
+              "or a family name ending in `_n<val>` (e.g. D1_reduced_c100_c36_n5). "
+              "Pass the members via --families or a common prefix via --family."); return
 
     Ns = sorted(byN)                      # -1 sorts first; move it to the end as the anchor
     order = [n for n in Ns if n >= 0] + [n for n in Ns if n < 0]
@@ -1759,7 +1814,13 @@ def sweep_plot(a):
             if v: vals.append(float(v))
         return float(np.mean(vals)) if vals else float("nan")
 
-    fig, (ax1, ax2, ax3) = stacked_panels(3, figsize=(11, 10), height_ratios=[1.2, 1, 1])
+    import matplotlib.gridspec as _gridspec
+    fig = plt.figure(figsize=(11, 10))
+    # _gs = _gridspec.GridSpec(3, 1, height_ratios=[1.2, 1, 1], hspace=0.55)
+    _gs = _gridspec.GridSpec(2, 1, height_ratios=[1.2, 1], hspace=0.55)
+    ax1 = fig.add_subplot(_gs[0])
+    ax2 = fig.add_subplot(_gs[1])   # NOT sharex -- categorical axis
+    # ax3 = fig.add_subplot(_gs[2])   # NOT sharex -- categorical axis
     cmap = plt.get_cmap("viridis")
     lab = lambda n: ("full shard" if n < 0 else ("triggers only" if n == 0 else f"+{n}/class"))
 
@@ -1771,13 +1832,18 @@ def sweep_plot(a):
         ax1.plot(rds, [ser[r] for r in rds], lw=2,
                  ls="--" if n < 0 else "-", color=col,
                  label=f"{lab(n)}  (n={len(byN[n])} seeds)")
-    hon = conv_hon_ber([r for rs in byN.values() for r in rs])
-    if hon == hon:
-        ax1.axhline(hon, color=C_HONEST, ls=":", lw=2, label=f"honest floor {hon:.3f}")
-    if getattr(a, "eta", None) is not None:
-        ax1.axhline(a.eta, color=OK["black"], ls="--", lw=2, label=f"η = {a.eta:.3f}")
+    # Two DEPLOYABLE thresholds instead of the (misleading) honest floor. The honest floor
+    # here averaged the EASY non-free-rider clients, which understates honest BER at the hard
+    # class the FR sits on. The tight/loose η are the same two lines every timeline uses, so
+    # the reader can see the FR sits BETWEEN them: above η_tight (which also flags many honest
+    # clients) but below η_loose (the low-false-alarm line a server would actually deploy).
+    eta_t = a.eta_tight if getattr(a, "eta_tight", None) is not None else \
+            (a.eta if getattr(a, "eta", None) is not None else ETA_TIGHT_DEFAULT)
+    eta_l = a.eta_loose if getattr(a, "eta_loose", None) is not None else ETA_LOOSE_DEFAULT
+    ax1.axhline(eta_t, color=OK["black"], ls="--", lw=2, label=f"η tight = {eta_t:.3f}")
+    ax1.axhline(eta_l, color="#3B6FB5", ls=(0, (5, 2)), lw=2, label=f"η loose = {eta_l:.3f}")
     ax1.set_ylabel("free-rider BER")
-    ax1.set_title("Free-riding spectrum — BER over rounds for each data budget")
+    ax1.set_title("Free-rider BER over rounds, per data budget")
     ax1.legend(fontsize=8, ncol=2, loc="upper right")
 
     xs = list(range(len(order)))
@@ -1785,27 +1851,286 @@ def sweep_plot(a):
     sds = [conv_fr_ber(byN[n])[1] for n in order]
     ax2.errorbar(xs, mus, yerr=sds, marker="o", lw=2, color=C_FR, capsize=3,
                  label="free-rider (converged)")
-    if hon == hon:
-        ax2.axhline(hon, color=C_HONEST, ls=":", lw=2, label="honest floor")
-    if getattr(a, "eta", None) is not None:
-        ax2.axhline(a.eta, color=OK["black"], ls="--", lw=2, label="η (flagged above)")
-    ax2.set_xticks(xs); ax2.set_xticklabels([lab(n) for n in order], fontsize=8, rotation=20)
+    ax2.axhline(eta_t, color=OK["black"], ls="--", lw=2, label=f"η tight = {eta_t:.3f}")
+    ax2.axhline(eta_l, color="#3B6FB5", ls=(0, (5, 2)), lw=2, label=f"η loose = {eta_l:.3f}")
+    ax2.set_xlim(-0.5, len(order) - 0.5)
+    ax2.set_xticks(xs)
+    ax2.set_xticklabels([lab(n) for n in order], fontsize=9, rotation=30, ha="right")
     ax2.set_ylabel("converged BER")
-    ax2.set_title("Converged BER vs data budget — where does the free-rider stop being caught?")
+    ax2.set_title("Converged free-rider BER vs data budget")
     ax2.legend(fontsize=8)
 
-    sm = [fr_samples(byN[n]) for n in order]
-    ax3.bar(xs, sm, color=OK["blue"])
-    ax3.set_xticks(xs); ax3.set_xticklabels([lab(n) for n in order], fontsize=8, rotation=20)
-    ax3.set_ylabel("free-rider samples / round")
-    ax3.set_title("Actual effort spent (device-independent)")
+    # NOTE: skip the third panel graph
+    # sm = [fr_samples(byN[n]) for n in order]
+    # ax3.bar(xs, sm, color=OK["blue"], width=0.7)
+    # ax3.set_xlim(-0.5, len(order) - 0.5)
+    # ax3.set_xticks(xs)
+    # ax3.set_xticklabels([lab(n) for n in order], fontsize=9, rotation=30, ha="right")
+    # ax3.set_ylabel("free-rider samples / round")
+    # ax3.set_title("Actual effort spent (device-independent)")
     out = a.out if str(a.out).endswith(".png") else a.out + ".png"
     finish(fig, out)
     for n, m in zip(order, mus):
         print(f"  {lab(n):>16}: converged FR BER = {m:.4f}")
 
 
+# ===========================================================================
+#  operating_point -- the "no threshold works" plot.
+#  For a single GLOBAL honest-calibrated eta at each FPR budget, what recall does
+#  each attack family get? 
+# ===========================================================================
+def _pc_bers(runs, free_rider, tail, trigger_class=None):
+    """flat per-client BER list over the tail rounds (honest or FR)."""
+    out = []
+    for r in runs:
+        h = r.get("history", []) or []
+        for rec in (h[-tail:] if tail else h):
+            for p in (rec.get("wm_per_client") or []):
+                if bool(p.get("is_free_rider")) != bool(free_rider):
+                    continue
+                if trigger_class is not None and int(p.get("trigger_class", -1)) != int(trigger_class):
+                    continue
+                if p.get("ber") is not None:
+                    out.append(float(p["ber"]))
+    return out
+
+
+def _fr_class(runs):
+    """the trigger class the free-rider(s) sit on in an attack family."""
+    for r in runs:
+        for rec in reversed(r.get("history", []) or []):
+            for p in (rec.get("wm_per_client") or []):
+                if p.get("is_free_rider") and p.get("trigger_class") is not None:
+                    return int(p["trigger_class"])
+    return None
+
+
+def _eta_for_fpr(H, budget):
+    """smallest eta with honest FPR = P(H>=eta) <= budget; returns (eta, actual_fpr)."""
+    if not H:
+        return None, None
+    cand = sorted(set(H) | {0.0, 1.0})
+    best = (1.0, 0.0)
+    for e in cand:
+        fpr = float(np.mean([h >= e for h in H]))
+        if fpr <= budget:
+            return e, fpr
+        best = (e, fpr)
+    return best
+
+
+def operating_point(a):
+    runs = load(a.inp)
+    hon = [r for r in pick(runs, a.honest_family)]
+    if not hon:
+        raise SystemExit(f"no honest runs for --honest_family {a.honest_family}")
+    fams = a.families or []
+    if not fams:
+        raise SystemExit("pass --families A2_... A3_... [H3_... for contrast]")
+    budgets = [0.01, 0.05, 0.10]
+    H = _pc_bers(hon, free_rider=False, tail=a.tail)              # global honest pool
+    etas = {b: _eta_for_fpr(H, b) for b in budgets}
+
+    rows = []            # (family, fr_class, {budget: (recall_global, recall_perclass)})
+    for f in fams:
+        ar = pick(runs, f)
+        if not ar:
+            print(f"  (skip {f} -- no runs)"); continue
+        c = _fr_class(ar)
+        F = _pc_bers(ar, free_rider=True, tail=a.tail)
+        Hc = _pc_bers(hon, free_rider=False, tail=a.tail, trigger_class=c) if c is not None else []
+        rec = {}
+        for b in budgets:
+            eg, _ = etas[b]
+            rg = float(np.mean([x >= eg for x in F])) if F else float("nan")
+            # per-class oracle eta (calibrated only on honest clients of the FR's class)
+            ec, _ = _eta_for_fpr(Hc, b) if Hc else (None, None)
+            rc = (float(np.mean([x >= ec for x in F])) if (F and ec is not None) else float("nan"))
+            rec[b] = (rg, rc)
+        rows.append((f, c, rec))
+
+    # ---- figure: grouped horizontal bars, recall per family per FPR budget ----
+    fig, ax = plt.subplots(figsize=(10, 0.7 * len(rows) + 2.2))
+    ys = np.arange(len(rows))
+    hgt = 0.8 / len(budgets)
+    cols = [ps.OKABE["red"], ps.OKABE["orange"], ps.OKABE["yellow"]]
+    for i, b in enumerate(budgets):
+        vals = [r[2][b][0] for r in rows]
+        eg, af = etas[b]
+        ax.barh(ys + (i - (len(budgets) - 1) / 2) * hgt, vals, height=hgt,
+                color=cols[i % len(cols)], edgecolor="black", linewidth=0.4,
+                label=f"honest FPR\u2264{int(b*100)}%  (\u03b7={eg:.2f}, actual {af:.0%})")
+    ax.set_yticks(ys)
+    ax.set_yticklabels([f"{r[0].split('_')[0]}  (cls {r[1]})" for r in rows])
+    ax.set_xlim(0, 1.0)
+    ax.set_xlabel("free-rider recall  (fraction of free-riders caught)")
+    ax.set_title("Recall at a fixed honest false-positive budget\n"
+                 "one deployable \u03b7 per budget \u2014 no line catches the insiders")
+    ax.axvline(0.9, color="0.5", ls=":", lw=1, zorder=0)
+    ax.text(0.9, len(rows) - 0.4, " target 0.9", color="0.4", fontsize=8, va="top")
+    ax.grid(axis="x", alpha=.3); ax.legend(fontsize=8, loc="lower right", framealpha=.95)
+    out = a.out if str(a.out).endswith(".png") else str(a.out) + ".png"
+    ps.finish(fig, out)
+
+    # ---- paste-ready table (global + per-class oracle) ----
+    lines = ["# Operating points \u2014 recall at fixed honest FPR", "",
+             f"- honest family: `{a.honest_family}`  ({len(hon)} run(s), tail {a.tail})",
+             "- eta per budget (global honest pool): "
+             + ", ".join(f"{int(b*100)}%\u2192\u03b7={etas[b][0]:.3f}" for b in budgets),
+             "- **global** = one deployable eta for all classes; **per-class** = oracle eta "
+             "calibrated on honest clients of the FR's own class (upper bound).", "",
+             "| family | FR class | " + " | ".join(f"recall@{int(b*100)}%" for b in budgets)
+             + " | " + " | ".join(f"perclass@{int(b*100)}%" for b in budgets) + " |",
+             "|---|---|" + "---|" * (2 * len(budgets))]
+    for f, c, rec in rows:
+        g = " | ".join(f"{rec[b][0]:.2f}" for b in budgets)
+        pc = " | ".join(("-" if np.isnan(rec[b][1]) else f"{rec[b][1]:.2f}") for b in budgets)
+        lines.append(f"| {f} | {c} | {g} | {pc} |")
+    lines += ["", "**Read:** at any usable FPR the insider recall stays low; the only families "
+              "near 1.0 are the crude paper baselines (previous-models / gaussian). Even the "
+              "per-class oracle (which the server cannot actually run) barely moves it."]
+    md = out[:-4] + ".md"
+    open(md, "w").write("\n".join(lines))
+    print("wrote", md)
+
+
+# ===========================================================================
+#  tap_dynamics -- fade & recovery from the adaptive-tap trace.
+#  Reads compute.per_client[fr].trace ({round, action, ber_before, ber_after,
+#  target}). ONE family -> a trace plot (see a tap dip and the coast climb).
+#  MANY families -> the stealth frontier: tap_fraction (compute spent) vs
+#  rounds-between-taps (how long a tap lasts).
+# ===========================================================================
+def _fr_traces(run):
+    """-> list of (cid, trace_list) for every free-rider in a run."""
+    out = []
+    comp = ((run.get("compute", {}) or {}).get("per_client", {}) or {})
+    for cid, c in comp.items():
+        if c.get("is_free_rider") and c.get("trace"):
+            out.append((cid, c["trace"]))
+    return out
+
+
+def _tap_stats(trace):
+    """fade/recovery numbers from one free-rider's trace."""
+    fr = [t for t in trace if t.get("action") in ("tap", "coast")]
+    if not fr:
+        return None
+    taps = [t["round"] for t in fr if t.get("action") == "tap"]
+    n_tap = len(taps); n_coast = sum(1 for t in fr if t.get("action") == "coast")
+    n = n_tap + n_coast
+    gaps = [taps[i + 1] - taps[i] for i in range(len(taps) - 1)]   # rounds between taps
+    drops = [t["ber_before"] - t["ber_after"] for t in fr
+             if t.get("action") == "tap" and t.get("ber_before") is not None
+             and t.get("ber_after") is not None]
+    # fade slope: BER rise between CONSECUTIVE coasts only (a tap resets the run,
+    # so the post-tap drop must not count as "fade").
+    rises = []
+    prev = None
+    for t in fr:
+        if t.get("action") == "coast" and t.get("ber_before") is not None:
+            if prev is not None:
+                rises.append(t["ber_before"] - prev)
+            prev = t["ber_before"]
+        else:
+            prev = None                      # tap breaks the coast run
+    targ = next((t.get("target") for t in fr if t.get("target") is not None), None)
+    below = [t.get("ber_before") for t in fr if t.get("ber_before") is not None]
+    stay = (float(np.mean([b <= (targ if targ is not None else 1) for b in below]))
+            if below else float("nan"))
+    return {
+        "n_freeride": n, "n_taps": n_tap, "n_coasts": n_coast,
+        "tap_fraction": (n_tap / n) if n else float("nan"),        # compute actually spent
+        "rounds_between_taps": (float(np.mean(gaps)) if gaps else float("nan")),  # a tap's lifetime
+        "ber_drop_per_tap": (float(np.mean(drops)) if drops else float("nan")),   # recovery magnitude
+        "fade_per_coast": (float(np.mean(rises)) if rises else 0.0),              # climb while coasting
+        "stayed_below_target": stay,
+    }
+
+
+def tap_dynamics(a):
+    runs = load(a.inp)
+    fams = a.families or ([a.family] if a.family else None)
+    if not fams:
+        raise SystemExit("pass --family <adaptive_tap fam> or --families f1 f2 ...")
+
+    # aggregate stats per family
+    table = {}
+    for f in fams:
+        rr = pick(runs, f)
+        st = [s for r in rr for _, tr in _fr_traces(r) if (s := _tap_stats(tr))]
+        if not st:
+            print(f"  (skip {f} -- no adaptive-tap trace)"); continue
+        agg = {k: float(np.nanmean([s[k] for s in st])) for k in st[0]}
+        table[f] = agg
+
+    if not table:
+        raise SystemExit("no traces found (are these adaptive_tap runs?)")
+
+    out = a.out if str(a.out).endswith(".png") else str(a.out) + ".png"
+    if len(table) == 1:
+        # --- single family: draw the actual BER trace with taps & coasts ---
+        f = next(iter(table)); rr = pick(runs, f)
+        tr = _fr_traces(rr[0])[0][1]
+        fr = [t for t in tr if t.get("action") in ("tap", "coast")]
+        xs = [t["round"] for t in fr]
+        yb = [t.get("ber_before") for t in fr]
+        targ = next((t.get("target") for t in fr if t.get("target") is not None), None)
+        eta = next((t.get("eta_frozen") for t in fr if t.get("eta_frozen") is not None), None)
+        fig, ax = plt.subplots(figsize=(12, 5))
+        ax.plot(xs, yb, color=ps.OKABE["red"], lw=1.8, marker="o", ms=3,
+                label="free-rider BER (before acting)")
+        tapx = [t["round"] for t in fr if t.get("action") == "tap"]
+        tapy = [t.get("ber_after") for t in fr if t.get("action") == "tap"]
+        ax.scatter(tapx, tapy, marker="v", s=60, color=ps.OKABE["blue"], zorder=5,
+                   label="tap (BER after re-embed)")
+        if targ is not None:
+            ax.axhline(targ, color="0.4", ls="--", lw=1.2, label=f"target (\u03b7\u2212margin) = {targ:.3f}")
+        if eta is not None:
+            ax.axhline(eta, color="black", ls="--", lw=1.6, label=f"\u03b7 = {eta:.3f}")
+        s = table[f]
+        cap = (f"tap fraction {s['tap_fraction']:.0%} of rounds  \u00b7  a tap lasts "
+               f"~{s['rounds_between_taps']:.1f} rounds  \u00b7  drop/tap {s['ber_drop_per_tap']:.3f}  "
+               f"\u00b7  fade +{s['fade_per_coast']:.3f}/coast")
+        ax.set_title(f"Adaptive-tap dynamics  \u00b7  {f.split('_rep')[0]}\n{cap}")
+        ax.set_xlabel("communication round"); ax.set_ylabel("bit-error-rate")
+        ax.grid(alpha=.3); ax.legend(fontsize=8, loc="upper right")
+        ps.finish(fig, out)
+    else:
+        # --- many families: the stealth frontier (compute vs persistence) ---
+        fig, ax = plt.subplots(figsize=(9, 6))
+        for i, (f, s) in enumerate(sorted(table.items())):
+            ax.scatter(s["tap_fraction"], s["rounds_between_taps"],
+                       s=90, color=ps.CYCLE[i % len(ps.CYCLE)], edgecolor="black", zorder=5)
+            ax.annotate(f.split("_c")[0].replace("I_", "").replace("J_", ""),
+                        (s["tap_fraction"], s["rounds_between_taps"]),
+                        fontsize=8, xytext=(4, 3), textcoords="offset points")
+        ax.set_xlabel("tap fraction  (compute actually spent; 1.0 = trains every round)")
+        ax.set_ylabel("rounds a tap lasts  (mark persistence)")
+        ax.set_title("Adaptive free-rider stealth frontier\nlower-left & higher = cheaper and longer-lived")
+        ax.grid(alpha=.3)
+        ps.finish(fig, out)
+
+    # --- table ---
+    ks = ["n_freeride", "tap_fraction", "rounds_between_taps", "ber_drop_per_tap",
+          "fade_per_coast", "stayed_below_target"]
+    lines = ["# Adaptive-tap dynamics", "",
+             "- **tap_fraction** = compute the FR actually spent (fraction of freeride rounds it trained)",
+             "- **rounds_between_taps** = how many rounds one tap keeps the mark under target (fade time)",
+             "- **ber_drop_per_tap** = how far one tap pushes BER down (recovery magnitude)",
+             "- **fade_per_coast** = BER rise per coasting round  \u00b7  **stayed_below_target** = safety", "",
+             "| family | " + " | ".join(ks) + " |", "|---|" + "---|" * len(ks)]
+    for f, s in sorted(table.items()):
+        lines.append("| " + f.split("_rep")[0] + " | "
+                     + " | ".join(f"{s[k]:.3f}" for k in ks) + " |")
+    md = out[:-4] + ".md"
+    open(md, "w").write("\n".join(lines))
+    print("wrote", md)
+
+
 CMDS = {
+    "operating_point": operating_point,    # NEW: recall @ fixed honest FPR across attacks (the money plot)
+    "tap_dynamics": tap_dynamics,          # NEW: fade/recovery + stealth frontier from the tap trace
     "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
     "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)
@@ -1845,6 +2170,12 @@ if __name__ == "__main__":
         s.add_argument("--scope", default=None)
         s.add_argument("--tail", type=int, default=TAIL)
         s.add_argument("--eta", type=float, default=None)
+        s.add_argument("--eta_tight", type=float, default=None,
+                       help="tight (frozen) eta line on timelines; default = the run's "
+                            "WM_ETA_FIXED, else ETA_TIGHT_DEFAULT.")
+        s.add_argument("--eta_loose", type=float, default=None,
+                       help="loose (pooled) eta line on timelines; default = pooled mu+3s "
+                            "recomputed from --honest_in, else ETA_LOOSE_DEFAULT.")
         s.add_argument("--classes", default=None,
                        help="comma list to restrict trigger classes (honest_lines).")
         s.add_argument("--per-seed", dest="per_seed", action="store_true",

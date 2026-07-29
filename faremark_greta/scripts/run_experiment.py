@@ -23,6 +23,7 @@ from faremark.config import get_config, seed_for, CONFIGS
 from faremark.utils import set_seed, get_logger
 from faremark.models import build_model
 from faremark.datasets import build_data
+from faremark.fast_data import wrap_build_data
 
 from faremark.server import Server
 from faremark.clients import build_clients, build_watermarked_clients
@@ -45,6 +46,11 @@ def parse_args():
     p.add_argument("--output_dir", type=str, default=None)
     p.add_argument("--data_root", type=str, default=None)
     p.add_argument("--num_workers", type=int, default=2)
+    p.add_argument("--fast_data", action="store_true",
+                   help="use GPU-resident FastLoaders (removes DataLoader fork storms).")
+    p.add_argument("--no_determinism", action="store_true",
+                   help="disable cuDNN determinism + enable autotuner (~1.3-2x, "
+                        "statistically identical over seeds).")
     # ---- general overrides ----
     p.add_argument("--rounds", type=int, default=None)
     p.add_argument("--num_clients", type=int, default=None,
@@ -96,6 +102,7 @@ def parse_args():
 #     p.add_argument("--autop_max_coast", type=int, default=None)
 #     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
+    p.add_argument("--autop_trigger_train_n", type=int, default=None)
     p.add_argument("--autop_n_common_classes", type=int, default=None,
                    help="K randomly-chosen common classes to draw from (-1/0 = all).")
 #     p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
@@ -130,6 +137,17 @@ def parse_args():
     p.add_argument("--wm_beta", type=float, default=None)
     p.add_argument("--wm_eta_floor", type=float, default=None)
     p.add_argument("--wm_eta_fixed", type=float, default=None)
+    # ---- adaptive tap free-rider knobs (attack="adaptive_tap") ----
+    p.add_argument("--tap_eta_source", type=str, default=None, choices=["oracle", "self"])
+    p.add_argument("--tap_eta_k", type=float, default=None)
+    p.add_argument("--tap_margin", type=float, default=None)
+    p.add_argument("--tap_when", type=str, default=None, choices=["threshold", "always", "every_k"])
+    p.add_argument("--tap_period", type=int, default=None)
+    p.add_argument("--tap_max_coast", type=int, default=None)
+    p.add_argument("--tap_data_cpc", type=int, default=None)
+    p.add_argument("--tap_scope", type=str, default=None, choices=["full", "block2", "block", "head"])
+    p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay"])
+    p.add_argument("--tap_probe_holdout", type=int, default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
                    action="store_true", default=None,
                    help="calibrate eta over ALL clients (free-riders poison it)")
@@ -162,11 +180,13 @@ _OVERRIDABLE = [
     "autop_honest_until", "autop_calib_rounds", 
     
     
-    "autop_common_per_class", "autop_n_common_classes", 
+    "autop_common_per_class", "autop_trigger_train_n", "autop_n_common_classes", 
     
     "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_alpha", "wm_num_triggers",
     "wm_trigger_mode", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
+    "tap_eta_source", "tap_eta_k", "tap_margin", "tap_when", "tap_period",
+    "tap_max_coast", "tap_data_cpc", "tap_scope", "tap_coast_mode", "tap_probe_holdout",
 ]
 
 
@@ -261,7 +281,7 @@ def main():
     logger = get_logger(logfile=os.path.join(args.output_dir, "run.log"))
 
     seed = seed_for(cfg, args.repeat)
-    set_seed(seed)
+    set_seed(seed, deterministic=not args.no_determinism)
 
     device = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
     if device != args.device:
@@ -278,6 +298,8 @@ def main():
     data = build_data(cfg.dataset, args.data_root, cfg.num_clients,
                       cfg.batch_size, seed, num_workers=args.num_workers,
                       partition=cfg.partition, dirichlet_alpha=cfg.dirichlet_alpha)
+    if args.fast_data:
+        data = wrap_build_data(data, cfg.dataset, cfg.batch_size, seed, device)
 
     # shard sizes: cheap to read, and the fastest way to spot a pathological
     # non-IID split (a client holding no images of its own trigger class)

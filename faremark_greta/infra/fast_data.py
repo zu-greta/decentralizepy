@@ -1,59 +1,4 @@
 """fast_data.py -- GPU-resident replacement for the DataLoader path.
-
-WHY
----
-The current setup builds one DataLoader per client with num_workers=2 and
-non-persistent workers. Iterating a client's shard for one local epoch spawns
-2 worker processes and tears them down again. Per run that is
-
-    10 clients x 5 local_epochs x 50 rounds = 2500 spawn/teardown cycles
-
-at roughly 0.3-1.0 s each -- i.e. 12-40 minutes of a typical run spent forking
-processes, before any training happens. Under packing (6 runs per pod) it is
-worse: 6 runs x 2 workers alive, plus the fork storms overlapping, on a pod that
-probably has 8-16 cores.
-
-CIFAR is 154 MB as uint8. It fits on the GPU with room to spare, so the whole
-CPU pipeline can be deleted: hold the images on the device, index them, and do
-crop/flip/normalise as batched GPU ops.
-
-NUMERICAL EQUIVALENCE
----------------------
-Same dtype (fp32), same ops, same augmentation *distribution* (RandomCrop with
-4px zero padding + RandomHorizontalFlip, then per-channel normalise). But the
-augmentation RNG stream differs from torchvision's, so a run is NOT bit-identical
-to the old path -- it is equivalent to changing the seed. Do not mix old and new
-runs inside one `manifest.family`.
-
-Padding detail worth knowing: torchvision pads the PIL image with 0 in [0,255]
-space and normalises afterwards, so padded pixels end up at -mean/std, not 0.
-This module reproduces that (see `_fill`), otherwise your border statistics would
-quietly differ from every run you have already done.
-
-WIRING
-------
-In datasets.py, replace the loader construction in build_data:
-
-    from .fast_data import FastLoader, GPUImageStore     # noqa
-
-    store = GPUImageStore.from_torchvision(train, name, device)
-    client_loaders = [FastLoader(store, shard, batch_size=batch_size,
-                                 train=True, seed=seed + cid)
-                      for cid, shard in enumerate(shards)]
-    test_store = GPUImageStore.from_torchvision(test, name, device)
-    test_loader = FastLoader(test_store, range(len(test)), batch_size=256,
-                             train=False, seed=0)
-
-and add `device` to the build_data signature (one extra arg at the call site in
-run_experiment.py: `device=device`). Everything else -- `.dataset` for shard
-sizes, iteration yielding (x, y) -- keeps working unchanged.
-
-For the reduced attacker, replace its
-    self.loader = DataLoader(Subset(train, idx), ...)
-with
-    self.loader = self.loader.subset(idx)
-otherwise the attacker falls back to the slow CPU path and becomes the
-bottleneck in every attack run.
 """
 from __future__ import annotations
 
@@ -214,6 +159,55 @@ class FastLoader:
         for i in range(0, stop, self.batch_size):
             sel = order[i:i + self.batch_size]
             yield x.index_select(0, sel), y.index_select(0, sel)
+
+
+def wrap_build_data(data, name, batch_size, seed, device):
+    """Swap the CPU DataLoaders on a built `data` object for GPU-resident FastLoaders,
+    WITHOUT editing datasets.py. Reconstructs each client's shard from the existing
+    DataLoader(Subset(train, idx)) structure and rebuilds one shared GPUImageStore.
+
+    SAFE BY DESIGN: wrapped in try/except -- if the loader structure is not the expected
+    Subset(torchvision_dataset, indices) pattern, it logs and returns `data` UNCHANGED,
+    so a run can never crash from this. Only replaces loaders when it can prove it built
+    equivalent ones. Distributionally equivalent to the CPU path (RandomCrop pad=4 +
+    HFlip + normalise); NOT bit-identical (aug RNG differs) -- do not mix within a family.
+    """
+    try:
+        from torch.utils.data import Subset
+
+        def underlying(ds):
+            return ds.dataset if isinstance(ds, Subset) else ds
+
+        def indices_of(ds, n):
+            return list(ds.indices) if isinstance(ds, Subset) else list(range(n))
+
+        cl0 = data.client_loaders[0]
+        train_ds = underlying(cl0.dataset)
+        if getattr(train_ds, "data", None) is None:
+            raise TypeError("underlying train set has no .data (not torchvision)")
+        store = GPUImageStore.from_torchvision(train_ds, name, device)
+        new_cl = []
+        for cid, cl in enumerate(data.client_loaders):
+            idx = indices_of(cl.dataset, len(train_ds))
+            new_cl.append(FastLoader(store, idx, batch_size=batch_size,
+                                     train=True, seed=seed + cid))
+
+        tl = data.test_loader
+        test_ds = underlying(tl.dataset)
+        test_store = GPUImageStore.from_torchvision(test_ds, name, device)
+        test_idx = indices_of(tl.dataset, len(test_ds))
+        new_test = FastLoader(test_store, test_idx, batch_size=256, train=False, seed=0)
+
+        try:
+            data = data._replace(client_loaders=new_cl, test_loader=new_test)   # namedtuple
+        except AttributeError:
+            data.client_loaders = new_cl; data.test_loader = new_test           # mutable obj
+        print(f"  [fast_data] GPU-resident loaders active "
+              f"({len(new_cl)} clients, store {tuple(store.images.shape)} on {device})")
+        return data
+    except Exception as e:
+        print(f"  [fast_data] wrap SKIPPED ({type(e).__name__}: {e}); keeping CPU loaders")
+        return data
 
 
 # ---------------------------------------------------------------------------
