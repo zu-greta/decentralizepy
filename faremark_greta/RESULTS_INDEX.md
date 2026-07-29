@@ -89,25 +89,15 @@ Numbers behind the +5 point. **Class 3:** FR 0.037 vs honest 0.057 (inseparable)
 ## Group E — non-IID (realistic label skew)  (3 seeds; α-sweep needs the int-cast fix)
 
 **What non-IID means and why it matters.** Real federated learning is **non-IID**: clients don't
-hold identical class mixes — each has a skewed subset. The Dirichlet parameter **α controls the
-skew: low α (0.1) = extreme skew** (each client sees few classes), **high α (1.0) ≈ balanced /
-near-IID.** Groups A and D use the clean IID case; group E asks whether the result survives the
-realistic skewed case.
+hold identical class mixes — each has a skewed subset. The Dirichlet parameter **α controls the skew: low α (0.1) = extreme skew** (each client sees few classes), **high α (1.0) ≈ balanced / near-IID.** 
 
-**Does non-IID help your argument? Yes — it strengthens it.** Under skew, honest clients' own
-watermarks embed *less cleanly*, so the **honest BER floor widens** and the detection threshold
-**η must rise** (0.064 → **0.161**) to keep false alarms down. A higher η = **more room for the
-free-rider to hide under.** So non-IID makes detection *harder*, not easier — and it shows the
-"insiders are invisible" result is **not an artifact of the clean lab setting**; it holds, and
+**Results.** Under skew, honest clients' own watermarks embed *less cleanly*, so the **honest BER floor widens** and the detection threshold **η must rise** (0.064 -> **0.161**) to keep false alarms down. A higher η = **more room for the free-rider to hide under.** So non-IID makes detection *harder*, not easier — and it shows the "insiders are invisible" result is **not an artifact of the clean lab setting**; it holds, and
 worsens, in the conditions real deployments actually face.
 
 ### [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png)
 
 Reduced free-rider (30 % data) under strong skew (α ≈ 0.1) and near-IID (α = 1.0). In both, η rises
-to 0.161 and the free-rider rides at ~0.11–0.13 — **below η the entire time → never flagged.**
-⚠ `E3_a03` came out byte-identical to `a01` (α likely int-cast, so 0.1 ≡ 0.3); it's dropped. You
-have two valid non-IID points, enough for the claim above; a full α *severity gradient* needs the
-int-cast fixed and a clean re-run.
+to 0.161 and the free-rider rides at ~0.11–0.13
 
 ---
 
