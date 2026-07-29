@@ -1,25 +1,8 @@
 # Results summary
 
-## How to read these plots (terms used everywhere)
-
-- **BER (bit-error-rate):** when the server checks a client's model with that client's secret
-  watermark key, BER = the fraction of watermark bits recovered *wrong*. **0 = the mark is
-  perfectly present** (the client trained and carried the watermark); **0.5 = a coin flip = no
-  detectable mark.** Low BER = strong watermark = the client did the work.
-- **The detection idea being tested:** a free-rider that doesn't really train should carry a
-  *weak* mark → *high* BER. So the server tries to catch free-riders by flagging any client whose
-  BER sits above a threshold **η**. The thesis is that this fails, because honest clients on hard
-  classes *also* have high BER, so no single η cleanly separates cheaters from honest clients.
-- **η tight = 0.064:** threshold at μ+3σ over the *round-mean* honest BER — the value the paper's
-  live detector approximates. It is low, so it also flags many honest clients (high false alarms).
-- **η loose = 0.264:** threshold at μ+3σ over *per-client* honest BER (the statistically honest
-  version) — the **low-false-alarm line a real server would actually deploy.**
-- A free-rider whose BER stays **below** a line is **not flagged** by that line.
-- On timelines: yellow = forced-honest warmup; green = the calibration window where η is frozen;
-  grey dashed = the round the client starts free-riding.
-
-Plot files live in `results/groups/figs/`. Full narrative + numbers are in STATUS_AND_PLAN.md
-(sections R7–R14).
+## Thresholds
+- **η tight = 0.064:** threshold at μ+3σ over the *round-mean* honest BER (run and calibrated as average over 10 seeds)
+- **η loose = 0.264:** threshold at μ+3σ over *per-client* honest BER 
 
 ---
 
@@ -64,7 +47,7 @@ no in-model conflict, see the iso plots below.*
 ### [iso_c1.png](results/groups/figs/iso_c1.png), [iso_c7.png](results/groups/figs/iso_c7.png) — easy classes, isolated
 
 "Isolated" = honest (from A1) and free-rider (from A2) read on the **same** trigger class but from
-**separate runs**, each the only client on that class → no two clients fighting over one class
+**separate runs**, each the only client on that class -> no two clients fighting over one class
 inside one model. At the *easy* classes 1 and 7 the free-rider's mark drops to **0.00 and stays
 there** — *cleaner than the honest client* — so no threshold separates them.
 
@@ -88,39 +71,20 @@ model, so not as strictly isolated as the A2/A3 pairs.)*
 
 ## Group D — +N free-riding spectrum: effort vs detectability  (3 seeds; +50 = 2 seeds)
 
-### [D1_spectrum.png](results/groups/figs/D1_spectrum.png) — the price-of-invisibility curve
+### [D1_spectrum.png](results/groups/figs/D1_spectrum.png) 
 
-> **Plot updated:** the misleading honest floor is removed; the two deployable thresholds
-> (η tight 0.064, η loose 0.264) are drawn instead, and titles simplified. **Re-render** with the
-> new `plots.py` (`./runbook.sh plot`, or the `sweep` line with `--eta_tight 0.064 --eta_loose
-> 0.264`). Layout preview:
-> [D1_spectrum_two_thresholds_demo_1seed.png](results/groups/figs/D1_spectrum_two_thresholds_demo_1seed.png).
-
-**Settings, and why they were chosen.** Two free-riders sit on **class 3 (easy** — honest BER floor
-~0.057**) and class 6 (hard** — honest floor ~0.114**)**. That pair is chosen deliberately to
-**span the difficulty range**, so one experiment shows both regimes at once. The x-axis is the
-free-rider's **data budget**: from *trigger-images only* (`triggers only`, the laziest attack),
-through *+N real images per class*, to a *full honest shard* (`full shard`, the 100 %-effort
-anchor — still a free-rider, so you can see maximal effort). The y-axis is the free-rider's
+**Settings.** Two free-riders sit on class 3 (easy — honest BER floor ~0.057) and class 6 (hard — honest floor ~0.114). The x-axis is the free-rider's data budget: from trigger-images only through +N random images per common class, to a full honest shard (100 % effort - basically an honest client). The y-axis is the free-rider's
 converged BER. Top panel = BER over rounds per budget; bottom panel = converged value per budget
 with error bars.
 
 **How it proves the point.**
-1. **Trigger-only overfits and is caught** (BER ≈ 0.44, above both η lines) — the positive control:
-   a genuinely lazy free-rider *is* detectable.
-2. But adding just **+1 real image per class (~24 % of honest effort)** collapses BER to a **flat
-   plateau (~0.11–0.13)** that *every* larger budget — including a full shard — also sits on.
-   **Watermark strength is decoupled from effort** above a trivial threshold: a client doing a
-   quarter of the work looks identical to one doing all of it.
-3. That plateau sits **below η loose (0.264)** — the line a server would actually deploy — so the
-   free-rider is **not flagged.** (It's above η tight 0.064, but η tight also flags many honest
-   clients, so it isn't usable — see the operating point.)
+1. **Trigger-only overfits and is caught** (BER ≈ 0.44, above both η lines) — the positive control: a lazy free-rider is detectable - as per the paper's table V.
+2. But adding just +1 real image per class (~24 % of honest effort) collapses BER to a flat plateau (~0.11–0.13) that every larger budget also sits on.
+3. That plateau sits below η loose (0.264) and stays around the range of honest client floor on those classes
 
 ### [D1_sep_n5.json](results/groups/figs/D1_sep_n5.json) — per-class separability at +5/class (≡ A3)
 
-Numbers behind the +5 point. **Class 3:** FR 0.037 vs honest 0.057, best balanced error **0.500** =
-*no threshold beats a coin* (inseparable). **Class 6:** FR 0.220 vs honest 0.114 — catchable, but
-only at a **40 % honest false-positive rate** (unusable).
+Numbers behind the +5 point. **Class 3:** FR 0.037 vs honest 0.057 (inseparable). **Class 6:** FR 0.220 vs honest 0.114 — catchable, but only at a **40 % honest false-positive rate** (unusable).
 
 ## Group E — non-IID (realistic label skew)  (3 seeds; α-sweep needs the int-cast fix)
 
