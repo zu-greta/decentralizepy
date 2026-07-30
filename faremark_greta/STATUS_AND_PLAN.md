@@ -659,6 +659,13 @@ baseline). We claim that there exists no threshold `η` that can separate honest
   reader, so the peaky-softmax failure we document is a property of the **reader**, shared across
   the family — not a FareMark-specific bug. [link](https://ieeexplore.ieee.org/document/10827540)
 
+
+to read:
+WAFFLE: good paper but the goal is not free-rider detection. Easy breakable i guess ? I think FedTracker is maybe more relevant
+FedIPR: they consider the same free-riders as in FareMark :eyes: In my personal note i see "Depending on Greta's plots, she can have a look on this" :joy: so yes i recomand this one ! (positive point that i liked: Theorem 1, the range of watermark bit-length)
+I like this survey: "When Federated Learning meets Watermarking: A  Comprehensive Overview of Techniques for  Intellectual Property Protection" (from 2023) if you want a general overview
+the rest of the papers you mention are for centralized setting right ? (The first one is: Adversarial frontier stitching for remote neural network watermarking :rooster:) So maybe not the priority for next week, i'll say ?
+
 **The gap our work fills.** None of these evaluate an *adaptive, effort-minimising insider* that
 holds a valid key and tunes its behaviour to sit under `η`; the free-rider they test is the crude
 Gaussian/previous-models attacker (caught trivially). Our threat model (N1) and the adaptive-tap

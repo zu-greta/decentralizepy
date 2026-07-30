@@ -86,33 +86,88 @@ with error bars.
 
 Numbers behind the +5 point. **Class 3:** FR 0.037 vs honest 0.057 (inseparable). **Class 6:** FR 0.220 vs honest 0.114 — catchable, but only at a **40 % honest false-positive rate** (unusable).
 
-## Group E — non-IID (realistic label skew)  (3 seeds; α-sweep needs the int-cast fix)
+## Group E — non-IID (realistic label skew)  (⚠ prior runs were secretly IID — see bug note)
 
 **What non-IID means and why it matters.** Real federated learning is **non-IID**: clients don't
 hold identical class mixes — each has a skewed subset. The Dirichlet parameter **α controls the skew: low α (0.1) = extreme skew** (each client sees few classes), **high α (1.0) ≈ balanced / near-IID.** 
 
-**Results.** Under skew, honest clients' own watermarks embed *less cleanly*, so the **honest BER floor widens** and the detection threshold **η must rise** (0.064 -> **0.161**) to keep false alarms down. A higher η = **more room for the free-rider to hide under.** So non-IID makes detection *harder*, not easier — and it shows the "insiders are invisible" result is **not an artifact of the clean lab setting**; it holds, and
-worsens, in the conditions real deployments actually face.
+**Where η = 0.161 comes from.** It is **not** recalibrated at plot time — it is a frozen constant
+`WM_ETA_FIXED=0.161` that the E2/E3 runs were *launched* with (run_now.sh), logged every round, and
+the plot reads back. That constant is meant to be μ+3σ over the round-mean honest BER of the
+non-IID honest family **`E1_honest_niid_c100`** (α=0.5) — the value `runbook.sh calibrate`
+recomputes. ⚠ E1 hasn't been re-confirmed in this batch, so 0.161 is currently **unverified**: run
+E1 and `detection.py calibrate --honest-family E1_honest_niid_c100 --tail 20` to check it lands
+≈0.161 (else update the constant, or redraw with `--eta_tight <calibrated>`).
+
+> **⚠ BUG (now fixed) — the earlier E runs were secretly IID, so α did nothing.** `run_now.sh` set
+> `PART=niid`, but `submit_experiment.sh` reads the env var **`PARTITION`** (and `niid` isn't a
+> valid value; the choices are `iid|dirichlet|noniid`). So `--partition` was never passed and
+> `cfg.partition` stayed at the config-14 default **`iid`** — which ignores `dirichlet_alpha`
+> entirely. That, not an int-cast, is why α=0.1 and α=0.3 came out identical. Fixed to
+> `PARTITION=dirichlet` in all four E lines. **Runtime check:** in `run.log`, the "client shards"
+> line must now show **uneven** shard sizes (Dirichlet); the old IID runs showed equal ~5000/5000.
+> **Re-run E from scratch** (`rm -rf $RES/E1_* $RES/E2_* $RES/E3_*`), since every prior E result
+> is IID-mislabelled.
+
+**Does non-IID make free-riding *easier*? No — and that's the point.** Skew raises the honest BER
+floor, the free-rider's BER, **and** the threshold η all together, so on absolute level it is
+symmetric (the free-rider is noisier too). Detection depends on **separation** — the gap between
+honest and free-rider relative to their spread — not on absolute BER. Since everything shifts up in
+lockstep, the free-rider stays **inside the honest band**, exactly as under IID → still
+indistinguishable. So E3's value is **defensive**: it rules out the rebuttal *"your IID
+non-separability is a lab artifact; real heterogeneous FL would pull them apart."* It doesn't.
+*(Whether non-IID is strictly worse for the detector — honest variance could inflate η faster than
+the FR mean rises, widening the band to hide in — is a plausible but UNVERIFIED hypothesis. Settle
+it by computing per-class separability E2-vs-E1 and comparing OVL / best-balanced-error to
+`D1_sep_n5`; if OVL stays ~1 and balanced error ~0.5, the honest claim is "separability stays at
+chance under non-IID, same as IID.")*
 
 ### [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png)
 
 Reduced free-rider (30 % data) under strong skew (α ≈ 0.1) and near-IID (α = 1.0). In both, η rises
 to 0.161 and the free-rider rides at ~0.11–0.13
 
+## Group I — adaptive-tap "submarine"  ❌ BUG (all configs caught — DO NOT trust; re-run after fix)
+
+**Symptom.** Every I config (`tap_when/margin/data/scope/eta/coast`) shows the free-rider's BER
+jumping to **~0.6–0.8** right after defection (round 12) and staying there — caught by any η. Even
+the *easy* class 3, which embeds at BER ~0.04 in group D, is at ~0.6–0.8 here.
+
+**Root cause — code bug, not attack design.** The adaptive-tap attacker builds its self-probe by
+holding out trigger images from its own training set: `_prepare(..., n_probe_holdout=64)`. A client
+owns only ~50 trigger images and `_prepare` capped the holdout at `len(triggers)-1`, so it held out
+**49 of 50** and left the tap **1 trigger image** to embed on → the 10-bit mark can't generalize to
+the 50-image verification bank → BER ~0.65. The `reduced` attack (group D) passes *no* holdout,
+trains on all 50 triggers, and embeds fine — which is exactly why D works and I doesn't.
+
+**Smoking gun.** `I_data_n-1` (full-shard tap) is the *only* config that partially works (BER
+~0.1–0.3), because a full-shard tap uses `_orig_loader` and bypasses the starved reduced loader.
+
+**Fix** (`clients.py`, `_SimpleFRMixin._prepare`): `k = min(n_probe_holdout, len(allt) // 2)`
+(keeps ~half the triggers to train on); optionally drop `tap_probe_holdout` default 64 → 16. Then
+re-run group I (`rm -rf $RES/I_*_c36_rep*` first — the current runs are bug-poisoned).
+*Also:* the `cpc=-1.0` in every I title is a mislabel (timeline reads `autop_common_per_class`, not
+`tap_data_cpc`) — cosmetic.
+
+**Status:** all 12 I figures are invalid pending the fix + re-run. Once re-run, the submarine's BER
+should hug just *under* η (tap-when-near, coast-when-safe), not blow up.
+
 ---
 
 ## Experiments to run — priority order
 
-1. **Group I — adaptive-tap "submarine"  → RUNNING NOW** (1 seed, `SEEDS_I=0 BATCH=I`). The novel
-   stealth attack: coasts under η, re-embeds only when it nears the line. → `tap_*` timelines,
-   `tap_frontier`, `tap_dyn_*`. Biggest missing piece of the thesis.
+1. **Group I — adaptive-tap "submarine"  → FIX + RE-RUN FIRST** (1 seed, `SEEDS_I=0 BATCH=I`). The
+   current runs are invalid (probe-holdout starvation bug — see the Group I section). Apply the
+   `_prepare` one-line fix, `rm -rf $RES/I_*_c36_rep*`, re-run. Then `tap_*` timelines / `tap_frontier`
+   should show the mark hugging just under η. This is the biggest missing piece of the thesis.
 2. **H5 — money-plot positive control** (crude previous-models FR on c100; cheap, 3 seeds). Adds
    the "detector *can* catch crude attacks" bar so `operating_point` shows the contrast. `BATCH=H`.
 3. **V2 — Table V trigger-sample attack** (`tn10/100/500/m1`; cheap). Overfit → caught; the
    attack-side complement to D's trigger-only point. `BATCH=V`.
-4. **E1 / E2 — non-IID anchors** (honest + reduced at α = 0.5). Give the honest floor / η the E3
-   timelines recalibrate against. Re-run E3 clean *only* for the severity gradient (fix the α
-   int-cast first; delete stale E3 dirs).
+4. **E1 / E2 / E3 — non-IID (now that the partition bug is fixed).** All prior E runs were secretly
+   IID (`PART`≠`PARTITION`), so re-run from scratch: `rm -rf $RES/E1_* $RES/E2_* $RES/E3_*`. Verify
+   `run.log` "client shards" shows **uneven** sizes (Dirichlet). E1/E2 give the honest floor / η;
+   E3 {0.1, 1.0} shows the α effect. Priority-bumped per your request.
 5. **J5 — best-knob adaptive-tap combo.** Compose *after* analysing group I (pick the winning
    knobs), run at 3 seeds. Uncomment the J block in run_now.
 6. **F1 / F2 — capacity (200 clients).** Most expensive per run; 2 seeds fine. F3 / paper-repro

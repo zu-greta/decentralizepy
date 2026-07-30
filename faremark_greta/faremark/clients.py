@@ -338,7 +338,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     data_cpc=getattr(cfg, "tap_data_cpc", 5),
                     scope=getattr(cfg, "tap_scope", "full"),
                     coast_mode=getattr(cfg, "tap_coast_mode", "resend"),
-                    probe_holdout=getattr(cfg, "tap_probe_holdout", 64),
+                    probe_holdout=getattr(cfg, "tap_probe_holdout", 16),
                     trigger_train_n=int(getattr(cfg, "autop_trigger_train_n", -1)),
                     **wm_args, **common))
             elif attack in ATTACKS:
@@ -543,10 +543,20 @@ class _SimpleFRMixin:
                 comm_x.append(x[~tm]); comm_y.append(y[~tm]) # common-class images
 
         allt = torch.cat(trig) if trig else torch.empty(0) # trigger images
-        # hold out a slice of trigger images for the self-probe (attacker B only)
-        k = min(n_probe_holdout, max(0, len(allt) - 1)) if n_probe_holdout else 0
+        # Hold out a slice of trigger images for the self-probe, but NEVER starve embedding.
+        # Cap at half; and if the client has too few triggers to spare any (common in NON-IID,
+        # where the assigned trigger class may barely appear in the shard), skip the holdout
+        # entirely -- _probe_x=None disables the probe, and threshold-tapping then falls back to
+        # always-tap (see produce_update). Better a blind-but-embedding attacker than a starved one.
+        n_trig = len(allt)
+        MIN_TRAIN_TRIG = 8                     # keep at least this many triggers to embed on
+        if n_probe_holdout and n_trig >= 2 * MIN_TRAIN_TRIG:
+            k = min(int(n_probe_holdout), n_trig - MIN_TRAIN_TRIG, n_trig // 2)
+        else:
+            k = 0
         self._probe_x = allt[:k].clone() if k > 0 else None # probe on held-out triggers
         trig_train = allt[k:] if k > 0 else allt # trigger images for training
+        self._n_probe = int(k)                 # logged so starvation is visible in the trace
         # num of trigger class images trained on - -1 = all
         if trigger_train_n is not None and trigger_train_n >= 0:
             trig_train = trig_train[:trigger_train_n]
@@ -683,7 +693,7 @@ def make_tap_attack(base_cls):
                 return submit, n
 
             # ---- free-ride: coast if the mark is safely present, else tap ----
-            self._prepare(self.common_per_class, n_probe_holdout=64)
+            self._prepare(self.common_per_class, n_probe_holdout=16)
             target = max(0.0, self.oracle_eta - self.margin)
             ber_now = self._probe_ber(global_state)      # is my mark still in the model?
 
@@ -733,7 +743,7 @@ def make_adaptive_tap_attack(base_cls):
                      eta_k: float = 3.0, margin: float = 0.02,
                      when: str = "threshold", period: int = 1, max_coast: int = 999,
                      data_cpc: int = 5, scope: str = "full",
-                     coast_mode: str = "resend", probe_holdout: int = 64,
+                     coast_mode: str = "resend", probe_holdout: int = 16,
                      trigger_train_n: int = -1, **kw):
             super().__init__(*a, **kw)
             self.oracle_eta = float(oracle_eta)
@@ -802,6 +812,9 @@ def make_adaptive_tap_attack(base_cls):
                                "eta_frozen": round(eta, 4), "target": round(target, 4),
                                "scope": self.scope, "data_cpc": self.data_cpc,
                                "reduced_n": getattr(self, "_reduced_n", self.num_samples),
+                               # sanity: n_trigger_train should be ~tens, NOT ~1 
+                               "n_trigger_train": getattr(self, "_trigger_train_n", None),
+                               "n_probe_holdout": getattr(self, "_n_probe", None),
                                "ber_before": self._ber_before,
                                "ber_after": None if ba is None else round(ba, 4)})
             return submit, n
@@ -822,16 +835,22 @@ def make_adaptive_tap_attack(base_cls):
                                "ber_after": None if ber_now is None else round(ber_now, 4)})
             return out, self.num_samples
 
+        # ---- self-probe -----------------
+        # Only threshold-tapping (needs current BER vs eta) and self-eta (needs the calib BERs) use the probe
+        def _probe_needed(self):
+            return (self.when == "threshold") or (self.eta_source == "self")
+
         # ---- main ------------------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
             phase = self._phase_action(round_idx)
+            holdout = self.probe_holdout if self._probe_needed() else 0
 
             # warmup + calibration window: pure honest client on the full shard
             if phase != "freeride":
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
                 if phase == "calib":
                     # prepare the probe holdout and record own BER for "self" eta
-                    self._prepare(max(0, self.data_cpc), n_probe_holdout=self.probe_holdout,
+                    self._prepare(max(0, self.data_cpc), n_probe_holdout=holdout,
                                   trigger_train_n=self.trigger_train_n)
                     b = self._probe_ber(submit)
                     if b is not None:
@@ -840,7 +859,7 @@ def make_adaptive_tap_attack(base_cls):
                 return submit, n
 
             # first free-ride round: build loaders + freeze eta once
-            self._prepare(max(0, self.data_cpc), n_probe_holdout=self.probe_holdout,
+            self._prepare(max(0, self.data_cpc), n_probe_holdout=holdout,
                           trigger_train_n=self.trigger_train_n)
             if self._eta_frozen is None:
                 self._eta_frozen = self._resolve_eta()

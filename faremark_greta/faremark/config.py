@@ -107,7 +107,7 @@ class ExpConfig:
     tap_coast_mode: str = "resend"   # how the FR free-rides between taps: "resend" = submit the global
                                      # unchanged (zero compute); "decay" = resend its own last tapped
                                      # weights (mark fades slower, but it submits stale weights)
-    tap_probe_holdout: int = 64      # held-out trigger images for the FR's self-BER probe (generalisation)
+    tap_probe_holdout: int = 16      # held-out trigger images for the FR's self-BER probe (generalisation)
 
     # ---- watermarking ----
     watermark: bool = False

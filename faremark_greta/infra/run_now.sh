@@ -117,12 +117,12 @@ fi
 # ---------------------------------------------------------------------------
 if has E; then
   for s in 0 1 2; do
-    env ATTACK=none NUM_FREE_RIDERS=0 PART=niid DIRICHLET_ALPHA=0.5 ROUNDS=50 \
+    env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 ROUNDS=50 \
         FAMILY="E1_honest_niid_c100" NOTE="E1 non-iid honest a=0.5" \
         ./submit_experiment.sh 14 "$s"
   done
   for s in 0 1 2; do
-    env ATTACK=reduced FREE_RIDER_IDS=3,6 PART=niid DIRICHLET_ALPHA=0.5 \
+    env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
         AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
         WM_ETA_FIXED=0.161 ROUNDS=50 \
         FAMILY="E2_reduced_niid_c36" NOTE="E2 non-iid reduced hard a=0.5" \
@@ -132,12 +132,12 @@ if has E; then
   for A in 0.1 1.0; do
     ATAG="a$(printf '%s' "$A" | tr -d '.')"
     for s in 0 1 2; do
-      env ATTACK=none NUM_FREE_RIDERS=0 PART=niid DIRICHLET_ALPHA=$A ROUNDS=50 \
+      env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=$A ROUNDS=50 \
           FAMILY="E3_honest_niid_c100_${ATAG}" NOTE="E3 non-iid honest alpha=$A" \
           ./submit_experiment.sh 14 "$s"
     done
     for s in 0 1 2; do
-      env ATTACK=reduced FREE_RIDER_IDS=3,6 PART=niid DIRICHLET_ALPHA=$A \
+      env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
           AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
           WM_ETA_FIXED=0.161 ROUNDS=50 \
           FAMILY="E3_reduced_niid_c36_${ATAG}" NOTE="E3 non-iid reduced hard alpha=$A" \

@@ -1843,7 +1843,11 @@ def sweep_plot(a):
     ax1.axhline(eta_t, color=OK["black"], ls="--", lw=2, label=f"η tight = {eta_t:.3f}")
     ax1.axhline(eta_l, color="#3B6FB5", ls=(0, (5, 2)), lw=2, label=f"η loose = {eta_l:.3f}")
     ax1.set_ylabel("free-rider BER")
-    ax1.set_title("Free-rider BER over rounds, per data budget")
+    _cfg0 = (next(iter(byN.values()))[0].get("config") or {}) if byN else {}
+    _bs = _cfg0.get("batch_size"); _nc = _cfg0.get("num_clients")
+    _sub = "".join(x for x in [f"  ·  batch={_bs}" if _bs else "",
+                                f", {_nc} clients" if _nc else ""] )
+    ax1.set_title("Free-rider BER over rounds, per data budget" + _sub)
     ax1.legend(fontsize=8, ncol=2, loc="upper right")
 
     xs = list(range(len(order)))
