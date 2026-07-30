@@ -222,60 +222,66 @@ fi
 # ---------------------------------------------------------------------------
 if has I; then
   SEEDS_I="${SEEDS_I:-0}"
-  base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 WM_ETA_FIXED=0.064 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
-        TAP_WHEN=threshold TAP_PERIOD=3 TAP_MARGIN=0.0 TAP_DATA_CPC=0 TAP_SCOPE=full TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend"
-  # --- when to tap ---
+  # =====================================================================
+  # FIX (root cause of the flat-0.6 plots): the OLD base set TAP_DATA_CPC=0
+  # (trigger-only) = FareMark Table V overfitting. Every knob-sweep config
+  # inherited it, so they all pinned at ~0.6 no matter the knob. Group D
+  # already showed cpc=0 -> BER 0.44, cpc>=1 -> ~0.11 plateau.
+  #   * base now uses TAP_DATA_CPC=5  (the Group-D plateau recipe)
+  #   * cpc=0 kept ONLY as a labeled positive control (expected caught)
+  #   * aim under eta_loose=0.264 (beatable per-client threshold); a 0.064
+  #     variant shows the HARD-CLASS FLOOR (class 6 ~0.22 can't go < 0.064
+  #     -- that is the operating-point thesis, not an attack failure)
+  #   * TAP_MARGIN=0.02 gives probe/defender headroom; TAP_MAX_COAST=4
+  #     forces a re-tap so the mark can't silently drift over eta
+  #   * TAP_PROBE_HOLDOUT=16 + the _prepare MIN_TRAIN_TRIG=8 cap => the tap
+  #     trains on ~34 triggers (grep the trace: n_trigger_train ~34, NOT ~1)
+  # =====================================================================
+  base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
+        WM_ETA_FIXED=0.264 TAP_WHEN=threshold TAP_MARGIN=0.02 TAP_DATA_CPC=5 TAP_SCOPE=full \
+        TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend TAP_MAX_COAST=4 TAP_PROBE_HOLDOUT=16"
+
+  # --- 0. SMOKE / GATE: always-tap at cpc=5 MUST reproduce Group D (mean ~0.13, NOT 0.6). ---
+  #     If this one is flat at 0.6, the tap EMBED path is still broken -- stop and inspect
+  #     the trace (n_trigger_train, ber_after) before trusting any sweep below.
+  for s in $SEEDS_I; do
+    env $base TAP_WHEN=always \
+        FAMILY="I0_smoke_always_cpc5_c36" NOTE="I0 GATE: always-tap cpc5 must == D reduced (~0.13)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- 1. DATA PER TAP (the effort dial): 0=Table V control (caught), 1=plateau edge, 5=plateau ---
+  for D in 0 1 5; do
+    for s in $SEEDS_I; do
+      env $base TAP_DATA_CPC=$D \
+          FAMILY="I_data_n${D}_c36" NOTE="I data_cpc=$D (0 = Table V positive control)" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  done
+
+  # --- 2. WHEN / duty-cycle: threshold (adaptive, cheapest) vs every_k(P=3) ---
   for W in threshold every_k; do
     for s in $SEEDS_I; do
       env $base TAP_WHEN=$W TAP_PERIOD=3 \
-          FAMILY="I_when_${W}_c36" NOTE="I knob=when val=$W" ./submit_experiment.sh 14 "$s"
+          FAMILY="I_when_${W}_c36" NOTE="I when=$W" ./submit_experiment.sh 14 "$s"
     done
   done
-  # --- margin under eta ---
-  for M in 0.0 0.10; do
-    MT="m$(printf '%s' "$M" | tr -d '.')"
-    for s in $SEEDS_I; do
-      env $base TAP_MARGIN=$M \
-          FAMILY="I_margin_${MT}_c36" NOTE="I knob=margin val=$M" ./submit_experiment.sh 14 "$s"
-    done
-  done
-  # --- data per tap (cpc) ---
-  # 0 (trigger-only), 1 (plateau) - from group D, -1 (full shard). 
-  for D in 0 1 -1; do
-    for s in $SEEDS_I; do
-      env $base TAP_DATA_CPC=$D \
-          FAMILY="I_data_n${D}_c36" NOTE="I knob=data_cpc val=$D" ./submit_experiment.sh 14 "$s"
-    done
-  done
-  # --- model scope per tap ---
-  for SC in full block2; do
-    for s in $SEEDS_I; do
-      env $base TAP_SCOPE=$SC \
-          FAMILY="I_scope_${SC}_c36" NOTE="I knob=scope val=$SC" ./submit_experiment.sh 14 "$s"
-    done
-  done
-  # --- threshold estimation: oracle vs self ---
+
+  # --- 3. ETA SOURCE (realism): oracle (given the true eta) vs self (FR estimates it) ---
   for ES in oracle self; do
     for s in $SEEDS_I; do
       env $base TAP_ETA_SOURCE=$ES TAP_ETA_K=3.0 \
-          FAMILY="I_eta_${ES}_c36" NOTE="I knob=eta_source val=$ES" ./submit_experiment.sh 14 "$s"
+          FAMILY="I_eta_${ES}_c36" NOTE="I eta_source=$ES" ./submit_experiment.sh 14 "$s"
     done
   done
-  # --- how to free-ride between taps ---
-  for CM in resend decay; do
-    for s in $SEEDS_I; do
-      env $base TAP_COAST_MODE=$CM \
-          FAMILY="I_coast_${CM}_c36" NOTE="I knob=coast_mode val=$CM" ./submit_experiment.sh 14 "$s"
-    done
+
+  # --- 4. TIGHT-eta variant (operating point): shows the hard-class floor at eta=0.064 ---
+  #     class 3 evades (~0.037 < 0.064), class 6 cannot (~0.22 > 0.064) = the split the thesis predicts.
+  for s in $SEEDS_I; do
+    env $base WM_ETA_FIXED=0.064 \
+        FAMILY="I_tight_eta0064_c36" NOTE="I tight eta=0.064 (hard-class floor demo)" \
+        ./submit_experiment.sh 14 "$s"
   done
-  # --- force-tap cap (max consecutive coasts) ---
-  # NOTE: removed for now
-  # for MC in 1 2 4 999; do
-  #   for s in $SEEDS_I; do
-  #     env $base TAP_MAX_COAST=$MC \
-  #         FAMILY="I_maxcoast_${MC}_c36" NOTE="I knob=max_coast val=$MC" ./submit_experiment.sh 14 "$s"
-  #   done
-  # done
 fi
 
 # ---------------------------------------------------------------------------

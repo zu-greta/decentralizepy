@@ -429,6 +429,10 @@ TODO:
 4. analyse the graphs from previous runs - cleanup status and plan and send prelim results to slack
 5. read related papers linked
 - [x] cleanup codebase
+1. download current results - plot and take a look
+2. git push the new code and launch the new jobs
+3. read the related works
+4. friday morning - send in prompt to continue to deliver the new code + give it the plots from tonight if they make sense else abandon. if tonight's run is done plot and give those for analysis instead. if good - send in slack
 
 ---
 ---

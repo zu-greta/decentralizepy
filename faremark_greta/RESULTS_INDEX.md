@@ -127,31 +127,80 @@ chance under non-IID, same as IID.")*
 Reduced free-rider (30 % data) under strong skew (α ≈ 0.1) and near-IID (α = 1.0). In both, η rises
 to 0.161 and the free-rider rides at ~0.11–0.13
 
-## Group I — adaptive-tap "submarine"  ❌ BUG (all configs caught — DO NOT trust; re-run after fix)
+## Group I — adaptive-tap "submarine"  🔧 ROOT CAUSE FOUND (base was trigger-only) — fixed, re-run
 
-**Symptom.** Every I config (`tap_when/margin/data/scope/eta/coast`) shows the free-rider's BER
-jumping to **~0.6–0.8** right after defection (round 12) and staying there — caught by any η. Even
-the *easy* class 3, which embeds at BER ~0.04 in group D, is at ~0.6–0.8 here.
+**Read of the six plotted configs** (tap_I_coast_decay / coast_resend / eta_oracle / eta_self /
+margin_m010 / scope_block2, all c36, seed 1000): free-rider mean BER drops to ~0.10–0.15 during
+warmup+calibration, then jumps to ~0.60 at defection (round 12) and stays pinned, knob-invariant.
 
-**Root cause — code bug, not attack design.** The adaptive-tap attacker builds its self-probe by
-holding out trigger images from its own training set: `_prepare(..., n_probe_holdout=64)`. A client
-owns only ~50 trigger images and `_prepare` capped the holdout at `len(triggers)-1`, so it held out
-**49 of 50** and left the tap **1 trigger image** to embed on → the 10-bit mark can't generalize to
-the 50-image verification bank → BER ~0.65. The `reduced` attack (group D) passes *no* holdout,
-trains on all 50 triggers, and embeds fine — which is exactly why D works and I doesn't.
+**Root cause (from the code audit) — NOT primarily the probe-holdout starvation.** The
+`run_now.sh` Group-I *base* set **`TAP_DATA_CPC=0` (trigger-only)**. All six plotted families are
+knob-sweeps that inherit that base, so every one trains the tap on trigger-class images **with no
+common-class images** — exactly FareMark's Table V overfitting regime. Group D already quantified
+this: cpc=0 → BER ≈ 0.44, cpc=1 → ≈ 0.11 plateau. Intermittent tapping + the self-probe holdout
+push the trigger-only case from 0.44 up to ~0.60. This fully explains the **knob-invariance**: the
+swept knobs (coast_mode / margin / scope / eta_source) never touch the data amount, so all six sit
+in the same overfit regime. The `_prepare` probe-holdout starvation is a *secondary* compounding
+factor and is **already fixed** in the current `clients.py` (`MIN_TRAIN_TRIG=8`, holdout capped at
+`n_trig//2`, `tap_probe_holdout` default 16 → tap trains on ~34 of ~50 triggers).
 
-**Smoking gun.** `I_data_n-1` (full-shard tap) is the *only* config that partially works (BER
-~0.1–0.3), because a full-shard tap uses `_orig_loader` and bypasses the starved reduced loader.
+**Fix (in the patched `run_now.sh`):**
+- **base `TAP_DATA_CPC=5`** (the Group-D plateau recipe: all triggers + 5 images/common class).
+  `cpc=0` is kept ONLY as a labeled positive control (`I_data_n0_c36`, expected caught).
+- **base aims under `WM_ETA_FIXED=0.264` (η_loose, beatable).** A single `I_tight_eta0064_c36`
+  variant aims under η_tight=0.064 to show the **hard-class floor**: class 3 evades (~0.037<0.064),
+  class 6 cannot (~0.22>0.064). That split is the operating-point thesis, not an attack failure.
+- **`TAP_MARGIN=0.02`** (probe/defender headroom) and **`TAP_MAX_COAST=4`** (forced re-tap so the
+  mark can't silently drift over η).
+- **Gate first:** `I0_smoke_always_cpc5_c36` (always-tap, cpc=5) must reproduce Group D
+  (mean BER ~0.13, NOT 0.6). If it is still 0.6, the tap *embed* path is broken beyond cpc — stop
+  and inspect the trace (`n_trigger_train` should be ~34, `ber_after` should fall).
 
-**Fix** (`clients.py`, `_SimpleFRMixin._prepare`): `k = min(n_probe_holdout, len(allt) // 2)`
-(keeps ~half the triggers to train on); optionally drop `tap_probe_holdout` default 64 → 16. Then
-re-run group I (`rm -rf $RES/I_*_c36_rep*` first — the current runs are bug-poisoned).
-*Also:* the `cpc=-1.0` in every I title is a mislabel (timeline reads `autop_common_per_class`, not
-`tap_data_cpc`) — cosmetic.
+**Group E α-transmission bug: verified FIXED end-to-end** in this code. `run_now.sh` sets
+`PARTITION=dirichlet DIRICHLET_ALPHA=$A` → `submit_experiment.sh` emits `--partition`/
+`--dirichlet_alpha` → `run_experiment.py` `_OVERRIDABLE` copies them onto `cfg` → `build_data(...,
+dirichlet_alpha=cfg.dirichlet_alpha)` → `dirichlet_partition`. `--partition` argparse accepts
+`dirichlet`. So α now reaches the run. **Sanity after launch:** `run.log` "client shards" must show
+**uneven** sizes (Dirichlet); the old IID runs showed equal ~5000/5000.
 
-**Status:** all 12 I figures are invalid pending the fix + re-run. Once re-run, the submarine's BER
-should hug just *under* η (tap-when-near, coast-when-safe), not blow up.
+### Minimal knobs for the corrected Group I  (1 seed each; 9 families)
+- **I0_smoke_always_cpc5** — GATE. always-tap, cpc=5. Must ≈ D (~0.13).
+- **I_data_n{0,1,5}** — the effort dial. 0 = Table V control (caught), 1 = plateau edge, 5 = plateau.
+- **I_when_{threshold,every_k}** — duty cycle. threshold = adaptive/cheapest; every_k(P=3) = fixed period.
+- **I_eta_{oracle,self}** — realism. oracle = given the true η; self = FR estimates η from its own calib BER.
+- **I_tight_eta0064** — operating point. same attack, aimed under η_tight; shows the class-3/class-6 split.
+Base (all inherit): `adaptive_tap`, FR cids 3,6, warmup 12 / calib 4, `TAP_DATA_CPC=5`,
+`TAP_MARGIN=0.02`, `TAP_MAX_COAST=4`, `TAP_SCOPE=full`, `TAP_COAST_MODE=resend`,
+`TAP_ETA_SOURCE=oracle`, `WM_ETA_FIXED=0.264`.
 
+**Expected post-fix signature:** free-rider BER falls to ~0.11–0.22 after defection and **sawtooths
+just under η** (tap down → coast up → tap), NOT a flat 0.60. The cheapest evading config (lowest
+duty cycle at cpc that stays under η_loose) is the constructive result; `I_data_n0` and the class-6
+line under η_tight are the "caught" controls.
+
+### Run it (I + E in parallel)
+```bash
+# 0. clear bug-poisoned I and IID-mislabelled E results so the pool re-runs them
+rm -rf $RES/I_*_c36_rep* $RES/I0_*_c36_rep* $RES/E1_* $RES/E2_* $RES/E3_*
+
+# 1. (recommended) gate the tap embed FIRST — 1 quick run, ~5 min
+SEEDS_I=0 BATCH=I ./runbook.sh manifest          # builds I incl. I0 gate
+MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
+#    watch I0_smoke run.log: ber_fr must drop to ~0.13, NOT sit at 0.6
+
+# 2. once the gate passes, build I (1 seed) + E (3 seeds) together and submit
+MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 BATCH=IE ./runbook.sh manifest
+MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
+./runbook.sh monitor
+# E check: run.log "client shards" shows UNEVEN sizes (Dirichlet)
+# I check: trace n_trigger_train ~34 (not ~1); sawtooth under eta on the timelines
+
+# 3. when done: recalibrate eta (E1 -> confirm ~0.161) and plot
+RES=$RES OUT=$OUT ./runbook.sh calibrate
+RES=$RES OUT=$OUT ./runbook.sh plot
+```
+*(Cosmetic, unfixed: the `cpc=-1.0` in tap titles reads `autop_common_per_class`, not the tap's
+real `tap_data_cpc` — a plots.py label bug, harmless to the BER data.)*
 ---
 
 ## Experiments to run — priority order

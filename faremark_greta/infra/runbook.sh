@@ -175,12 +175,11 @@ phase_plot(){
   # --- I adaptive-tap: timeline per family (two-eta lines drawn automatically) ---
   #     These are the EXACT families run_now.sh builds for group I (SEEDS_I). J is not
   #     run yet (stays commented in run_now until I is analysed -> J5), so no J families here.
-  for fam in I_when_threshold_c36 I_when_every_k_c36 \
-             I_margin_m00_c36 I_margin_m010_c36 \
-             I_data_n0_c36 I_data_n1_c36 I_data_n-1_c36 \
-             I_scope_full_c36 I_scope_block2_c36 \
+  for fam in I0_smoke_always_cpc5_c36 \
+             I_data_n0_c36 I_data_n1_c36 I_data_n5_c36 \
+             I_when_threshold_c36 I_when_every_k_c36 \
              I_eta_oracle_c36 I_eta_self_c36 \
-             I_coast_resend_c36 I_coast_decay_c36; do
+             I_tight_eta0064_c36; do
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_${fam}"
   done
@@ -193,7 +192,7 @@ phase_plot(){
   for fam in I_when_threshold_c36 I_coast_resend_c36; do
     run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
   done
-  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I_when_threshold_c36 I_when_every_k_c36 I_margin_m00_c36 I_margin_m010_c36                   I_data_n0_c36 I_data_n1_c36 I_data_n-1_c36 I_scope_full_c36 I_scope_block2_c36                   I_eta_oracle_c36 I_eta_self_c36 I_coast_resend_c36 I_coast_decay_c36"
+  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36 I_tight_eta0064_c36"
 
   # --- V2 Table V attack: FR BER vs #trigger-training-samples (overfit -> caught) ---
   #     TN values match run_now (10, 100, 500, and m1 = full trigger-class anchor).
