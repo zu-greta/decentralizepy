@@ -536,6 +536,7 @@ class _SimpleFRMixin:
 
         trig, comm_x, comm_y = [], [], []
         for x, y in self.loader:                      # original shard, once
+            x = x.detach().cpu(); y = y.detach().cpu()
             tm = (y == self.trigger_class) # mask for trigger images
             if tm.any(): 
                 trig.append(x[tm]) # trigger images

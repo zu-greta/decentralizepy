@@ -163,40 +163,85 @@ dirichlet_alpha=cfg.dirichlet_alpha)` → `dirichlet_partition`. `--partition` a
 `dirichlet`. So α now reaches the run. **Sanity after launch:** `run.log` "client shards" must show
 **uneven** sizes (Dirichlet); the old IID runs showed equal ~5000/5000.
 
-### Minimal knobs for the corrected Group I  (1 seed each; 9 families)
+### Minimal knobs for the corrected Group I  (1 seed each; 12 families)
 - **I0_smoke_always_cpc5** — GATE. always-tap, cpc=5. Must ≈ D (~0.13).
 - **I_data_n{0,1,5}** — the effort dial. 0 = Table V control (caught), 1 = plateau edge, 5 = plateau.
 - **I_when_{threshold,every_k}** — duty cycle. threshold = adaptive/cheapest; every_k(P=3) = fixed period.
 - **I_eta_{oracle,self}** — realism. oracle = given the true η; self = FR estimates η from its own calib BER.
+- **I_coast_{resend,decay}** — *keep the mark alive between taps* (FedIPR/FedTracker persistence). decay
+  resends the FR's own last-tapped weights so the mark fades slower → longer coasts → lower duty cycle.
+- **I_maxcoast_m8** — how lazy can it be: force a re-tap only every 8 coasts. If the mark survives 8
+  coasts under η, the duty cycle is tiny = the cheap-stealth result (marks are persistent, per FedIPR).
 - **I_tight_eta0064** — operating point. same attack, aimed under η_tight; shows the class-3/class-6 split.
 Base (all inherit): `adaptive_tap`, FR cids 3,6, warmup 12 / calib 4, `TAP_DATA_CPC=5`,
 `TAP_MARGIN=0.02`, `TAP_MAX_COAST=4`, `TAP_SCOPE=full`, `TAP_COAST_MODE=resend`,
 `TAP_ETA_SOURCE=oracle`, `WM_ETA_FIXED=0.264`.
+
+**Which paper-grounded "keep-the-mark-alive" levers are now in:** (1) FareMark Table V → train the tap
+on common images (cpc=5), so the mark generalizes to the held-out bank instead of overfitting — this
+is the fix for the 0.6 pin. (2) FedIPR/FedTracker persistence → the mark decays slowly, so coast_mode=decay
++ max_coast=8 exploit that to tap rarely. (3) FareMark memory-enhanced updating (Eq.14, wm_beta=0.6) is
+already on in the honest/tap path, so each tap blends prior global knowledge automatically.
 
 **Expected post-fix signature:** free-rider BER falls to ~0.11–0.22 after defection and **sawtooths
 just under η** (tap down → coast up → tap), NOT a flat 0.60. The cheapest evading config (lowest
 duty cycle at cpc that stays under η_loose) is the constructive result; `I_data_n0` and the class-6
 line under η_tight are the "caught" controls.
 
-### Run it (I + E in parallel)
+### ⚠ PREREQ — device bug fix (must commit before any reduced/adaptive_tap run)
+`FAST_DATA=1` makes loaders yield CUDA tensors; `clients.py::_SimpleFRMixin._prepare` built the
+trigger-label tensor on CPU → `torch.cat` device mix → **every `reduced`/`adaptive_tap` job crashed
+at the first `_prepare`** (calib round for tap, freeride round for reduced). Honest runs (E1,
+E3_honest — no `_prepare`) were unaffected. **Fix:** collect the reduced loader on CPU
+(`x=x.detach().cpu(); y=y.detach().cpu()` at the top of the `_prepare` loop); the training loop
+already moves each batch to device. Commit this to `main` before re-running — the pod clones from
+git, so an uncommitted fix does nothing.
+
+**In-flight run accounting:** E1 / E3_honest that finished are VALID (keep them). E2, E3_reduced,
+and all I_* crashed with no result.json, so the pool re-runs them automatically once the fix is in.
+
+**One free slot — validate the fix + the tap embed first (single job, full GPU, fast):**
 ```bash
-# 0. clear bug-poisoned I and IID-mislabelled E results so the pool re-runs them
+FAST_DATA=1 WM_ETA_FIXED=0.264 ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 \
+  AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
+  TAP_WHEN=always TAP_MARGIN=0.02 TAP_DATA_CPC=5 TAP_SCOPE=full \
+  TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend TAP_MAX_COAST=4 TAP_PROBE_HOLDOUT=16 \
+  FAMILY=I0_smoke_always_cpc5_c36 NOTE="gate: device fix + cpc5 embed" \
+  ./submit_experiment.sh 14 0
+```
+Pass = it does NOT crash at `_prepare`, and `ber_fr` falls to ~0.13 (NOT 0.6). Then expand to the pool.
+
+**Perf note:** the failed pool logged ~867 s/round (≈12 h for 50 rounds). That is MPS
+oversubscription (WORKERS=8 × PODS=2 = 16 concurrent) + `local_epochs=5`. For the pool, drop to
+**WORKERS=4 PODS=2** and watch `nvidia-smi dmon -s u`; raise only while util keeps climbing. A single
+gate job (above) is NOT in the pool, so it gets the whole GPU and runs fast.
+
+### Run it — I + E in the SAME 2 pods, quickest pass (1 seed each)
+```bash
+# 0. stop the current pool (it is running the invalid cpc=0 I configs)
+runai delete job <current-pool-job-name>
+
+# 1. clear invalid I + IID-mislabelled E results, and any half-written result.json
 rm -rf $RES/I_*_c36_rep* $RES/I0_*_c36_rep* $RES/E1_* $RES/E2_* $RES/E3_*
+for d in "$RES"/*/result.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$d" \
+  2>/dev/null || rm -rf "$(dirname "$d")"; done
 
-# 1. (recommended) gate the tap embed FIRST — 1 quick run, ~5 min
-SEEDS_I=0 BATCH=I ./runbook.sh manifest          # builds I incl. I0 gate
-MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
-#    watch I0_smoke run.log: ber_fr must drop to ~0.13, NOT sit at 0.6
+# 2. build I (1 seed) + E (1 seed for the quick pass) into ONE manifest
+MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 SEEDS_E=0 BATCH=IE ./runbook.sh manifest
 
-# 2. once the gate passes, build I (1 seed) + E (3 seeds) together and submit
-MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 BATCH=IE ./runbook.sh manifest
+# 3. submit to the same 2 pods and watch
 MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
 ./runbook.sh monitor
-# E check: run.log "client shards" shows UNEVEN sizes (Dirichlet)
-# I check: trace n_trigger_train ~34 (not ~1); sawtooth under eta on the timelines
+```
+**Watch early (both are among the first to land):**
+- `I0_smoke_always_cpc5` run.log: `ber_fr` must fall to ~0.13, NOT sit at 0.6. If 0.6 → the tap
+  embed path has a residual bug; grep the trace for `n_trigger_train` (~34 expected) and `ber_after`.
+- any E run.log: "client shards" line must show **uneven** sizes (Dirichlet actually engaged).
 
-# 3. when done: recalibrate eta (E1 -> confirm ~0.161) and plot
-RES=$RES OUT=$OUT ./runbook.sh calibrate
+**Then, for the final numbers:** re-run E at 3 seeds and plot:
+```bash
+SEEDS_E="0 1 2" BATCH=E ./runbook.sh manifest && MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
+RES=$RES OUT=$OUT ./runbook.sh calibrate    # confirm E1 eta ~0.161
 RES=$RES OUT=$OUT ./runbook.sh plot
 ```
 *(Cosmetic, unfixed: the `cpc=-1.0` in tap titles reads `autop_common_per_class`, not the tap's

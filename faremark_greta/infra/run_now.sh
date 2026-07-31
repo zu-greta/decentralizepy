@@ -116,12 +116,13 @@ fi
 #   E1 honest a=0.5   E2 reduced a=0.5   E3 reduced ALPHA SWEEP
 # ---------------------------------------------------------------------------
 if has E; then
-  for s in 0 1 2; do
+  SEEDS_E="${SEEDS_E:-0 1 2}"     # set SEEDS_E=0 for a 1-seed quick pass
+  for s in $SEEDS_E; do
     env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 ROUNDS=50 \
         FAMILY="E1_honest_niid_c100" NOTE="E1 non-iid honest a=0.5" \
         ./submit_experiment.sh 14 "$s"
   done
-  for s in 0 1 2; do
+  for s in $SEEDS_E; do
     env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
         AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
         WM_ETA_FIXED=0.161 ROUNDS=50 \
@@ -131,12 +132,12 @@ if has E; then
   # E3 -- severity sweep. a=0.5 already covered by E1/E2, so with {0.1, 1.0} skew levels (0.1 / 0.5 / 1.0)
   for A in 0.1 1.0; do
     ATAG="a$(printf '%s' "$A" | tr -d '.')"
-    for s in 0 1 2; do
+    for s in $SEEDS_E; do
       env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=$A ROUNDS=50 \
           FAMILY="E3_honest_niid_c100_${ATAG}" NOTE="E3 non-iid honest alpha=$A" \
           ./submit_experiment.sh 14 "$s"
     done
-    for s in 0 1 2; do
+    for s in $SEEDS_E; do
       env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
           AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
           WM_ETA_FIXED=0.161 ROUNDS=50 \
@@ -273,6 +274,24 @@ if has I; then
       env $base TAP_ETA_SOURCE=$ES TAP_ETA_K=3.0 \
           FAMILY="I_eta_${ES}_c36" NOTE="I eta_source=$ES" ./submit_experiment.sh 14 "$s"
     done
+  done
+
+  # --- 5. KEEP-THE-MARK-ALIVE BETWEEN TAPS (FedIPR/FedTracker persistence -> low duty cycle) ---
+  #     coast_mode=decay resends the FR's OWN last-tapped weights (mark fades slower than
+  #     resending the global). This is the paper-grounded lever for coasting longer per tap.
+  for CM in resend decay; do
+    for s in $SEEDS_I; do
+      env $base TAP_COAST_MODE=$CM \
+          FAMILY="I_coast_${CM}_c36" NOTE="I coast_mode=$CM (decay = slower mark fade)" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  done
+  # --- 6. HOW LAZY CAN IT BE: force a re-tap only every 8 coasts (probe mark persistence) ---
+  #     If the mark survives 8 coasts under eta, the duty cycle -> tiny = the cheap-stealth result.
+  for s in $SEEDS_I; do
+    env $base TAP_MAX_COAST=8 \
+        FAMILY="I_maxcoast_m8_c36" NOTE="I max_coast=8 (persistence / lowest duty cycle)" \
+        ./submit_experiment.sh 14 "$s"
   done
 
   # --- 4. TIGHT-eta variant (operating point): shows the hard-class floor at eta=0.064 ---
