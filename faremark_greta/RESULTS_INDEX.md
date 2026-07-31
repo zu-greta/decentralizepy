@@ -86,185 +86,93 @@ with error bars.
 
 Numbers behind the +5 point. **Class 3:** FR 0.037 vs honest 0.057 (inseparable). **Class 6:** FR 0.220 vs honest 0.114 — catchable, but only at a **40 % honest false-positive rate** (unusable).
 
-## Group E — non-IID (realistic label skew)  (⚠ prior runs were secretly IID — see bug note)
+## Group E — non-IID  (1 seed; α∈{0.1,0.5,1.0}, CIFAR-100, 10 clients, seed 1000)
 
-**What non-IID means and why it matters.** Real federated learning is **non-IID**: clients don't
-hold identical class mixes — each has a skewed subset. The Dirichlet parameter **α controls the skew: low α (0.1) = extreme skew** (each client sees few classes), **high α (1.0) ≈ balanced / near-IID.** 
+**How the non-IID split is built (`datasets.py::dirichlet_partition`, Hsu et al. 2019 label-skew).**
+For each class `c`: take all of `c`'s training samples, and draw a proportion vector
+`props ~ Dirichlet(α · ones(K))` over the `K=10` clients; hand client `k` the fraction `props[k]` of
+class `c`. Repeat for all 100 classes; concatenate per client; shuffle. **Small α -> concentrated**
+(one client hogs each class = severe skew); **large α -> uniform ≈ IID.** Crucially, the
+trigger-class assignment (`cid i -> class i`) is drawn **independently** of this partition, so a
+client is usually *not* the one that got the bulk of its own trigger class -> it is **data-starved on the very class it must watermark.** That coupling is the whole story below.
 
-**Where η = 0.161 comes from.** It is **not** recalibrated at plot time — it is a frozen constant
-`WM_ETA_FIXED=0.161` that the E2/E3 runs were *launched* with (run_now.sh), logged every round, and
-the plot reads back. That constant is meant to be μ+3σ over the round-mean honest BER of the
-non-IID honest family **`E1_honest_niid_c100`** (α=0.5) — the value `runbook.sh calibrate`
-recomputes. ⚠ E1 hasn't been re-confirmed in this batch, so 0.161 is currently **unverified**: run
-E1 and `detection.py calibrate --honest-family E1_honest_niid_c100 --tail 20` to check it lands
-≈0.161 (else update the constant, or redraw with `--eta_tight <calibrated>`).
+**E1 honest floors (α=0.5)** [E1_class_floors.png](results/groups/figs/E1_class_floors.png). Honest per-class BER floors are wildly heterogeneous: cls7/8 ≈ 0.00 (embeds perfectly) but **cls3 = 0.60, cls6 = 0.195, cls1 = 0.14**. Some trigger classes simply cannot be watermarked by their assigned client under skew — *for honest clients*.
 
-> **⚠ BUG (now fixed) — the earlier E runs were secretly IID, so α did nothing.** `run_now.sh` set
-> `PART=niid`, but `submit_experiment.sh` reads the env var **`PARTITION`** (and `niid` isn't a
-> valid value; the choices are `iid|dirichlet|noniid`). So `--partition` was never passed and
-> `cfg.partition` stayed at the config-14 default **`iid`** — which ignores `dirichlet_alpha`
-> entirely. That, not an int-cast, is why α=0.1 and α=0.3 came out identical. Fixed to
-> `PARTITION=dirichlet` in all four E lines. **Runtime check:** in `run.log`, the "client shards"
-> line must now show **uneven** shard sizes (Dirichlet); the old IID runs showed equal ~5000/5000.
-> **Re-run E from scratch** (`rm -rf $RES/E1_* $RES/E2_* $RES/E3_*`), since every prior E result
-> is IID-mislabelled.
+**E2 reduced vs E1 honest (α=0.5), per-class separability** [E2_niid_sep.json](results/groups/figs/E2_niid_sep.json), [E2_niid_timeline.png](results/groups/figs/E2_niid_timeline.png).
+This is the finding:
+- **class 3: honest 0.600, FR 0.600, overlap 1.0, best balanced-error 0.50** — a literal coin flip.
+  The free-rider on class 3 is **identical** to an honest client on class 3.
+- class 6: honest 0.195 ± 0.02, FR 0.245 ± 0.07, best balanced-error 0.225 — barely separable.
+- GLOBAL (pool all clients): overlap 0.28, best balanced-error 0.14, Youden η=0.15 gives recall 0.95
+  at **FPR 0.23**. That "0.14" looks catchable, but it is a **pooling artifact**: it mixes
+  easy-class honest clients (BER ≈ 0) with the FR. To actually flag a class-3 FR the server must set
+  η below 0.60, which flags **every** honest class-3/class-6/class-1 client → 23% FPR. Unusable.
 
-**Does non-IID make free-riding *easier*? No — and that's the point.** Skew raises the honest BER
-floor, the free-rider's BER, **and** the threshold η all together, so on absolute level it is
-symmetric (the free-rider is noisier too). Detection depends on **separation** — the gap between
-honest and free-rider relative to their spread — not on absolute BER. Since everything shifts up in
-lockstep, the free-rider stays **inside the honest band**, exactly as under IID → still
-indistinguishable. So E3's value is **defensive**: it rules out the rebuttal *"your IID
-non-separability is a lab artifact; real heterogeneous FL would pull them apart."* It doesn't.
-*(Whether non-IID is strictly worse for the detector — honest variance could inflate η faster than
-the FR mean rises, widening the band to hide in — is a plausible but UNVERIFIED hypothesis. Settle
-it by computing per-class separability E2-vs-E1 and comparing OVL / best-balanced-error to
-`D1_sep_n5`; if OVL stays ~1 and balanced error ~0.5, the honest claim is "separability stays at
-chance under non-IID, same as IID.")*
+**α sweep** [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png) (α=0.1), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png) (α=1.0).
+- **α=0.1 (extreme skew):** honest mean ≈ 0.37 ≈ FR mean ≈ 0.40, η_loose = 0.43 — total overlap,
+  zero separation. Skew so severe *nobody* embeds; the FR vanishes into the honest cloud.
+- **α=1.0 (near-IID):** honest mean 0.07 (most classes embed) **but** cls3 floor 0.55, cls6 floor
+  0.89, FR mean ≈ 0.70. warning: **single-seed bad-draw artifact** — at α=1.0 the trigger-class floors
+  should be *low*; this draw starved clients 3 & 6 of their trigger class. Do NOT quote the α=1.0
+  numbers; they are one unlucky Dirichlet realization.
 
-### [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png)
+**Conclusion (direction solid, exact floors need seeds).** Non-IID does **not** rescue the detector —
+it breaks it *further*. Skew raises the honest floor on each client's trigger class (because that
+client rarely holds much of it), and the free-rider hides among honest clients who **also** can't
+embed on hard classes. Per-class, honest and FR coincide (class 3: balanced-error 0.50). This kills
+the "your IID non-separability is a lab artifact; real heterogeneous FL would separate them"
+rebuttal — heterogeneous FL is *worse*. **CAVEAT: 1 seed.** Which classes are worst is
+draw-dependent; the *mechanism* (trigger-class starvation -> camouflage) is seed-robust, the specific
+per-class floors are not. Re-run at 3 seeds before any table.
 
-Reduced free-rider (30 % data) under strong skew (α ≈ 0.1) and near-IID (α = 1.0). In both, η rises
-to 0.161 and the free-rider rides at ~0.11–0.13
+## Group I — adaptive-tap "submarine" (1 seed, 30 rounds; I0=50)
 
-## Group I — adaptive-tap "submarine"  🔧 ROOT CAUSE FOUND (base was trigger-only) — fixed, re-run
+**The device fix + `TAP_DATA_CPC=5` worked — no more flat-0.60 pin.** Free-riders now embed and evade.
+But the sweep also delivers a clean **negative** result on the "lazy submarine" premise.
 
-**Read of the six plotted configs** (tap_I_coast_decay / coast_resend / eta_oracle / eta_self /
-margin_m010 / scope_block2, all c36, seed 1000): free-rider mean BER drops to ~0.10–0.15 during
-warmup+calibration, then jumps to ~0.60 at defection (round 12) and stays pinned, knob-invariant.
+**Data dial — WORKS exactly as predicted** [tap_I_data_n0/n1/n5]:
+- cpc=0 (trigger-only): FR → **0.60, caught** — the Table V positive control. ✓
+- cpc=1: FR → 0.10–0.20, **evades** η_loose 0.264 (≈38% effort).
+- cpc=5: FR → 0.10–0.15, **evades** (≈43% effort). cid3 ≈ 0.00, cid6 ≈ 0.20.
+- I0 gate (always-tap cpc=5, 50 rounds): FR mean 0.10, **evades**, 31% effort. ✓
 
-**Root cause (from the code audit) — NOT primarily the probe-holdout starvation.** The
-`run_now.sh` Group-I *base* set **`TAP_DATA_CPC=0` (trigger-only)**. All six plotted families are
-knob-sweeps that inherit that base, so every one trains the tap on trigger-class images **with no
-common-class images** — exactly FareMark's Table V overfitting regime. Group D already quantified
-this: cpc=0 → BER ≈ 0.44, cpc=1 → ≈ 0.11 plateau. Intermittent tapping + the self-probe holdout
-push the trigger-only case from 0.44 up to ~0.60. This fully explains the **knob-invariance**: the
-swept knobs (coast_mode / margin / scope / eta_source) never touch the data amount, so all six sit
-in the same overfit regime. The `_prepare` probe-holdout starvation is a *secondary* compounding
-factor and is **already fixed** in the current `clients.py` (`MIN_TRAIN_TRIG=8`, holdout capped at
-`n_trig//2`, `tap_probe_holdout` default 16 → tap trains on ~34 of ~50 triggers).
+**Duty-cycle knobs — the mark fades too fast to coast** [tap_dyn_*, tap_I_when_every_k]:
+- `when=threshold`, `eta=oracle`, `eta=self`, `coast=resend`: all **evade**, but every one **taps
+  100% of rounds** (tap_dyn: "tap fraction 100%", "a tap lasts ~1.0 rounds", drop/tap ≈ 0.52). The
+  self-probe reads BER ≈ 0.5–0.6 *before each round's tap* because the mark has already faded → it
+  re-taps every round. Threshold degenerates to always-tap; it is NOT adaptive in practice.
+- `when=every_k` (P=3, tap once, coast twice): **sawtooth** — during the 2 coast rounds the
+  *defender-measured* FR BER shoots to **0.6–0.8** (well above η) and is **caught** on those rounds.
+  The mark decays essentially completely in ~1 aggregation round.
 
-**Fix (in the patched `run_now.sh`):**
-- **base `TAP_DATA_CPC=5`** (the Group-D plateau recipe: all triggers + 5 images/common class).
-  `cpc=0` is kept ONLY as a labeled positive control (`I_data_n0_c36`, expected caught).
-- **base aims under `WM_ETA_FIXED=0.264` (η_loose, beatable).** A single `I_tight_eta0064_c36`
-  variant aims under η_tight=0.064 to show the **hard-class floor**: class 3 evades (~0.037<0.064),
-  class 6 cannot (~0.22>0.064). That split is the operating-point thesis, not an attack failure.
-- **`TAP_MARGIN=0.02`** (probe/defender headroom) and **`TAP_MAX_COAST=4`** (forced re-tap so the
-  mark can't silently drift over η).
-- **Gate first:** `I0_smoke_always_cpc5_c36` (always-tap, cpc=5) must reproduce Group D
-  (mean BER ~0.13, NOT 0.6). If it is still 0.6, the tap *embed* path is broken beyond cpc — stop
-  and inspect the trace (`n_trigger_train` should be ~34, `ber_after` should fall).
+**Verdict — is there hope?** Split:
+- **The evasion attack: YES.** A free-rider doing ~40% of an honest client's work, re-embedding every
+  round (cpc≥1), sits under η_loose and evades; a lazy trigger-only (cpc=0) is caught. This *is* the
+  constructive companion to Groups A/D, with a live attacker.
+- **The "lazy / low-duty-cycle submarine": NO (as currently built).** FareMark's output-layer mark is
+  so fragile under aggregation that it fully decays in one coasted round, so the FR *must* re-embed
+  every round. The adaptive tap therefore collapses to the constant `reduced` attack — no effort
+  savings from adaptivity. `coast_mode=decay` (re-inject own last-tapped weights during coast) is the
+  one untested lever that could slow the fade; it's Group J's hopeful shot.
 
-**Group E α-transmission bug: verified FIXED end-to-end** in this code. `run_now.sh` sets
-`PARTITION=dirichlet DIRICHLET_ALPHA=$A` → `submit_experiment.sh` emits `--partition`/
-`--dirichlet_alpha` → `run_experiment.py` `_OVERRIDABLE` copies them onto `cfg` → `build_data(...,
-dirichlet_alpha=cfg.dirichlet_alpha)` → `dirichlet_partition`. `--partition` argparse accepts
-`dirichlet`. So α now reaches the run. **Sanity after launch:** `run.log` "client shards" must show
-**uneven** sizes (Dirichlet); the old IID runs showed equal ~5000/5000.
+**Knob status:** working → `data_cpc` (effort dial), `when=always` (evades). Degenerate/negative →
+`when=threshold` (= always in practice), `when=every_k` (caught on coasts), `eta_source` &
+`coast_mode` (indistinguishable while everything taps 100%). The `cpc=-1.0` in titles is the cosmetic
+`autop_common_per_class` mislabel; real value is `tap_data_cpc` (0/1/5).
 
-### Minimal knobs for the corrected Group I  (1 seed each; 12 families)
-- **I0_smoke_always_cpc5** — GATE. always-tap, cpc=5. Must ≈ D (~0.13).
-- **I_data_n{0,1,5}** — the effort dial. 0 = Table V control (caught), 1 = plateau edge, 5 = plateau.
-- **I_when_{threshold,every_k}** — duty cycle. threshold = adaptive/cheapest; every_k(P=3) = fixed period.
-- **I_eta_{oracle,self}** — realism. oracle = given the true η; self = FR estimates η from its own calib BER.
-- **I_coast_{resend,decay}** — *keep the mark alive between taps* (FedIPR/FedTracker persistence). decay
-  resends the FR's own last-tapped weights so the mark fades slower → longer coasts → lower duty cycle.
-- **I_maxcoast_m8** — how lazy can it be: force a re-tap only every 8 coasts. If the mark survives 8
-  coasts under η, the duty cycle is tiny = the cheap-stealth result (marks are persistent, per FedIPR).
-- **I_tight_eta0064** — operating point. same attack, aimed under η_tight; shows the class-3/class-6 split.
-Base (all inherit): `adaptive_tap`, FR cids 3,6, warmup 12 / calib 4, `TAP_DATA_CPC=5`,
-`TAP_MARGIN=0.02`, `TAP_MAX_COAST=4`, `TAP_SCOPE=full`, `TAP_COAST_MODE=resend`,
-`TAP_ETA_SOURCE=oracle`, `WM_ETA_FIXED=0.264`.
-
-**Which paper-grounded "keep-the-mark-alive" levers are now in:** (1) FareMark Table V → train the tap
-on common images (cpc=5), so the mark generalizes to the held-out bank instead of overfitting — this
-is the fix for the 0.6 pin. (2) FedIPR/FedTracker persistence → the mark decays slowly, so coast_mode=decay
-+ max_coast=8 exploit that to tap rarely. (3) FareMark memory-enhanced updating (Eq.14, wm_beta=0.6) is
-already on in the honest/tap path, so each tap blends prior global knowledge automatically.
-
-**Expected post-fix signature:** free-rider BER falls to ~0.11–0.22 after defection and **sawtooths
-just under η** (tap down → coast up → tap), NOT a flat 0.60. The cheapest evading config (lowest
-duty cycle at cpc that stays under η_loose) is the constructive result; `I_data_n0` and the class-6
-line under η_tight are the "caught" controls.
-
-### ⚠ PREREQ — device bug fix (must commit before any reduced/adaptive_tap run)
-`FAST_DATA=1` makes loaders yield CUDA tensors; `clients.py::_SimpleFRMixin._prepare` built the
-trigger-label tensor on CPU → `torch.cat` device mix → **every `reduced`/`adaptive_tap` job crashed
-at the first `_prepare`** (calib round for tap, freeride round for reduced). Honest runs (E1,
-E3_honest — no `_prepare`) were unaffected. **Fix:** collect the reduced loader on CPU
-(`x=x.detach().cpu(); y=y.detach().cpu()` at the top of the `_prepare` loop); the training loop
-already moves each batch to device. Commit this to `main` before re-running — the pod clones from
-git, so an uncommitted fix does nothing.
-
-**In-flight run accounting:** E1 / E3_honest that finished are VALID (keep them). E2, E3_reduced,
-and all I_* crashed with no result.json, so the pool re-runs them automatically once the fix is in.
-
-**One free slot — validate the fix + the tap embed first (single job, full GPU, fast):**
-```bash
-FAST_DATA=1 WM_ETA_FIXED=0.264 ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 \
-  AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
-  TAP_WHEN=always TAP_MARGIN=0.02 TAP_DATA_CPC=5 TAP_SCOPE=full \
-  TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend TAP_MAX_COAST=4 TAP_PROBE_HOLDOUT=16 \
-  FAMILY=I0_smoke_always_cpc5_c36 NOTE="gate: device fix + cpc5 embed" \
-  ./submit_experiment.sh 14 0
-```
-Pass = it does NOT crash at `_prepare`, and `ber_fr` falls to ~0.13 (NOT 0.6). Then expand to the pool.
-
-**Perf note:** the failed pool logged ~867 s/round (≈12 h for 50 rounds). That is MPS
-oversubscription (WORKERS=8 × PODS=2 = 16 concurrent) + `local_epochs=5`. For the pool, drop to
-**WORKERS=4 PODS=2** and watch `nvidia-smi dmon -s u`; raise only while util keeps climbing. A single
-gate job (above) is NOT in the pool, so it gets the whole GPU and runs fast.
-
-### Run it — I + E in the SAME 2 pods, quickest pass (1 seed each)
-```bash
-# 0. stop the current pool (it is running the invalid cpc=0 I configs)
-runai delete job <current-pool-job-name>
-
-# 1. clear invalid I + IID-mislabelled E results, and any half-written result.json
-rm -rf $RES/I_*_c36_rep* $RES/I0_*_c36_rep* $RES/E1_* $RES/E2_* $RES/E3_*
-for d in "$RES"/*/result.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$d" \
-  2>/dev/null || rm -rf "$(dirname "$d")"; done
-
-# 2. build I (1 seed) + E (1 seed for the quick pass) into ONE manifest
-MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 SEEDS_E=0 BATCH=IE ./runbook.sh manifest
-
-# 3. submit to the same 2 pods and watch
-MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
-./runbook.sh monitor
-```
-**Watch early (both are among the first to land):**
-- `I0_smoke_always_cpc5` run.log: `ber_fr` must fall to ~0.13, NOT sit at 0.6. If 0.6 → the tap
-  embed path has a residual bug; grep the trace for `n_trigger_train` (~34 expected) and `ber_after`.
-- any E run.log: "client shards" line must show **uneven** sizes (Dirichlet actually engaged).
-
-**Then, for the final numbers:** re-run E at 3 seeds and plot:
-```bash
-SEEDS_E="0 1 2" BATCH=E ./runbook.sh manifest && MPS=1 WORKERS=8 PODS=2 ./runbook.sh submit
-RES=$RES OUT=$OUT ./runbook.sh calibrate    # confirm E1 eta ~0.161
-RES=$RES OUT=$OUT ./runbook.sh plot
-```
-*(Cosmetic, unfixed: the `cpc=-1.0` in tap titles reads `autop_common_per_class`, not the tap's
-real `tap_data_cpc` — a plots.py label bug, harmless to the BER data.)*
 ---
 
 ## Experiments to run — priority order
 
-1. **Group I — adaptive-tap "submarine"  → FIX + RE-RUN FIRST** (1 seed, `SEEDS_I=0 BATCH=I`). The
-   current runs are invalid (probe-holdout starvation bug — see the Group I section). Apply the
-   `_prepare` one-line fix, `rm -rf $RES/I_*_c36_rep*`, re-run. Then `tap_*` timelines / `tap_frontier`
-   should show the mark hugging just under η. This is the biggest missing piece of the thesis.
-2. **H5 — money-plot positive control** (crude previous-models FR on c100; cheap, 3 seeds). Adds
+1. **Group I — adaptive-tap "submarine"** (1 seed each; 12 families). 
+2. **E1 / E2 / E3 — non-IID.** E1/E2 give the honest floor / η; E3 {0.1, 1.0} shows the α effect. 
+3. **H5 — positive control** (crude previous-models FR on c100; cheap, 3 seeds). Adds
    the "detector *can* catch crude attacks" bar so `operating_point` shows the contrast. `BATCH=H`.
-3. **V2 — Table V trigger-sample attack** (`tn10/100/500/m1`; cheap). Overfit → caught; the
-   attack-side complement to D's trigger-only point. `BATCH=V`.
-4. **E1 / E2 / E3 — non-IID (now that the partition bug is fixed).** All prior E runs were secretly
-   IID (`PART`≠`PARTITION`), so re-run from scratch: `rm -rf $RES/E1_* $RES/E2_* $RES/E3_*`. Verify
-   `run.log` "client shards" shows **uneven** sizes (Dirichlet). E1/E2 give the honest floor / η;
-   E3 {0.1, 1.0} shows the α effect. Priority-bumped per your request.
+4. **V2 — Table V trigger-sample attack** (`tn10/100/500/m1`; cheap). Overfit -> caught; the
+   attack-side complement to D's trigger-only point. `BATCH=V`. 
 5. **J5 — best-knob adaptive-tap combo.** Compose *after* analysing group I (pick the winning
    knobs), run at 3 seeds. Uncomment the J block in run_now.
-6. **F1 / F2 — capacity (200 clients).** Most expensive per run; 2 seeds fine. F3 / paper-repro
+6. **F1 / F2 — capacity (200 clients).** Most expensive per run; 2 seeds. F3 / paper-repro
    (Table IX/VII) lowest priority — thesis fidelity, not your contribution.
 7. **C1 — sin smoothing.** BLOCKED on the crash fix (R14); ablation, do last.
 
@@ -273,8 +181,8 @@ real `tap_data_cpc` — a plots.py label bug, harmless to the BER data.)*
 runai delete job <pool-job-name>            # stop the slow pool
 for d in "$RES"/*/result.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$d" \
   2>/dev/null || rm -rf "$(dirname "$d")"; done   # drop any half-written result.json
-MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 BATCH=I ./runbook.sh manifest
-MPS=1 WORKERS=8 PODS=2 SEEDS_I=0 BATCH=I ./runbook.sh submit
+MPS=1 WORKERS=4 PODS=2 SEEDS_I=0 BATCH=I ./runbook.sh manifest
+MPS=1 WORKERS=4 PODS=2 SEEDS_I=0 BATCH=I ./runbook.sh submit
 ./runbook.sh monitor
 # when done:  RES=$RES OUT=$OUT ./runbook.sh plot   (I-family plot list now matches run_now)
 ```

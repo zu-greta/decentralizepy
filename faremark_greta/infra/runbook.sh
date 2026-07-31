@@ -180,7 +180,8 @@ phase_plot(){
              I_when_threshold_c36 I_when_every_k_c36 \
              I_eta_oracle_c36 I_eta_self_c36 \
              I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 \
-             I_tight_eta0064_c36; do
+             I_tight_eta0064_c36 \
+             J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36; do
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_${fam}"
   done
@@ -190,10 +191,11 @@ phase_plot(){
   run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20        --families A2_reduced_c100_c17 A3_reduced_c100_c36 A4_sameclass_c100_c6                   AK_sameclass_samekey_c6 D1_reduced_c100_c36_n5 V2_tableV_attack_c36_tnm1                   H5_prevmodel_c100        --out $OUT/operating_point"
 
   # --- TAP DYNAMICS: fade/recovery. Per-family trace + the stealth frontier across group I ---
-  for fam in I_when_threshold_c36 I_coast_resend_c36; do
+  for fam in I_when_threshold_c36 I_coast_resend_c36 \
+             J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36; do
     run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
   done
-  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36"
+  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36"
 
   # --- V2 Table V attack: FR BER vs #trigger-training-samples (overfit -> caught) ---
   #     TN values match run_now (10, 100, 500, and m1 = full trigger-class anchor).

@@ -306,39 +306,30 @@ fi
 # ---------------------------------------------------------------------------
 # GROUP J -- ADAPTIVE-TAP multi-knob combos (move several at once) -> run after group I
 # ---------------------------------------------------------------------------
-# if has J; then
-#   SEEDS_J="${SEEDS_J:-0 1 2}"
-#   base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 WM_ETA_FIXED=0.064 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50"
-  # # J1: cheapest invisible attacker -- self eta, big margin, tiny data, head-only, coast hard
-  # for s in $SEEDS_J; do
-  #   env $base TAP_ETA_SOURCE=self TAP_MARGIN=0.05 TAP_DATA_CPC=0 TAP_SCOPE=head \
-  #       TAP_WHEN=threshold TAP_MAX_COAST=6 TAP_COAST_MODE=resend \
-  #       FAMILY="J1_cheapest_c36" NOTE="J1 self+margin.05+trigonly+head+coast6" ./submit_experiment.sh 14 "$s"
-  # done
-  # # J2: aggressive holder -- oracle eta, tap every round, full data+scope (upper bound on stealth cost)
-  # for s in $SEEDS_J; do
-  #   env $base TAP_ETA_SOURCE=oracle TAP_WHEN=always TAP_DATA_CPC=5 TAP_SCOPE=full \
-  #       FAMILY="J2_holder_c36" NOTE="J2 oracle+always+cpc5+full" ./submit_experiment.sh 14 "$s"
-  # done
-  # # J3: periodic minimalist -- tap every 4 rounds, trigger-only, block scope
-  # for s in $SEEDS_J; do
-  #   env $base TAP_WHEN=every_k TAP_PERIOD=4 TAP_DATA_CPC=0 TAP_SCOPE=block \
-  #       FAMILY="J3_periodic_c36" NOTE="J3 every4+trigonly+block" ./submit_experiment.sh 14 "$s"
-  # done
-  # # J4: decay-coaster -- resend own last tapped weights between taps, big margin
-  # for s in $SEEDS_J; do
-  #   env $base TAP_COAST_MODE=decay TAP_MARGIN=0.05 TAP_WHEN=threshold TAP_DATA_CPC=1 \
-  #       FAMILY="J4_decaycoast_c36" NOTE="J4 decay+margin.05+cpc1" ./submit_experiment.sh 14 "$s"
-  # done
+if has J; then
+  SEEDS_J="${SEEDS_J:-0 1 2}"
+  base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 WM_ETA_FIXED=0.064 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50"
+  # J2 — self-regulating: probe the global each round, coast while decay holds the mark, tap only when it drifts up
+  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+      WM_ETA_FIXED=0.264 TAP_WHEN=threshold TAP_MARGIN=0.02 TAP_MAX_COAST=6 \
+      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
+      ROUNDS=30 FAST_DATA=1 FAMILY="J2_threshold_decay_c36" \
+      NOTE="J2 self-regulating decay: coast while mark holds" ./submit_experiment.sh 14 0
 
-  # NOTE: adjust this configuration after group I sweeps and pick the one with the best knobs to run on different trigger classes
-  # J5: TODO:pick the best configuration: oracle eta, tap when threshold, large margin, data reduced +5, full scope, resend 
-  # for s in $SEEDS_J; do
-  #   env $base TAP_ETA_SOURCE=oracle TAP_WHEN=threshold TAP_MARGIN=0.05 TAP_DATA_CPC=5 \
-  #       TAP_SCOPE=full TAP_COAST_MODE=resend \
-  #       FAMILY="J5_conservative_c36" NOTE="J5 oracle+thresh+margin.05+cpc5+full+resend" ./submit_experiment.sh 14 "$s"
-  # done
-# fi
+  # J3 — the direct A/B vs the failed resend run: tap 1-in-3, decay-coast the other 2
+  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+      WM_ETA_FIXED=0.264 TAP_WHEN=every_k TAP_PERIOD=3 TAP_MAX_COAST=6 \
+      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
+      ROUNDS=30 FAST_DATA=1 FAMILY="J3_everyk3_decay_c36" \
+      NOTE="J3 decay vs the resend every_k=3 that hit 0.6-0.8" ./submit_experiment.sh 14 0
+
+  # J4 — safer duty cycle: tap 1-in-2, decay-coast alternate (only 1 coast to survive)
+  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+      WM_ETA_FIXED=0.264 TAP_WHEN=every_k TAP_PERIOD=2 TAP_MAX_COAST=6 \
+      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
+      ROUNDS=30 FAST_DATA=1 FAMILY="J4_everyk2_decay_c36" \
+      NOTE="J4 decay, 50% duty cycle, 1 coast between taps" ./submit_experiment.sh 14 0
+fi
 
 # ---------------------------------------------------------------------------
 # GROUP V -- TRIGGER SAMPLES, two faces of the paper.

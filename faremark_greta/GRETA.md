@@ -434,6 +434,18 @@ TODO:
 3. read the related works
 4. friday morning - send in prompt to continue to deliver the new code + give it the plots from tonight if they make sense else abandon. if tonight's run is done plot and give those for analysis instead. if good - send in slack
 
+
+---
+
+## paper notes
+- need to define the context - based on a generalized subset of the FareMark paper context
+- define free-riders carefully - justify why the definition differs from that of FedIPR (free-rider can do work)
+
+1. submarine attack paper: present the new attack method
+2. faremark paper limitations: show the limitations of the FareMark paper and how it can be improved
+3. prove the output layer watermarking is not enough to detect free-riders 
+4. decentralized federated learning and watermarking
+
 ---
 ---
 ## resources
