@@ -727,8 +727,12 @@ def make_tap_attack(base_cls):
 #                                  tap_period, tap_max_coast, tap_margin
 #    - how much data on a tap .... tap_data_cpc (-1 full | 0 trigger-only | N)
 #    - how much MODEL on a tap ... tap_scope ("full" | "block2" | "block" | "head")
-#    - free-riding between taps .. tap_coast_mode ("resend" global | 
-#                                  "decay" own last)
+#    - free-riding between taps .. tap_coast_mode ("resend" global -> mark decays
+#                                  fully in 1 round | "decay" own last-tapped
+#                                  weights -> mark frozen flat, but a replay |
+#                                  "graft" global body + frozen mark head -> mark
+#                                  decays GRADUALLY = the sawtooth, submission still
+#                                  tracks the global. Pair graft with scope="head".)
 # ------------------------------------------------------------------------------ #
 def make_adaptive_tap_attack(base_cls):
 
@@ -820,13 +824,44 @@ def make_adaptive_tap_attack(base_cls):
                                "ber_after": None if ba is None else round(ba, 4)})
             return submit, n
 
+        # ---- graft support (coast_mode="graft") ------------------------------
+        def _graft_keys(self):
+            """State-dict keys of the watermark-carrying output layer to keep
+            frozen during a graft coast. Uses the tap scope's kept params; if the
+            tap trains 'full', fall back to the head (last 2 params) so graft
+            still leaves the body free to follow the global."""
+            keep = self._SCOPE_KEEP.get(self.scope) or 2
+            named = list(self.model.named_parameters())
+            return [name for name, _ in named[len(named) - int(keep):]]
+
+        def _coast_candidate(self, global_state):
+            """The model the FR would SUBMIT if it coasts this round, per coast_mode:
+              resend -> the received global (mark fully decays to ~0.5 in 1 round)
+              decay  -> the FR's own last-tapped weights verbatim (mark frozen flat,
+                        but a replay: identical submissions round over round)
+              graft  -> global body + FR's frozen last-tapped mark head. The body
+                        tracks the global (submission moves, no replay tell) while
+                        the frozen head's projected bits degrade GRADUALLY as the
+                        drifting features flow through them -> a real BER sawtooth.
+            The threshold probes THIS (not the raw global) before deciding tap/coast,
+            so a FR whose coast holds the mark (decay/graft) correctly coasts instead
+            of degenerating to always-tap."""
+            if self.coast_mode == "resend" or self._last_submit is None:
+                return global_state
+            if self.coast_mode == "decay":
+                return self._last_submit
+            # graft: start from the fresh global, overwrite only the mark-head params
+            out = {k: v.clone() for k, v in global_state.items()}
+            for k in self._graft_keys():
+                if k in self._last_submit:
+                    out[k] = self._last_submit[k].clone()
+            return out
+
         # ---- one coast (no training) -----------------------------------------
         def _do_coast(self, global_state, round_idx, eta, target, ber_now):
             self._coast_streak += 1 # increment the coast streak
-            if self.coast_mode == "decay" and self._last_submit is not None: # resubmit the last tap with no training
-                out = {k: v.clone() for k, v in self._last_submit.items()}
-            else: # resubmit the global state with no training
-                out = {k: v.clone() for k, v in global_state.items()}
+            # submit exactly what the threshold probed: the coast candidate for this mode
+            out = {k: v.clone() for k, v in self._coast_candidate(global_state).items()}
             self.meter.start_round(round_idx); self.meter.end_round(trained=False)
             self.trace.append({"round": round_idx, "action": "coast",
                                "eta_frozen": round(eta, 4), "target": round(target, 4),
@@ -837,14 +872,21 @@ def make_adaptive_tap_attack(base_cls):
             return out, self.num_samples
 
         # ---- self-probe -----------------
-        # Only threshold-tapping (needs current BER vs eta) and self-eta (needs the calib BERs) use the probe
+        # Only threshold-tapping and self-eta need the probe to DECIDE, but we always
+        # record it (fade/recovery measurement) -- see produce_update.
         def _probe_needed(self):
             return (self.when == "threshold") or (self.eta_source == "self")
 
         # ---- main ------------------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
             phase = self._phase_action(round_idx)
-            holdout = self.probe_holdout if self._probe_needed() else 0
+            # Always request the probe holdout so ber_before/ber_after are RECORDED every
+            # freeride round (persistence / fade / recovery measurement), even when the tap
+            # decision doesn't need it (every_k + oracle). _prepare() still refuses to hold
+            # out images when the trigger class is too scarce to spare them (MIN_TRAIN_TRIG),
+            # so this can never starve embedding; on scarce classes the probe simply returns
+            # None and the trace records None (unchanged behaviour there).
+            holdout = self.probe_holdout
 
             # warmup + calibration window: pure honest client on the full shard
             if phase != "freeride":
@@ -867,7 +909,11 @@ def make_adaptive_tap_attack(base_cls):
             eta = self._eta_frozen
             target = max(0.0, eta - self.margin)
 
-            ber_now = self._probe_ber(global_state)     # check if mark is still present in the global model
+            # Probe the model the FR would SUBMIT if it coasts this round (per coast_mode),
+            # NOT the raw received global. Under resend the candidate IS the global (mark
+            # ~0.5 -> correctly taps); under decay/graft the candidate holds the mark, so
+            # threshold coasts while BER < target instead of degenerating to always-tap.
+            ber_now = self._probe_ber(self._coast_candidate(global_state))
             self._ber_before = None if ber_now is None else round(ber_now, 4)
 
             # decide: tap or coast

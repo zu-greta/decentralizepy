@@ -146,7 +146,7 @@ def parse_args():
     p.add_argument("--tap_max_coast", type=int, default=None)
     p.add_argument("--tap_data_cpc", type=int, default=None)
     p.add_argument("--tap_scope", type=str, default=None, choices=["full", "block2", "block", "head"])
-    p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay"])
+    p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay", "graft"])
     p.add_argument("--tap_probe_holdout", type=int, default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
                    action="store_true", default=None,

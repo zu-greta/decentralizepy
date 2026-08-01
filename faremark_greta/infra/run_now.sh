@@ -304,31 +304,97 @@ if has I; then
 fi
 
 # ---------------------------------------------------------------------------
-# GROUP J -- ADAPTIVE-TAP multi-knob combos (move several at once) -> run after group I
+# GROUP J -- graft-coast submarine: PERSISTENCE (how long the mark lasts untapped)
+#            + RECOVERY (how fast one tap re-embeds) + the adaptive SAWTOOTH.
+#            Run AFTER the clients.py graft + probe-target fix is in.  1 seed for now.
+#
+# LESSONS FROM GROUP I BAKED IN (do NOT repeat the BER~0.6 mistake):
+#   * TAP_DATA_CPC=5  = the Group-D PLATEAU recipe. cpc=0 (trigger-only) is exactly what
+#     pinned group I at ~0.6 (Table V overfitting) -- it is used ONLY as a labelled control,
+#     never as a base. J0 is a GATE that must reproduce the ~0.11-0.13 plateau or you STOP.
+#   * decision eta = AUTOP_ORACLE_ETA=0.264 (the beatable per-client LOOSE rule): the FR aims
+#     just UNDER 0.264, not under the degenerate 0.064. WM_ETA_FIXED=0.064 only draws the tight
+#     REFERENCE line; the loose 0.264 reference draws by default. BOTH are reference only --
+#     they do not decide anything (the offline sweep is the verdict).
+#   * coast_mode=graft + scope=head: the body follows the global (submission moves, no replay),
+#     only the mark head is frozen, so the mark FADES GRADUALLY (a sawtooth) instead of dying in
+#     1 round (resend) or never (decay). Requires the clients.py probe-target fix.
 # ---------------------------------------------------------------------------
 if has J; then
-  SEEDS_J="${SEEDS_J:-0 1 2}"
-  base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 WM_ETA_FIXED=0.064 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50"
-  # J2 — self-regulating: probe the global each round, coast while decay holds the mark, tap only when it drifts up
-  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-      WM_ETA_FIXED=0.264 TAP_WHEN=threshold TAP_MARGIN=0.02 TAP_MAX_COAST=6 \
-      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
-      ROUNDS=30 FAST_DATA=1 FAMILY="J2_threshold_decay_c36" \
-      NOTE="J2 self-regulating decay: coast while mark holds" ./submit_experiment.sh 14 0
+  SEEDS_J="${SEEDS_J:-0}"          # 1 seed for the exploratory pass; bump to "0 1 2" once shape confirmed
+  jbase="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+         AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 TAP_ETA_SOURCE=oracle \
+         TAP_PROBE_HOLDOUT=16 ROUNDS=40 FAST_DATA=1"
 
-  # J3 — the direct A/B vs the failed resend run: tap 1-in-3, decay-coast the other 2
-  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-      WM_ETA_FIXED=0.264 TAP_WHEN=every_k TAP_PERIOD=3 TAP_MAX_COAST=6 \
-      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
-      ROUNDS=30 FAST_DATA=1 FAMILY="J3_everyk3_decay_c36" \
-      NOTE="J3 decay vs the resend every_k=3 that hit 0.6-0.8" ./submit_experiment.sh 14 0
+  # --- J0 GATE: always-tap cpc=5 MUST reproduce the Group-D plateau (~0.11-0.13), NOT 0.6. ----
+  #     If this is flat at ~0.6 the tap EMBED path is broken -> STOP and grep the trace
+  #     (n_trigger_train should be ~tens, ber_after ~0.1) before trusting anything below.
+  for s in $SEEDS_J; do
+    env $jbase TAP_WHEN=always TAP_SCOPE=full TAP_COAST_MODE=resend \
+        FAMILY="J0_gate_alwaystap_c36" \
+        NOTE="J0 GATE always-tap cpc5 must == Group D (~0.13, NOT 0.6)" \
+        ./submit_experiment.sh 14 "$s"
+  done
 
-  # J4 — safer duty cycle: tap 1-in-2, decay-coast alternate (only 1 coast to survive)
-  env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-      WM_ETA_FIXED=0.264 TAP_WHEN=every_k TAP_PERIOD=2 TAP_MAX_COAST=6 \
-      TAP_COAST_MODE=decay TAP_DATA_CPC=5 TAP_SCOPE=full TAP_ETA_SOURCE=oracle \
-      ROUNDS=30 FAST_DATA=1 FAMILY="J4_everyk2_decay_c36" \
-      NOTE="J4 decay, 50% duty cycle, 1 coast between taps" ./submit_experiment.sh 14 0
+  # --- J1 PERSISTENCE: how many rounds does the mark survive with NO tap? ---------------------
+  #     every_k(P) taps ONCE then coasts P-1 rounds on graft. P are divisors of the warmup (12)
+  #     so round 12 always taps and establishes the mark first:
+  #       P=2 ->1 coast   P=3 ->2   P=4 ->3   P=6 ->5   P=12 ->11 coasts between taps.
+  #     READ: on the coast rounds, how high does the FR BER climb? The largest P whose coast
+  #     rounds stay < eta = the persistence limit = "the mark lasts ~this many rounds untapped".
+  #     tap_dynamics gives fade_per_coast + stayed_below_target per P.
+  for P in 2 3 4 6 12; do
+    for s in $SEEDS_J; do
+      env $jbase TAP_WHEN=every_k TAP_PERIOD=$P TAP_MAX_COAST=999 \
+          TAP_SCOPE=head TAP_COAST_MODE=graft \
+          FAMILY="J1_persist_graft_p${P}_c36" \
+          NOTE="J1 persistence: graft, tap 1-in-$P (survives $((P-1)) coasts?)" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  done
+
+  # --- J2 THE SAWTOOTH: adaptive threshold + graft. Tap ONLY when the fading mark nears eta. ---
+  #     This is the headline run. From its trace, tap_dynamics extracts BOTH observables:
+  #       rounds_between_taps = FADE TIME (how long one tap lasts before BER climbs to eta-margin)
+  #       ber_drop_per_tap    = RECOVERY (how much BER a single re-embed buys back)
+  #     TAP_MAX_COAST=12 lets it coast long; TAP_MARGIN=0.03 aims a hair under the 0.264 loose rule.
+  for s in $SEEDS_J; do
+    env $jbase TAP_WHEN=threshold TAP_MARGIN=0.03 TAP_MAX_COAST=12 \
+        TAP_SCOPE=head TAP_COAST_MODE=graft \
+        FAMILY="J2_saw_graft_head_c36" \
+        NOTE="J2 adaptive sawtooth: graft coast, re-tap only near eta (fade+recovery)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- J3 COAST-MODE A/B at 1-in-3 (the fade-mechanism control; graft@P3 lives in J1). ---------
+  #     resend -> mark dies in 1 coast (BER ~0.5-0.8 on coasts = CAUGHT). Also the COLD-RECOVERY
+  #               probe: every tap re-embeds from a dead ~0.5 start, so ber_drop_per_tap here =
+  #               how much ONE tap recovers from scratch.
+  #     decay  -> mark frozen flat (evades, but a REPLAY: byte-identical submissions).
+  #     (graft at P=3 is J1_persist_graft_p3_c36 -- compare the three side by side.)
+  for CM in resend decay; do
+    for s in $SEEDS_J; do
+      env $jbase TAP_WHEN=every_k TAP_PERIOD=3 TAP_MAX_COAST=999 \
+          TAP_SCOPE=head TAP_COAST_MODE=$CM \
+          FAMILY="J3_coast_${CM}_p3_c36" \
+          NOTE="J3 coast_mode=$CM at 1-in-3 (fade mechanism; resend=cold-recovery probe)" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  done
+
+  # --- J4 GRAFT SCOPE: how much of the mark must be frozen for a usable fade rate? -------------
+  #     head (last 2 params) = J2 (fastest fade). block (8) / block2 (20) freeze MORE of the
+  #     head -> the mark survives longer per coast. If J2/J3 graft snaps to ~0.5 in one coast,
+  #     block/block2 slow the fade; if graft is dead flat, go back to head.
+  for SC in block block2; do
+    for s in $SEEDS_J; do
+      env $jbase TAP_WHEN=threshold TAP_MARGIN=0.03 TAP_MAX_COAST=12 \
+          TAP_SCOPE=$SC TAP_COAST_MODE=graft \
+          FAMILY="J4_scope_graft_${SC}_c36" \
+          NOTE="J4 graft scope=$SC (slower fade than head; persistence-vs-cost tuning)" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  done
 fi
 
 # ---------------------------------------------------------------------------

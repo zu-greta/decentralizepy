@@ -19,7 +19,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; cd "$HERE"
 
 BATCH="${BATCH:-EFHIV}"          # UN-RUN / to-fix families: E(E1,E2,E3-fixed) F(F3) H(H5) I V(V2).
                                 # A and D are done (3 seeds). C is EXCLUDED (sin crash, see R14).
-                                # J stays commented in run_now until group I is analysed (pick J5).
+                                # J is the graft-coast suite (persistence/sawtooth/coast); run
+                                # it alone with BATCH=J after the clients.py graft fix is in.
                                 # The pool SKIPS any family whose result.json EXISTS -- so the buggy
                                 # E3 a01/a03/a10 will NOT be re-run unless you first delete their dirs:
                                 #   rm -rf $RES/E3_*_niid_*_a0{1,3}_rep* $RES/E3_*_niid_*_a10_rep*
@@ -173,15 +174,19 @@ phase_plot(){
   done
 
   # --- I adaptive-tap: timeline per family (two-eta lines drawn automatically) ---
-  #     These are the EXACT families run_now.sh builds for group I (SEEDS_I). J is not
-  #     run yet (stays commented in run_now until I is analysed -> J5), so no J families here.
+  #     I families (SEEDS_I) + the new GROUP J graft suite (persistence / sawtooth / coast A-B).
   for fam in I0_smoke_always_cpc5_c36 \
              I_data_n0_c36 I_data_n1_c36 I_data_n5_c36 \
              I_when_threshold_c36 I_when_every_k_c36 \
              I_eta_oracle_c36 I_eta_self_c36 \
              I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 \
              I_tight_eta0064_c36 \
-             J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36; do
+             J0_gate_alwaystap_c36 \
+             J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36 \
+             J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
+             J2_saw_graft_head_c36 \
+             J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
+             J4_scope_graft_block_c36 J4_scope_graft_block2_c36; do
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_${fam}"
   done
@@ -190,12 +195,16 @@ phase_plot(){
   #     Crude c100 baseline H5 is the positive control (should light up); insiders stay ~0.
   run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20        --families A2_reduced_c100_c17 A3_reduced_c100_c36 A4_sameclass_c100_c6                   AK_sameclass_samekey_c6 D1_reduced_c100_c36_n5 V2_tableV_attack_c36_tnm1                   H5_prevmodel_c100        --out $OUT/operating_point"
 
-  # --- TAP DYNAMICS: fade/recovery. Per-family trace + the stealth frontier across group I ---
-  for fam in I_when_threshold_c36 I_coast_resend_c36 \
-             J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36; do
+  # --- TAP DYNAMICS: FADE (rounds_between_taps) + RECOVERY (ber_drop_per_tap). ---
+  #     Per-family trace for the runs where fade/recovery is the whole point, then the frontier.
+  for fam in J2_saw_graft_head_c36 \
+             J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
+             J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
+             J4_scope_graft_block_c36 J4_scope_graft_block2_c36 \
+             I_when_threshold_c36 I_coast_resend_c36; do
     run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
   done
-  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J2_threshold_decay_c36 J3_everyk3_decay_c36 J4_everyk2_decay_c36"
+  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J0_gate_alwaystap_c36 J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36                   J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 J2_saw_graft_head_c36                   J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 J4_scope_graft_block_c36 J4_scope_graft_block2_c36"
 
   # --- V2 Table V attack: FR BER vs #trigger-training-samples (overfit -> caught) ---
   #     TN values match run_now (10, 100, 500, and m1 = full trigger-class anchor).

@@ -1,7 +1,7 @@
 # Status + experiment plan
 
 ## STATUS
-implementation done for experiment set (see [experiment_plan](#experiment-plan---to-be-run)). **Complete (3 seeds):** Group A (A1–A4), **AK** (R7), **Group D** (R8), **isolated same-class pairs** (R10), **operating-point money plot** (R11, insiders). **E3 non-IID** done but α-sweep buggy (R12). **C1 FAILED** (sin crash — R14, deprioritised). Compute + trimmed next batch in **R13**. Remaining to run: **E1/E2 + E3-fixed, F, H, I (1-seed sweep), V2** → `BATCH=EFHIV`. 
+implementation done for experiment set (see [experiment_plan](#experiment-plan---to-be-run)). **Complete (3 seeds):** Group A (A1–A4), **AK** (R7), **Group D** (R8), **isolated same-class pairs** (R10), **operating-point money plot** (R11, insiders). **E1/E2 non-IID (α=0.5)** now plotted; **E3 α-sweep** done at 1 seed (a01/a10 solid, a10 bad-draw — R12). **Group I** adaptive-tap single-knob sweep done (1 seed — R15). **Group J** decay-coast submarine done (J2/J3/J4, 1 seed, seed=1000 — R16): `coast_mode=decay` evades flat at BER≈0.10 but is a replay (no sawtooth); the sawtooth needs a new `graft` coast mode + a `when=threshold` probe-target fix (both scoped in R16/N4). **C1 FAILED** (sin crash — R14, deprioritised). Compute + trimmed next batch in **R13**. **Next:** land the `graft` coast mode → **J5 sawtooth** (top priority), then **H5** control, **V2**, **F**, 3-seed re-runs of I/J/E3. 
 - status: get Jade up to date with the progress so far from last week (threshold limitations, reduced FR, class difficulty) + go through experiment plan list for experiments to run or not or more suggestions
 
 ---
@@ -485,27 +485,90 @@ one, where it is noisier only by the key draw:**
 | 3 (mid) | ~0.03–0.08 | ~0.033 | tangled, FR ≤ honest; inseparable |
 | 6 (hard) | ~0.10–0.15 | ~0.20–0.235 | FR *above* honest — but see key-lottery |
 
-### R12 — non-IID TODO: BUG (RERUN this and re-analyze)
+### R12 — non-IID (**3-seed rerun; supersedes the 1-seed buggy pass**)
 
-**Setup.** Dirichlet label skew; reduced free-riders on classes 3 & 6, cpc=5 (30 % data), η
-recalibrated for non-IID (frozen 0.161, up from IID 0.064). **a01 = α 0.1** (most skewed),
-**a03 = α 0.3**, **a10 = α 1.0** (least skewed).
+**Setup.** Dirichlet label skew; reduced free-riders on classes 3 & 6, cpc=5 (~27–31 % data), η
+frozen 0.161 (up from IID 0.064) on the E2/E3 timelines, all candidate rules recalibrated offline
+from the non-IID honest tail (E1_thresholds). **a01 = α 0.1** (most skewed), **a10 = α 1.0** (least;
+the buggy a03≡a01 twin is dropped). E1/E2 at α=0.5.
 
-- **[E3_a01_timeline.png](results/groupD/figs/E3_a01_timeline.png)** (α 0.1)
-- **[E3_a03_timeline.png](results/groupD/figs/E3_a03_timeline.png)** (α 0.3)
-- **[E3_a10_timeline.png](results/groupD/figs/E3_a10_timeline.png)** (α 1.0)
+- **[E1_class_floors.png]**, **[E1_thresholds.png]** (α=0.5 honest, 3 seeds)
+- **[E2_niid_timeline.png]** (α=0.5 reduced, 3 seeds)
+- **[E3_a01_timeline.png]** (α 0.1), **[E3_a10_timeline.png]** (α 1.0)
 
-| α (skew) | η tight (frozen) | η loose (pooled) | honest floor c3 / c6 | FR mean (converged) | flagged? |
+| α (skew) | η tight (frozen) | η loose (pooled) | honest floor c3 / c6 | FR mean (converged) | reading |
 |---|---|---|---|---|---|
-| 0.1 (a01) | 0.161 | 0.127 | 0.07 / 0.20 | ~0.11–0.13 | **no** (FR < η) |
-| 0.3 (a03) | 0.161 | 0.127 | 0.07 / 0.20 | ~0.11–0.13 | **no** |
-| 1.0 (a10) | 0.161 | 0.141 | 0.06 / 0.23 | ~0.11–0.14 | **no** |
+| 0.5 (E2) | 0.161 | 0.182 | 0.26 / 0.17 | ~0.18–0.20 | FR inside own-class floor band; flagged only with honest cls3/cls6 (24% FPR) |
+| 0.1 (a01) | 0.161 | 0.521 | 0.31 / 0.35 | ~0.31–0.33 | total overlap; honest≈FR≈0.3; η_tight flags everyone, η_loose no one |
+| 1.0 (a10) | 0.161 | 0.330 | 0.27 / 0.45 | ~0.31–0.33 | FR above η_tight, below η_loose, inside own-class floor band |
 
-**Finding (robust across all three).** Non-IID widens the honest floor and pushes η up to
-0.161 (2.5× the IID 0.064). The 30 %-data free-rider then rides at ~0.11–0.13, below η tight
-the whole post-defection period -> never flagged, sitting inside the honest-floor band. Skew does
-not help detection; it hurts it (a wider floor = a taller ceiling to hide under). Confirms the
-Group-E hypothesis: **label skew erases separability at least as thoroughly as IID.**
+**Finding (3 seeds).** Non-IID **widens the honest floor** on each client's own trigger class
+(starvation: the client rarely holds much of that class) and pushes the sane thresholds up (loose
+0.182 → 0.330 → 0.521 as skew increases). The reduced FR then rides **inside the honest-floor band of
+its own classes** at every α — per-class indistinguishable from an honest client there. The global
+honest mean stays low (easy classes embed) which makes a *pooled* threshold look catchable, but any η
+low enough to flag the FR flags a large fraction of honest clients (E1: 24% FPR at η≈0.16). **Skew
+erodes separability further, not less.** The α=1.0 "high own-class floor" result **held over 3 seeds**
+— it is the starvation mechanism, not the earlier 1-seed bad draw. Remaining: re-emit
+`E2_niid_sep.json` at 3 seeds for exact OVL/balanced-error.
+
+### R15 — Group I: adaptive-tap single-knob sweep (1 seed, 30–50 rounds)
+
+**Setup.** `attack=adaptive_tap`, FR at hard classes 3 & 6, warmup 12 / calib 4, base
+`tap_data_cpc=5` (the Group-D plateau recipe), `tap_coast_mode=resend`, oracle η. One knob varied per
+family (`I_<knob>_<val>_c36`). The device fix + `TAP_DATA_CPC=5` cleared the old flat-0.60 pin (that
+was `tap_data_cpc=0` = Table V overfitting inherited by every config).
+
+**Findings (full detail in RESULTS_INDEX Group I).**
+- **Data dial works exactly as predicted:** cpc=0 → BER 0.60, **caught** (Table V control); cpc≥1 →
+  0.10–0.20, **evades** η_loose at ~38–43% effort.
+- **Duty-cycle knobs fail to save effort under `resend`:** `when=threshold` degenerates to always-tap
+  (the self-probe reads the received global at BER≈0.5–0.6 → taps every round); `when=every_k` coasts
+  by re-submitting the global, so the mark fully decays and the **defender-measured FR BER hits
+  0.6–0.8 on coast rounds → caught**. The mark decays ~completely in one aggregation round.
+- **Verdict split:** the **evasion attack (re-embed every round, cpc≥1) works**; the **low-duty
+  "lazy submarine" does not** under `resend`. `coast_mode=decay` was left as the untested lever → R16.
+
+### R16 — Group J: decay-coast submarine (1 seed, seed=1000, 30 rounds) — and the sawtooth fix
+
+**Setup.** Three `adaptive_tap` runs at classes 3,6, all with **`tap_coast_mode=decay`**,
+**`tap_data_cpc=5`**, `tap_scope=full`, `tap_eta_source=oracle`, `WM_ETA_FIXED=0.264`, warmup 12 /
+calib 4, 30 rounds. They differ only in **when** they tap: **J2** `threshold`, **J3** `every_k=3`,
+**J4** `every_k=2`.
+
+**Plots.** [tap_J2_threshold_decay_c36.png], [tap_J3_everyk3_decay_c36.png],
+[tap_J4_everyk2_decay_c36.png]. All three: FR mean **flat at BER ≈ 0.10**, well under both η lines
+(0.264), **evades**.
+
+**Three questions answered (these were the review asks):**
+1. **"Was J really cpc=5, not the −1 in the title?"** — **cpc=5.** The J launch lines set
+   `TAP_DATA_CPC=5` and never set `AUTOP_COMMON_PER_CLASS`. The title's `cpc=−1.0` is
+   `autop_common_per_class` at its config-14 default (−1), a field the `adaptive_tap` attacker never
+   reads. Real per-tap budget = 5 common images/class (~31% effort per tap round). **Cosmetic title
+   bug** (see plots.py patch below).
+2. **"BER stays low, so why is it tapping?" (J2)** — there are **two different BERs.** The tap
+   decision uses `ber_before` = probe of the **received global**, whose mark has decayed to ≈0.5–0.6 →
+   0.5 > (η−margin) → tap **every round**. The plotted 0.10 is the **server's read of the FR's
+   re-embedded *submitted* model** — not the quantity driving the decision. `when=threshold` is
+   probing the wrong model. **Probe-target bug** (fix below).
+3. **"I want a sawtooth."** — you can't get one from the two shipped coast modes, because they are
+   **opposite extremes**: `resend` = mark fully decays in one coast (teeth ≈0.6–0.8, caught — R15);
+   `decay` = mark **never** decays (flat 0.10, but a **replay** — identical submissions, trivially
+   caught by a staleness/liveness check). Neither ramps.
+
+**Effort artifact.** Insets read 43/39/40% but are **dominated by the 12-round honest warmup**
+(≈12/30). The submarine's marginal attack-phase cost is ~0; report **rounds-13–30-only effort** to
+show it.
+
+**The fix (Group J's deliverable):** add a **middle** coast mode **`graft`** — submit **received
+global body + FR's frozen last-tapped output-layer (mark) head.** Body tracks the global each round
+(submission moves, no replay tell); the frozen head's projected bits **degrade gradually as drifting
+features flow through them → a genuine BER sawtooth.** Combine with `tap_scope=head` (cheap re-embed)
+and the fixed `when=threshold` probe (measure the **graft candidate**, not the raw global) so the FR
+re-taps only as a tooth nears η−margin. Then **J5** = the real low-duty, replay-free submarine.
+**Blocked on `clients.py` (new coast mode + probe fix) and `plots.py` (title label).** See N4.
+
+**CAVEAT: J is 1 seed (seed=1000), 30 rounds.** Shape/direction only; re-run J5 at 3 seeds.
 
 ### Remaining groups  ⏳ NOT YET RUN — placeholders
 
@@ -516,9 +579,15 @@ two η lines + separability JSON), and each subsection below is a stub to fill w
   class floors? *Result:* **❌ FAILED — sin-smoothing crash, see R14.** Disabled in `run_now.sh`
   and excluded from `BATCH` until the `wm_f=sin` branch is fixed. Not blocking.
 - **E — non-IID (Dirichlet α).** E1 honest floor under skew; E2 reduced-FR under skew; E3 α
-  severity sweep. *Result:* **◑ PARTIAL — E3 reduced timelines done (R12), but the α sweep is
-  buggy** (a01≡a03) and **E1/E2 (α=0.5) not yet run.** Fixed to sweep {0.1, 1.0}; delete the stale
-  E3 dirs and re-run with E1/E2. See R12.
+  severity sweep. *Result:* **✅ DONE at 3 seeds — E1/E2 (α=0.5) + E3 {0.1,1.0} rerun.** E1: honest
+  floors heterogeneous, span **0.007 (cls2) → 0.255 (cls3)** (milder/stabler than the 1-seed 0.00→0.60);
+  tight/coded η rises to **0.150 (> 1/m, no longer degenerate) but at 24% honest FPR**. E2 (η frozen
+  0.161, loose 0.182): the reduced FR rides **0.18–0.20, inside the honest-floor band 0.17–0.26** of
+  its own classes 3,6 — flagging it means flagging honest cls3/cls6 clients (24% FPR); global honest
+  mean 0.07 is a pooling artifact. E3: α=0.1 total overlap (nobody embeds, honest≈FR≈0.3); α=1.0 FR
+  0.32 above η_tight 0.161 / below η_loose 0.330 / inside its own-class floor band 0.27–0.45 — **held
+  over 3 seeds, no longer a bad-draw artifact.** Remaining: re-emit `E2_niid_sep.json` at 3 seeds for
+  the exact per-class OVL/balanced-error. See R12 + RESULTS_INDEX Group E.
 - **F — more clients than classes (capacity).** F1 honest 200-client/100-round floor; F2 forced
   class-sharing overlap; F3 Table IX repro (`client_train`) **+ held-out twin → memorisation
   gap**. *Expected:* forced sharing tangles marks; F3's gap shows the paper's "capacity" is
@@ -529,10 +598,13 @@ two η lines + separability JSON), and each subsection below is a stub to fill w
   on c100 = the money-plot positive control. *Expected:* all crude attacks light up near recall
   1.0 — the necessary contrast that makes "insiders are invisible" meaningful. *Fill:*
   `H_sep_*.json`, `grade → c10`. *Result:* _TODO._
-- **I / J — adaptive-tap attacker.** One knob at a time (I: when/margin/data/scope/eta/coast) and
-  several at once (J1–J4). *Proves:* an attacker that tracks η and coasts under it stays
-  invisible at a fraction of compute, even self-estimating η. *Fill:* `tap_*` timelines,
-  `tap_dynamics` frontier, `operating_point`. *Result:* _TODO (BATCH=IJ)._
+- **I / J — adaptive-tap attacker.** *Result:* **◑ DONE at 1 seed (R15 group I, R16 group J).**
+  I: the effort dial (`data_cpc`) and `when=always` evade; `when=threshold` is degenerate (probes the
+  received global, taps every round); `when=every_k`+`resend` is caught on its coast rounds. J: the
+  untested `coast_mode=decay` **evades flat at BER≈0.10** under η_loose but is a **replay** (identical
+  submissions) → no sawtooth, and it trades the BER test for a staleness test. **Next:** implement the
+  `graft` coast mode (global body + frozen mark head) + fix the `when=threshold` probe target, then
+  **J5** = the genuine low-duty sawtooth. Re-run winners at 3 seeds. See R16 + N4.
 - **V — verify-mode × N_T (Table VII/V memorisation).** V1 client_train vs held-out gap at
   N_T ∈ {1,10,50}; V2 FR trained on few trigger samples overfits → caught. *Expected:* small-N_T
   marks memorise and don't generalise (mirrors R8's trigger-only c3 = 0.60). *Fill:*
@@ -695,8 +767,23 @@ free-ride from `W`), so it is directly comparable. sweep one knob at a time (Gro
 | `tap_max_coast` / `TAP_MAX_COAST` | force a tap after this many coasts (stealth-vs-safety cap) | 1, 2, 4, 999 |
 | `tap_data_cpc` / `TAP_DATA_CPC` | **how much data per tap** | -1 (full), 0 (trigger-only), 1, 5, 25 |
 | `tap_scope` / `TAP_SCOPE` | **how much of the model a tap trains** (cheaper backward) | `full` \| `block2` \| `block` \| `head` |
-| `tap_coast_mode` / `TAP_COAST_MODE` | **how you free-ride between taps** | `resend` (global, zero compute) \| `decay` (resend own last tapped weights) |
+| `tap_coast_mode` / `TAP_COAST_MODE` | **how you free-ride between taps** | `resend` (global, zero compute — mark fully decays in 1 round, R15) \| `decay` (re-submit own last-tapped weights — mark never decays, flat, but a **replay**, R16) \| **`graft` (NEW, TODO: global body + frozen mark head — mark decays *gradually* → sawtooth, submission still tracks global)** |
 | `tap_probe_holdout` / `TAP_PROBE_HOLDOUT` | held-out trigger images for the FR's self-BER probe | 64 (default) |
+
+**R16 fixes to land in `clients.py` before J5 (both required for a real sawtooth):**
+1. **`coast_mode=graft`** — on a coast round build the submission as `submit := deepcopy(global);
+   submit.<final_linear_layer> := last_tapped_head`. Only the watermark-carrying output layer is
+   frozen; everything upstream = the fresh global. (This is the head-only mirror of `tap_scope=head`.)
+2. **Probe-target fix for `when=threshold`** — `ber_before` must be measured on **the model the FR
+   will actually submit under the active coast mode** (for `graft`, the grafted model; for `decay`,
+   the stored weights), **not** the raw received global. As written the probe reads the global (BER
+   ≈0.5), so `threshold` degenerates to always-tap (R15/R16). With the fix, right after a tap the
+   graft BER ≈0.10 < target → coast; as the body drifts the graft BER climbs; when it crosses
+   η−margin → tap. `tap_max_coast` stays as the safety cap.
+
+**Cosmetic (`plots.py timeline`):** when `attack == "adaptive_tap"`, format the title's data label from
+`tap_data_cpc` (+ `tap_coast_mode`, `tap_when`), not `autop_common_per_class` — kills the misleading
+`cpc=−1.0`.
 
 **Two OBSERVABLES you asked to see** are *measured, not set*. Each round the attacker records
 `ber_before` (probe BER of the aggregated model, before it acts) and `ber_after` (after a tap) in
@@ -767,16 +854,19 @@ phase (`RES=~/local/results ./runbook.sh plot`) unless noted.
 | AK | ▶ | same class + SAME key (effort-only isolation) | `AK_sameclass_samekey_c6` (×3) | `./run_now.sh A` | `AK_samekey_timeline`, `AK_samekey_sep.json` (verify `wm_key_twins -> 0:6`) |
 | C1 | ▶ | does a different smoothing f() (sin) move the floors? | `C1_honest_sin_c100` (×3) | `./run_now.sh C` | `C1_class_floors`, `C1_class_probe` |
 | D1 | ▶ | price-of-invisibility curve (N images/common class) | `D1_reduced_c100_c36_n{-1,0,1,2,5,10,25,50}` (×3) | `./run_now.sh D` | `D1_spectrum` sweep plot |
-| E1 | ▶ | non-IID honest floor (label skew widens BER) | `E1_honest_niid_c100` (×3) | `./run_now.sh E` | `E1_thresholds`, `E1_class_floors` |
-| E2 | ▶ | non-sep under non-IID (hard classes) | `E2_reduced_niid_c36` (×3) | `./run_now.sh E` | `E2_niid_timeline`, `E2_niid_sep.json` |
-| E3 | ▶ | severity sweep: does more skew erase separability further? | `E3_{honest,reduced}_niid_*_{a01,a03,a10}` (×3) | `./run_now.sh E` | per-α timelines/floors |
+| E1 | ✅ | non-IID honest floor (label skew widens BER); span 0.007→0.255, coded η 0.150 @ 24% FPR | `E1_honest_niid_c100` (×3) | `./run_now.sh E` | `E1_thresholds`, `E1_class_floors` — R12 |
+| E2 | ✅ | non-sep under non-IID; FR 0.18–0.20 inside honest floor band 0.17–0.26 | `E2_reduced_niid_c36` (×3) | `./run_now.sh E` | `E2_niid_timeline`; re-emit `E2_niid_sep.json` @3-seed — R12 |
+| E3 | ✅ | severity sweep {0.1,1.0}: more skew → wider floors, FR still inside own-class band | `E3_{honest,reduced}_niid_*_{a01,a10}` (×3) | `./run_now.sh E` | per-α timelines — R12 |
 | F1 | ▶ | capacity: 200 clients (forced sharing), honest | `F1_honest_nc200` (×3) | `./run_now.sh F` | `F1_thresholds` |
 | F2 | ▶ | non-sep under >clients-than-classes | `F2_reduced_nc200_c67` (×3) | `./run_now.sh F` | `F2_capacity_timeline`, `F2_sep.json` |
 | H1 | ▶ | fidelity: all-honest CIFAR-10 matches paper Table I/II | `H1_honest_c10` (×3) | `./run_now.sh H` | `grade` → paper_check c10 |
 | H3 | ▶ | crude previous-models FR IS caught (baseline sanity) | `H3_prevmodel_c10` (×3) | `./run_now.sh H` | `H_sep_H3_prevmodel_c10.json` |
 | H4 | ▶ | crude Gaussian FR IS caught (baseline sanity) | `H4_gaussian_c10` (×3) | `./run_now.sh H` | `H_sep_H4_gaussian_c10.json` |
-| I_* | ⏳ | adaptive-tap, ONE knob at a time (when/margin/data/scope/eta/coast/maxcoast) | `I_<knob>_<val>_c36` (×3) | `BATCH=I ./runbook.sh manifest submit` | `tap_I_*` timelines (2-η) |
-| J_* | ⏳ | adaptive-tap, several knobs at once (4 hypotheses) | `J{1..4}_*_c36` (×3) | `BATCH=J …` | `tap_J*` timelines |
+| I_* | ✅¹ | adaptive-tap, ONE knob at a time (when/margin/data/scope/eta/coast/maxcoast) | `I_<knob>_<val>_c36` (×1) | `SEEDS_I=0 BATCH=I ./runbook.sh manifest submit` | `tap_I_*` timelines (2-η) — R15 |
+| J2–J4 | ✅¹ | decay-coast submarine (threshold / every_k 3 / every_k 2) | `J{2,3,4}_*_decay_c36` (×1, seed 1000) | (env lines in `run_now.sh` J block) | `tap_J*` timelines — R16 |
+| J5 | ⏳ | **graft-coast submarine → the sawtooth** (global body + frozen mark head, cheap head taps) | `J5_graft_headtap_c36` | needs `clients.py`+`plots.py` patch (R16) then env line | `tap_J5*`, `tap_dyn_J5*` |
+
+¹ 1 seed — direction only; re-run the winning knob/combo at 3 seeds before any table.
 | V1 | ⏳ | verify-mode × N_T → memorisation gap (Table VII) | `V1_verify_{client_train,client,class}_nt{1,10,50}_c100` (×3) | `BATCH=V …` | `grade` → memorisation gap |
 | V2 | ⏳ | Table V: FR trained on few trigger samples → overfits, caught | `V2_tableV_attack_c36_tn{1,5,10,25,50,m1}` (×3) | `BATCH=V …` | `V2_sep_tn*.json` |
 | F3 | ⏳ | Table IX capacity repro (client_train) + held-out twin | `F3_tableIX_c10_nc50(_heldout)` (×3) | `PAPER_OK=1 BATCH=F …` | `grade` → Table IX + gap |

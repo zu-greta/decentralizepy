@@ -88,6 +88,20 @@ def lvl_label(v):
     if v == 0: return 'triggers\nonly'
     return f'+{int(v)}/cls'
 
+def data_lvl(r):
+    """Data budget the run's attacker ACTUALLY used, for titles/labels.
+    reduced/submarine -> autop_common_per_class (the +N spectrum knob, via lvl());
+    adaptive_tap      -> tap_data_cpc (the per-tap budget). Without this an
+    adaptive_tap run mislabels as cpc=autop_common_per_class (=-1 default), a field
+    the adaptive_tap attacker never reads."""
+    cfg = r.get('config', {}) or {}
+    atk = cfg.get('attack') or r.get('attack')
+    if atk == 'adaptive_tap':
+        v = cfg.get('tap_data_cpc')
+        try: return float(v)
+        except (TypeError, ValueError): return None
+    return lvl(r)
+
 GREY = OK.get("grey", "#888888")
 BLACK = OK.get("black", "#000000")
 TAIL = 20   # "converged" window = last N rounds
@@ -998,17 +1012,22 @@ def timeline(a):
     if avg_eff is not None:
         note = f"Data used: {avg_eff*100:.0f}% of honest total"
         if is_aggregated: note += f"\n(Avg over {num_seeds} seeds)"
-        note += f"\n(Config cpc={lvl(r_ref)})"
+        note += f"\n(Config cpc={data_lvl(r_ref)})"
         ax.text(0.02, 0.05, note, transform=ax.transAxes, fontsize=9, 
                 bbox=dict(facecolor="white", alpha=0.8, edgecolor="black"))
 
     ax.set_xlabel("communication round"); ax.set_ylabel("bit-error-rate (lower = mark present)")
     agg_seed_str = f"aggregated over {num_seeds} seeds" if is_aggregated else f"seed={r_ref.get('seed')}"
-    ax.set_title(a.title or f"BER vs round  ·  {fam(r_ref)}  ·  cpc={lvl(r_ref)}  ·  {agg_seed_str}")
+    ax.set_title(a.title or f"BER vs round  ·  {fam(r_ref)}  ·  cpc={data_lvl(r_ref)}  ·  {agg_seed_str}")
     ax.legend(loc="upper right", fontsize=7.5, ncol=2)
 
-    note = ("Black dashed = tight η (frozen, WM_ETA_FIXED, ~0.064, degenerate). Blue dashed = loose "
-            "η (pooled μ+3σ, ~0.264).\nA free-rider whose BER stays below a line is not flagged by it. "
+    _deg = "  (< 1/m, degenerate)" if (eta_tight is not None and eta_tight < 0.1) else ""
+    _cfg = r_ref.get("config") or {}
+    _cm = _cfg.get("tap_coast_mode") if (_cfg.get("attack") == "adaptive_tap") else None
+    note = (f"Black dashed = η tight (frozen, used) = {eta_tight:.3f}{_deg}. "
+            f"Blue dashed = η loose (pooled μ+3σ) = {eta_loose:.3f}."
+            + (f"  Coast mode = {_cm}." if _cm else "")
+            + "\nA free-rider whose BER stays below a line is not flagged by it. "
             "Warmup (yellow) = forced-honest; green = calibration window; grey dashed = free-riding starts.")
     ax.text(0.005, -0.18, note, transform=ax.transAxes, fontsize=8.5, color=GREY)
     ps.finish(fig, a.out + ".png")
