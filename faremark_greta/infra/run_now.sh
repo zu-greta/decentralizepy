@@ -398,6 +398,45 @@ if has J; then
 fi
 
 # ---------------------------------------------------------------------------
+# GROUP NOW -- TONIGHT'S 3-SEED RUN: the confirmed submarine (J2) + the tuned one (J5).
+#   BATCH=NOW ./runbook.sh manifest && BATCH=NOW ./runbook.sh submit
+#   3 seeds = repeats 0,1,2 = seeds 1000/1001/1002 (config.py: seed = base_seed + repeat).
+#   'NOW' shares no letter with any group token (A C D E F H I J V), and has() is a SUBSTRING
+#   match, so BATCH=NOW fires ONLY this block -- not the 11-family J suite.
+# ---------------------------------------------------------------------------
+if has NOW; then
+  SEEDS_NOW="${SEEDS_NOW:-0 1 2}"
+  # same recipe as group J: cpc5 taps, decision eta 0.264, reference lines 0.064/0.264,
+  # warmup 12, 40 rounds, graft/head/threshold (the confirmed adaptive submarine).
+  nbase="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+         AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 TAP_ETA_SOURCE=oracle \
+         TAP_SCOPE=head TAP_COAST_MODE=graft TAP_WHEN=threshold ROUNDS=40 FAST_DATA=1"
+
+  # CONFIG A -- J2 reproduced at 3 seeds: the confirmed adaptive submarine (the headline table row).
+  #   IDENTICAL knobs to the 1-seed J2 (margin 0.03, max_coast 12, holdout 16) so this IS J2 x3.
+  #   NOTE: the pool skips a family/rep whose result.json already EXISTS (it does NOT check knobs),
+  #   so DELETE the 1-seed rep0 first (see CLI) to get a clean 3-seed set under one recipe.
+  for s in $SEEDS_NOW; do
+    env $nbase TAP_MARGIN=0.03 TAP_MAX_COAST=12 TAP_PROBE_HOLDOUT=16 \
+        FAMILY="J2_saw_graft_head_c36" \
+        NOTE="J2 confirmed submarine @3seeds (graft/head/threshold, cpc5)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # CONFIG B -- J5 tuned submarine at 3 seeds: honest probe (holdout 48 -> ~25 real images, half the
+  #   trigger class) + safety margin 0.05 + deep coast (max_coast 20). Aim: the EASY FR (cid3) coasts
+  #   far (tap-fraction -> ~0) while the honest probe + margin keep the HARD FR (cid6) under eta_loose
+  #   on EVERY coast peak across all 3 seeds. cpc stays 5 (confirmed to re-embed); a cpc {1,2} sweep is
+  #   a separate 1-seed follow-up, not worth 3 seeds until the shape is confirmed.
+  for s in $SEEDS_NOW; do
+    env $nbase TAP_MARGIN=0.05 TAP_MAX_COAST=20 TAP_PROBE_HOLDOUT=48 \
+        FAMILY="J5_submarine_head_c36" \
+        NOTE="J5 tuned submarine @3seeds: honest probe + margin 0.05 + deep coast (max_coast 20)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # GROUP V -- TRIGGER SAMPLES, two faces of the paper.
 #
 # V1 (SERVER side, honest, no free-riders): sweep HOW the server verifies --

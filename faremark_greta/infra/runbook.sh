@@ -184,7 +184,7 @@ phase_plot(){
              J0_gate_alwaystap_c36 \
              J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36 \
              J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
-             J2_saw_graft_head_c36 \
+             J2_saw_graft_head_c36 J5_submarine_head_c36 \
              J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
              J4_scope_graft_block_c36 J4_scope_graft_block2_c36; do
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
@@ -197,14 +197,14 @@ phase_plot(){
 
   # --- TAP DYNAMICS: FADE (rounds_between_taps) + RECOVERY (ber_drop_per_tap). ---
   #     Per-family trace for the runs where fade/recovery is the whole point, then the frontier.
-  for fam in J2_saw_graft_head_c36 \
+  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
              J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
              J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
              J4_scope_graft_block_c36 J4_scope_graft_block2_c36 \
              I_when_threshold_c36 I_coast_resend_c36; do
     run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
   done
-  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J0_gate_alwaystap_c36 J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36                   J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 J2_saw_graft_head_c36                   J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 J4_scope_graft_block_c36 J4_scope_graft_block2_c36"
+  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J0_gate_alwaystap_c36 J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36                   J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 J2_saw_graft_head_c36 J5_submarine_head_c36                   J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 J4_scope_graft_block_c36 J4_scope_graft_block2_c36"
 
   # --- V2 Table V attack: FR BER vs #trigger-training-samples (overfit -> caught) ---
   #     TN values match run_now (10, 100, 500, and m1 = full trigger-class anchor).
