@@ -26,22 +26,13 @@ class ExpConfig:
     attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"|"tap_oracle"
                                             # ("submarine"/"autopilot" are DISABLED -- see clients.py PART 3)
     num_free_riders: int = 0                # how many of num_clients are free-riders
-    free_rider_ids: str = ""                # NEW: "3,6" pins which cids free-ride (overrides the
-                                            # seeded choice). Empty => choose_free_riders(seed).
+    free_rider_ids: str = ""                # "3,6" pins which cids free-ride (overrides seeded choice). Empty => choose_free_riders(seed).
     noise_sigma: float = 0.1                # GaussianNoiseFreeRider std
     noise_decay: float = 0.0                # >0 -> sigma_t = sigma0 * t^(-decay)
     partition: str = "iid"                  # 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
-    wm_key_twins: str = ""                  # "fr_cid:honest_cid,..." -> the free-rider derives
-                                            # its key M AND message B from the honest client's
-                                            # cid instead of its own
-    trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default
-                                            # trigger_class = cid % num_classes for those cids.
-                                            # Enables the same-trigger-class control: pin a
-                                            # free-rider onto the SAME class as an honest client
-                                            # to show their BER is drawn from one class floor
-                                            # (keys/bits stay seeded from cid, so the floor is
-                                            # shown to be a class property, not a key artifact).
+    wm_key_twins: str = ""                  # "fr_cid:honest_cid,..." -> FR match key and message to honest client
+    trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default trigger_class = cid % num_classes
 
     # ---- submarine adaptive free-rider ----
     # SUBMARINE attacker: acts exactly like an honest client, except: 
@@ -94,7 +85,7 @@ class ExpConfig:
     # FR that trains only on rounds when its own BER nears the estimated eta (submarine)
     tap_eta_source: str = "oracle"   # which eta the FR aims under: "oracle" = the true server eta
                                      # (wm_eta_fixed / autop_oracle_eta, for controlled tests);
-                                     # "self" = the FR estimates it from its OWN calib-window probe BER
+                                     # "self" = the FR estimates it from its own calib-window probe BER
     tap_eta_k: float = 3.0           # self mode: eta_hat = mu + k*sigma over the FR's own calib probe BERs
     tap_margin: float = 0.02         # aim this far below eta:  target = eta - margin
     tap_when: str = "threshold"      # when to tap: "threshold" (tap iff probe BER > target, else coast),
@@ -112,19 +103,16 @@ class ExpConfig:
     # ---- watermarking ----
     watermark: bool = False
     wm_bits: int = 0                        # m; 0 -> auto
-    wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys (some rows
-                                            # come out all-same-sign -> structurally unembeddable
-                                            # bits, BER floor ~0.5*unembeddable_frac; STATUS F6/F7).
+    wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys 
                                             # True = sign-balanced rows (removes that artifact by
-                                            # construction, still pseudo-random). Use True for the
-                                            # go-forward experiments; False only for the F6/F7 demo.
+                                            # construction, still pseudo-random)
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
     wm_beta: float = 0.6                    # memory coefficient (Eq. 14)
     wm_label_smoothing: float = 0.1
     wm_num_triggers: int = 50               # N_T trigger samples for extraction (Eq. 15)
-    wm_trigger_mode: str = "class"          # which trigger images the VERIFIER uses:
+    wm_trigger_mode: str = "class"          # which trigger images the verifier uses:
                                             #  "class"  = one shared held-out bank per trigger
                                             #             class (default; clients sharing a class
                                             #             see identical images -> only M^i/B^i
@@ -140,10 +128,8 @@ class ExpConfig:
     wm_eta_floor: float = 0.05              # small degenerate guard for eta only (not the threshold):
                                             # keeps eta = mu+3sigma strictly positive if every benign BER is
                                             # ~0. The operative threshold is always the computed mu+3sigma
-    wm_eta_fixed: float = 0.0               # >0 => use this PRE-CALIBRATED constant threshold for every
+    wm_eta_fixed: float = 0.0               # >0 => pre-calibrated constant threshold for every
                                             # round/experiment (from calibrate_eta.py). 0 => live calc.
-                                            # This is the canonical path now: calibrate once on honest-only
-                                            # multi-seed runs, freeze, reuse everywhere.
     wm_verify_every: int = 1
     calib_on_all: bool = False              # calibrate eta over all clients (exposes circularity) vs benign-only
 

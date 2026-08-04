@@ -188,16 +188,6 @@ def make_bits(num_bits: int, seed: int, balanced: bool = True) -> torch.Tensor:
     essentially arbitrary w.r.t. a balanced target, so its bit-error-rate sits
     near 0.5 -- which is what separates free-riders from benign clients.
 
-    FIXED -- degenerate at small m. The old code computed
-        half = num_bits // 2 ;  base = [1]*half + [0]*(num_bits-half)
-    which at **m = 1 always returns [0]**: the "secret message" is a constant,
-    so a free-rider that guesses 0 is right by construction and the watermark
-    carries no information at all. m = 1 is exactly the setting CIFAR-10 needs
-    to reach the paper's reported 99.72% (see README "Standard setup"), so this
-    had to be fixed before that row could be run. For num_bits < 4 the message
-    is now drawn uniformly at random, which is also what the paper describes
-    ("we randomly set the watermark to be embedded", Sec. V-A1).
-
     Faithfulness note: exact balancing is a deviation from the paper for EVERY m
     -- at m=10 we always get exactly five 1s where the paper would draw them
     uniformly. It lowers the variance of a random guesser's BER without moving
@@ -276,18 +266,6 @@ def bit_error_rate(bits: torch.Tensor, target: torch.Tensor) -> float:
 
 def detected(ber: float, eta: float) -> bool:
     """Watermark considered present (benign client) iff BER < eta (Eq. 16).
-
-    NOTE on eta = 0: with the paper's rule eta = mu + 3*sigma, a perfectly embedded
-    watermark gives mu = sigma = 0 and hence eta = 0. `ber < 0` is then False for
-    every client, so EVERY client -- including flawless ones -- is flagged. That is
-    a real property of the paper's rule, not a coding error, and it is why the
-    balanced-key runs report fpr=1.0 across the board. Reported as-is; the
-    degenerate case is labelled in detection.py rather than silently patched here.
-
-    Related: BER is a mean over m bits, so it only takes values 0, 1/m, 2/m, ...
-    Whenever eta < 1/m the test `ber < eta` is EXACTLY `zero bits wrong`, and the
-    numeric value of eta is irrelevant -- any eta in (0, 1/m) gives the same
-    detector. Check eta against 1/m before interpreting any FPR.
     """
     return ber < eta
 

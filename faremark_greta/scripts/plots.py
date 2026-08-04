@@ -2151,9 +2151,171 @@ def tap_dynamics(a):
     print("wrote", md)
 
 
+# ===========================================================================
+#  tap_perfr -- ONE panel per free-rider cid, so each free-rider is visible
+#  SEPARATELY on its own trigger class: when it taps vs coasts, its
+#  server-measured BER (the ground truth that gets flagged) AND its own
+#  self-probe (ber_before, what drives the tap/coast decision) on the same axis
+#  -> you SEE the self-probe-vs-server gap and the per-class asymmetry that the
+#  aggregate tap_dynamics plot hides.  Aggregates over seeds.
+#
+#    python plots.py tap_perfr --in 'results/*/result.json' \
+#        --family J2_saw_graft_head_c36 --out figs/tap_perfr_J2
+# ===========================================================================
+def tap_perfr(a):
+    fams = a.families or ([a.family] if a.family else None)
+    if not fams:
+        raise SystemExit("pass --family <adaptive_tap fam> or --families f1 f2 ...")
+    runs_all = load(a.inp)
+    eta_t = a.eta_tight if getattr(a, "eta_tight", None) is not None else ETA_TIGHT_DEFAULT
+    eta_l = a.eta_loose if getattr(a, "eta_loose", None) is not None else ETA_LOOSE_DEFAULT
+    multi = len(fams) > 1
+
+    for f in fams:
+        runs = pick(runs_all, f)
+        if not runs:
+            print(f"  (skip {f} -- no runs)"); continue
+
+        # free-rider cids and their trigger classes (from the server-side per-client rows)
+        fr_cids, tclass = set(), {}
+        for r in runs:
+            for h in r.get("history", []):
+                for p in (h.get("wm_per_client") or []):
+                    if p.get("is_free_rider"):
+                        cid = int(p["cid"]); fr_cids.add(cid)
+                        if p.get("trigger_class") is not None:
+                            tclass[cid] = int(p["trigger_class"])
+        fr_cids = sorted(fr_cids)
+        if not fr_cids:
+            print(f"  (skip {f} -- no free-riders in trace)"); continue
+
+        nseed = len(runs)
+        # per (cid, round): server BER (history), self-probe + actions (trace), across seeds
+        srv    = {c: defaultdict(list) for c in fr_cids}
+        probe  = {c: defaultdict(list) for c in fr_cids}
+        tap_ct = {c: defaultdict(int)  for c in fr_cids}
+        coa_ct = {c: defaultdict(int)  for c in fr_cids}
+        target_val = {}
+        for r in runs:
+            for h in r.get("history", []):
+                rd = h["round"]
+                for p in (h.get("wm_per_client") or []):
+                    if p.get("is_free_rider") and p.get("ber") is not None:
+                        srv[int(p["cid"])][rd].append(float(p["ber"]))
+            comp = (r.get("compute", {}) or {}).get("per_client", {}) or {}
+            for cidk, c in comp.items():
+                if not c.get("is_free_rider"):
+                    continue
+                cid = int(cidk)
+                if cid not in srv:
+                    continue
+                for t in (c.get("trace") or []):
+                    rd, act = t.get("round"), t.get("action")
+                    if t.get("ber_before") is not None:
+                        probe[cid][rd].append(float(t["ber_before"]))
+                    if act == "tap":
+                        tap_ct[cid][rd] += 1
+                    elif act == "coast":
+                        coa_ct[cid][rd] += 1
+                    if t.get("target") is not None:
+                        target_val[cid] = float(t["target"])
+
+        lo, hi = th.calib_window(runs[0]); W = hi + 1
+        fig, axes = ps.stacked_panels(len(fr_cids), figsize=(12, 3.3 * len(fr_cids)))
+        md_rows = []
+
+        for ax, cid in zip(axes, fr_cids):
+            tc = tclass.get(cid, "?")
+            xr = sorted(set(list(srv[cid]) + list(probe[cid])))
+            srv_mean = [np.mean(srv[cid][rd])   if srv[cid].get(rd)   else np.nan for rd in xr]
+            prb_mean = [np.mean(probe[cid][rd]) if probe[cid].get(rd) else np.nan for rd in xr]
+
+            # schedule bands
+            ax.axvspan(0.5, W - 0.5, color=ps.OKABE["yellow"], alpha=.12, lw=0)
+            ax.axvspan(lo - 0.5, hi + 0.5, color=ps.OKABE["green"], alpha=.16, lw=0)
+            ax.axvline(W - 0.5, color="0.5", ls="--", lw=1)
+
+            ax.plot(xr, srv_mean, color=ps.C_FR, lw=2.4, marker="o", ms=3, zorder=4,
+                    label="server-measured BER (what gets flagged)")
+            ax.plot(xr, prb_mean, color=ps.OKABE["orange"], lw=1.3, ls=(0, (4, 2)),
+                    alpha=.95, zorder=3, label="FR self-probe (drives tap/coast)")
+
+            def _yat(rd):
+                if srv[cid].get(rd):   return float(np.mean(srv[cid][rd]))
+                if probe[cid].get(rd): return float(np.mean(probe[cid][rd]))
+                return np.nan
+            tapx = [rd for rd in xr if tap_ct[cid].get(rd, 0) > nseed / 2]
+            coax = [rd for rd in xr if coa_ct[cid].get(rd, 0) > nseed / 2]
+            ax.scatter(tapx, [_yat(rd) for rd in tapx], marker="v", s=72,
+                       color=ps.OKABE["blue"], edgecolor="white", zorder=6,
+                       label="TAP (trains)")
+            ax.scatter(coax, [_yat(rd) for rd in coax], marker="s", s=44,
+                       facecolor="white", edgecolor=ps.C_FR, zorder=6,
+                       label="COAST (no train)")
+
+            ax.axhline(eta_l, color=ps.C_HONEST, ls="--", lw=1.7,
+                       label=f"\u03b7 loose {eta_l:.3f} (operating line)")
+            ax.axhline(eta_t, color="black", ls=":", lw=1.3,
+                       label=f"\u03b7 tight {eta_t:.3f} (degenerate)")
+            if cid in target_val:
+                ax.axhline(target_val[cid], color="0.45", ls="-.", lw=1.0,
+                           label=f"target {target_val[cid]:.3f}")
+
+            # per-seed attack-phase tap fraction (correct denominator = freeride rounds)
+            fracs = []
+            for r in runs:
+                comp = (r.get("compute", {}) or {}).get("per_client", {}) or {}
+                c = comp.get(str(cid)) or comp.get(cid)
+                if not c:
+                    continue
+                fr = [t for t in (c.get("trace") or []) if t.get("action") in ("tap", "coast")]
+                nt = sum(1 for t in fr if t["action"] == "tap")
+                if fr:
+                    fracs.append(nt / len(fr))
+            frac = float(np.mean(fracs)) if fracs else float("nan")
+            tail = [np.mean(srv[cid][rd]) for rd in xr if rd >= W and srv[cid].get(rd)]
+            srv_tail = float(np.mean(tail)) if tail else float("nan")
+            verdict = ("UNDER \u03b7_loose (evades)" if srv_tail < eta_l
+                       else "OVER \u03b7_loose (per-client CAUGHT)")
+            ax.set_title(f"cid{cid} \u00b7 class {tc} \u00b7 tap-fraction {frac:.0%} (attack phase) "
+                         f"\u00b7 tail server-BER {srv_tail:.2f} \u2192 {verdict}", fontsize=10)
+            ax.set_ylabel("bit-error-rate")
+            ax.set_ylim(-0.03, max(0.62, eta_l + 0.06))
+            ax.grid(alpha=.3)
+            if cid == fr_cids[0]:
+                ax.legend(fontsize=7, loc="upper right", ncol=2, framealpha=.95)
+            md_rows.append((cid, tc, frac, srv_tail, verdict))
+
+        axes[-1].set_xlabel("communication round")
+        fig.suptitle(f"Per-free-rider tap/coast  \u00b7  {f.split('_rep')[0]}  "
+                     f"({nseed} seed{'s' if nseed != 1 else ''})  \u00b7  "
+                     f"yellow=warmup  green=calib  grey=free-riding starts",
+                     fontsize=12, fontweight="bold")
+        base = a.out or "tap_perfr"
+        base = base[:-4] if str(base).endswith(".png") else str(base)
+        out = f"{base}_{f}.png" if multi else f"{base}.png"
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        ps.finish(fig, out)
+
+        md = out[:-4] + ".md"
+        L = [f"# Per-free-rider tap/coast \u2014 {f}  ({nseed} seed(s))", "",
+             "One row per free-rider. **tap-fraction** uses the attack-phase denominator "
+             "(freeride rounds only). **tail server-BER** is the server's read over the converged "
+             "tail \u2014 compare to \u03b7 loose = "
+             f"{eta_l:.3f}. A free-rider is only truly hidden if its *server* tail BER is under "
+             "\u03b7_loose; the self-probe can read lower and coast into a catch.", "",
+             "| cid | class | tap-fraction | tail server-BER | verdict |",
+             "|---|---|---|---|---|"]
+        for cid, tc, frac, srv_tail, verdict in md_rows:
+            L.append(f"| {cid} | {tc} | {frac:.0%} | {srv_tail:.3f} | {verdict} |")
+        open(md, "w").write("\n".join(L))
+        print("wrote", md)
+
+
 CMDS = {
     "operating_point": operating_point,    # NEW: recall @ fixed honest FPR across attacks (the money plot)
-    "tap_dynamics": tap_dynamics,          # NEW: fade/recovery + stealth frontier from the tap trace
+    "tap_perfr": tap_perfr,                # NEW: one panel per free-rider cid (per class) -- taps/coasts, server BER vs self-probe
+    "tap_dynamics": tap_dynamics,          # fade/recovery + stealth frontier (aggregate; use tap_perfr for per-cid)
     "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
     "class_difficulty": class_difficulty,  # CONFIRM harder class ids (acc/loss vs BER)

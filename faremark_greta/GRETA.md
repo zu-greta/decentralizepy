@@ -433,7 +433,90 @@ TODO:
 2. git push the new code and launch the new jobs
 3. read the related works
 4. friday morning - send in prompt to continue to deliver the new code + give it the plots from tonight if they make sense else abandon. if tonight's run is done plot and give those for analysis instead. if good - send in slack
+- monday
+1. read the results + seeds variations table 
+2. figure out conclusion for current status 
+    - group E: why more seeds makes it more stable - is that good or not for me?
+    - group J: what is the best knobs - is it even possible attack - what about threshold estimation?
+2. code cleanup and run through - check the configurations and results for group E and group J - figure out what to do with the submarine attack and summarize non-iid for meeting
+3. create meeting summary notes for tuesday meeting 
+4. what to do next (finalize experiments and setup - figure out direction for finshing up and timeline)
 
+#### August 4
+RESULTS
+- REDUCED ATTACK (group D)
+    - [D1_spectrum.png](results/groups/figs/D1_spectrum.png)
+    - Trigger-sample-only overfits and does not embed a generalising watermark (paper Table V); every cpc ≥ 1 embeds fine and evades.
+    - **Setup:** 10 clients, 3 seeds, CIFAR-100, ResNet-18, IID, reduced free-riders on classes 3 & 6,
+    sweeping the common-sample budget: trigger-only (cpc 0), then +1, +2, +5, +10, +25, +50 per common
+    class. Batch stays 16 -> fewer SGD steps per epoch on the shrunken set (5 local epochs)
+    - **Isolated same-class plots** (honest vs free-rider read on the same trigger class, from separate
+    runs so there's no watermark conflict):
+        - [iso_c1.png](results/groups/figs/iso_c1.png), [iso_c7.png](results/groups/figs/iso_c7.png) — easy
+        classes 1 & 7: the free-rider's mark drops to 0.00 and stays there (cleaner than honest).
+        - [iso_c3.png](results/groups/figs/iso_c3.png) — medium class 3: FR ≈ 0.037 vs honest ≈ 0.057 — tangled
+        - [iso_c6.png](results/groups/figs/iso_c6.png) — hard class 6: FR (≈ 0.22) sits *above* honest
+        (≈ 0.114). FR looks noisier but seems to be key lottery (a different key draw flips it): [iso_c6_A4_cleaner.png](results/groups/figs/iso_c6_A4_cleaner.png) — same class 6, different key draw (A4), FR (≈ 0.067) now below honest (≈ 0.114). always around the same area though
+        - [iso_acc_c6.png](results/figs/iso_acc_c6.png), [iso_acc_c7.png](results/figs/iso_acc_c7.png) — BER =/ trigger-class accuracy. The FR has the lower BER and the higher trigger-class accuracy while honest sits at ~0 accuracy; both hit ~72 % global test acc. Not a contradiction — BER reads the tail shape, not argmax 
+    - **FR compute cost savings (reduced, cpc=5):** the reduced attack trains every free-ride round on the reduced set, so its effort ~ its data fraction ~ 31 % of an honest client (~ 173 SGD steps/round vs honest 1565), steady (no warmup, no coast). 
+- NON-IID (group E) - 1 seed
+    - [E1_class_floors.png](results/groups/figs/E1_class_floors.png) all honest clients, 1 seed, 10 clients, CIFAR-100, ResNet-18, non-IID with Dirichlet α=0.5
+    - [E2_niid_timeline.png](results/groups/figs/E2_niid_timeline.png) for the same settings but with 2 free-riders on classes 3 and 6. 
+    - the sweeps with different alpha values: [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png). not that good for one seed. the one with 3 seeds: [E3_a01_timeline_3seeds.png](results/groups/figs_2/E3_a01_timeline.png), [E3_a10_timeline_3seeds.png](results/groups/figs_2/E3_a10_timeline.png). 
+    - with 3 seeds: [E1_class_floors_3seeds.png](results/groups/figs_2/E1_class_floors.png) all honest clients, 3 seeds, 10 clients, CIFAR-100, ResNet-18, non-IID with Dirichlet α=0.5. [E2_niid_timeline_3seeds.png](results/groups/figs_2/E2_niid_timeline.png) for the same settings but with 2 free-riders on classes 3 and 6.
+- NON-IID (group E) - 3 seeds
+    - **Honest floors** [E1_class_floors.png](results/groups/figs_2/E1_class_floors.png): 10 honest clients,
+    3 seeds, CIFAR-100, ResNet-18, non-IID Dirichlet α=0.5. Floors span **0.007 -> 0.255** — some classes
+    simply can't be watermarked by their assigned client under skew.
+    - **Reduced FR vs honest** [E2_niid_timeline.png](results/groups/figs_2/E2_niid_timeline.png): same
+    settings + 2 free-riders on classes 3 & 6. η tight 0.161, η loose 0.182. FR rides ≈0.18–0.20 inside
+    the honest-floor band (cls3 0.26, cls6 0.17); the low global honest mean (~0.07) is a pooling artifact.
+    - **α sweep** [E3_a01_timeline.png](results/groups/figs_2/E3_a01_timeline.png) (α=0.1, extreme skew) and
+    [E3_a10_timeline.png](results/groups/figs_2/E3_a10_timeline.png) (α=1.0, near-IID): more skew -> wider
+    floors -> FR vanishes inside the honest band
+    - **separability table** (`E2_niid_sep.json`, 3 seeds). **OVL** = overlap of the two BER
+    histograms (1.0 = identical -> unseparable). **best-balanced-error** = the lowest error any η achieves
+    (0.50 = coin flip):
+
+    | view | honest BER | FR BER | OVL | best balanced-error |
+    |---|---|---|---|---|
+    | class 3 (FR's own) | 0.255 | **0.222** | 0.667 | **0.50 — inseparable** |
+    | class 6 (FR's own) | 0.167 | **0.143** | 0.783 | **0.50 — inseparable** |
+    | GLOBAL (server pools all) | 0.109 | 0.183 | 0.690 | 0.39 — *the illusion* |
+
+- SUBMARINE ATTACK (group J)
+    - **config & setup.** `attack=adaptive_tap`, FR on classes 3 & 6, 40 rounds. The FR is honest for
+    a **warmup** (rounds 1–11), then **defects** (round 12): it re-embeds only when needed (**tap** = a
+    cheap scoped train on the reduced set) and otherwise submits a mark-carrying model for free (**coast**,
+    `graft` mode = fresh global body + its own frozen mark head). It taps when its self-probe rises above
+    `target = η − margin`. Knobs: `coast_mode`, `scope`, `data_cpc`, `margin`, `max_coast`, `probe_holdout`,
+    `when`, `eta_source`
+    - **which config works best: `J2_saw_graft_head_c36`** (graft coast, `scope=head`, cpc=5,
+    margin 0.03, max_coast 12, holdout 16). (3 seeds): [tap_perfr_J2.png](results/groups_2/figs/tap_perfr_J2.png) — one panel per free-rider, per class:
+        - cid3 (class 3): tap-fraction 10 %, server tail-BER 0.13 (η_loose 0.264). Genuine cheap
+        submarine — coasts ~90 %, attack-phase compute ≈ 1.5 % of an honest client.
+        - cid6 (class 6): tap-fraction 43 %, server tail-BER 0.22. But it saves little compute:
+        its 16-image self-probe over-reads (~0.30 vs the server's 0.22), so it taps far more than it needs
+        to. On the hard class the submarine ≡ the reduced attack in cost (fixable with a bigger probe).
+        - Note: FR given the threshold right now
+    - **The clean sawtooth demo: `J4_scope_graft_block2_c36`** (same as J2 but `scope=block2` = 20 params/tap).
+    [tap_J4_scope_graft_block2_c36.png](results/groups_1/figs/tap_J4_scope_graft_block2_c36.png): each tap
+    re-embeds to BER **0.0**, so it's the crisp 0.0<->0.3 sawtooth — but it costs ~2× (tap-fraction 34 % vs
+    10 %, 36 % GPU vs 30 %). Prettier and slightly lower BER; **J2 is stealthier.**
+    - QUESTIONS:
+        - estimate the threshold - needs to hold out some from assigned trigger samples -> how to balance how much to hold out (train on and test on - too little to train on cannot embed and too little to test on estimates the threshold poorly)
+        - what should i try for coasting - resend frozen model or graft (merge the body of global with head of previous embedded model)
+        -> idea: attacker always trains reduced (always some form of free-riding), when possible it will coast (using the best method that will keep the watermark the longest), when it needs to re-embed it will tap (train on the reduced set - using the best scope and the estimated threshold ?) and then go back to coasting
+
+meeting notes:
+- fix the plotting for submarine - split into 2 plots for each free-rider but keep the honest on both plots - also single out the hoenst client on the same trigger class as the free-rider for comparison + make sure the taps/coasts are recorded properly + automatically also generate this plot
+- fix all the things that need to be dynamic in the submarine attack code -> keep the sawtooth pattern!
+- how to detect, when -> whats the consequences of crossing the threshold (check the related papers too)
+- non-iid -> get server to assign trigger class based on class distribution
+- plot BER vs num of trigger sample it gets (non-iid) - see that its fair or not
+- honest accuracy at 0 ??? -> it should be the same as a random classifier - is it a bug??? investigate!
+- measure GPU cycles, for comm round budget used? cummulative budget used
+-> make a summary of the results, put each in context - start to wrap up project. next week discuss the storyline and how to present the results and write the paper.
 
 ---
 

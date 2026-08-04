@@ -239,11 +239,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             a, b = tok.split(":")
             tmap[int(a)] = int(b) % num_classes
 
-    # KEY-TWIN map (for the controlled same-class experiment): if cfg.wm_key_twins
-    # is set to "fr_cid:honest_cid,..." then the free-rider derives its key AND
-    # message from the HONEST client's cid instead of its own. Same trigger class
-    # (via TRIGGER_CLASS_MAP) + same key + same message => the ONLY difference
-    # between the two clients is whether they actually trained. 
+    # KEY-TWIN map 
     key_twin = {}
     _kt = getattr(cfg, "wm_key_twins", None)
     if _kt:
@@ -514,8 +510,7 @@ def build_clients(cfg, client_loaders, model, device, seed):
 # ----------------------------------------------------------------------------
 # 3b. REDUCED DATA ATTACKERS
 # ----------------------------------------------------------------------------
-# Honest clients that train for real but on a reduced shard.
-# They embed a genuine watermark
+# Honest clients that train for real but on a reduced shard - embeds a watermark
 
 # --------------------------------------------------------------------------- #
 #  shared helpers (data prep + self-probe)                                     #
@@ -544,11 +539,9 @@ class _SimpleFRMixin:
                 comm_x.append(x[~tm]); comm_y.append(y[~tm]) # common-class images
 
         allt = torch.cat(trig) if trig else torch.empty(0) # trigger images
-        # Hold out a slice of trigger images for the self-probe, but NEVER starve embedding.
-        # Cap at half; and if the client has too few triggers to spare any (common in NON-IID,
-        # where the assigned trigger class may barely appear in the shard), skip the holdout
-        # entirely -- _probe_x=None disables the probe, and threshold-tapping then falls back to
-        # always-tap (see produce_update). Better a blind-but-embedding attacker than a starved one.
+        # Hold out a slice of trigger images for the self-probe
+        # Cap at half; and if the client has too few triggers skip the holdout
+        # entirely -- _probe_x=None disables the probe, and threshold-tapping then falls back to always-tap 
         n_trig = len(allt)
         MIN_TRAIN_TRIG = 8                     # keep at least this many triggers to embed on
         if n_probe_holdout and n_trig >= 2 * MIN_TRAIN_TRIG:
@@ -568,8 +561,7 @@ class _SimpleFRMixin:
         if common_per_class > 0 and comm_x: # if we have common-class images, sample N from each class
             cx = torch.cat(comm_x); cy = torch.cat(comm_y) # all common-class images and labels
             classes = cy.unique()
-            # TODO: test the optionally draw from only K random common classes instead of all.
-            # Sweeping K separates "how many images" from "how much class diversity"
+            # num images vs class diversity
             if n_common_classes is not None and 0 < n_common_classes < len(classes):
                 sel = torch.randperm(len(classes))[:n_common_classes]
                 classes = classes[sel]
@@ -661,7 +653,7 @@ def make_reduced_attack(base_cls):
 
 
 # --------------------------------------------------------------------------- #
-# TODO: Oracle Tap Attack: honest, then oracle-threshold tap/coast                 #
+# Oracle Tap Attack: honest, then oracle-threshold tap/coast                 #
 # --------------------------------------------------------------------------- #
 def make_tap_attack(base_cls):
 
@@ -731,7 +723,7 @@ def make_tap_attack(base_cls):
 #                                  fully in 1 round | "decay" own last-tapped
 #                                  weights -> mark frozen flat, but a replay |
 #                                  "graft" global body + frozen mark head -> mark
-#                                  decays GRADUALLY = the sawtooth, submission still
+#                                  decays gradually = the sawtooth, submission still
 #                                  tracks the global. Pair graft with scope="head".)
 # ------------------------------------------------------------------------------ #
 def make_adaptive_tap_attack(base_cls):
@@ -835,17 +827,14 @@ def make_adaptive_tap_attack(base_cls):
             return [name for name, _ in named[len(named) - int(keep):]]
 
         def _coast_candidate(self, global_state):
-            """The model the FR would SUBMIT if it coasts this round, per coast_mode:
+            """The model the FR would submit if it coasts this round, per coast_mode:
               resend -> the received global (mark fully decays to ~0.5 in 1 round)
               decay  -> the FR's own last-tapped weights verbatim (mark frozen flat,
                         but a replay: identical submissions round over round)
               graft  -> global body + FR's frozen last-tapped mark head. The body
-                        tracks the global (submission moves, no replay tell) while
-                        the frozen head's projected bits degrade GRADUALLY as the
-                        drifting features flow through them -> a real BER sawtooth.
-            The threshold probes THIS (not the raw global) before deciding tap/coast,
-            so a FR whose coast holds the mark (decay/graft) correctly coasts instead
-            of degenerating to always-tap."""
+                        tracks the global while the frozen head's projected bits 
+                        degrade gradually as the drifting features flow through them 
+            The threshold probes this before deciding tap/coast"""
             if self.coast_mode == "resend" or self._last_submit is None:
                 return global_state
             if self.coast_mode == "decay":
@@ -872,20 +861,14 @@ def make_adaptive_tap_attack(base_cls):
             return out, self.num_samples
 
         # ---- self-probe -----------------
-        # Only threshold-tapping and self-eta need the probe to DECIDE, but we always
-        # record it (fade/recovery measurement) -- see produce_update.
+        # Only threshold-tapping and self-eta need the probe to decide, but always recorded for (fade/recovery measurement)
         def _probe_needed(self):
             return (self.when == "threshold") or (self.eta_source == "self")
 
         # ---- main ------------------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
             phase = self._phase_action(round_idx)
-            # Always request the probe holdout so ber_before/ber_after are RECORDED every
-            # freeride round (persistence / fade / recovery measurement), even when the tap
-            # decision doesn't need it (every_k + oracle). _prepare() still refuses to hold
-            # out images when the trigger class is too scarce to spare them (MIN_TRAIN_TRIG),
-            # so this can never starve embedding; on scarce classes the probe simply returns
-            # None and the trace records None (unchanged behaviour there).
+            # Always request the probe holdout so ber_before/ber_after are recorded
             holdout = self.probe_holdout
 
             # warmup + calibration window: pure honest client on the full shard
@@ -909,8 +892,8 @@ def make_adaptive_tap_attack(base_cls):
             eta = self._eta_frozen
             target = max(0.0, eta - self.margin)
 
-            # Probe the model the FR would SUBMIT if it coasts this round (per coast_mode),
-            # NOT the raw received global. Under resend the candidate IS the global (mark
+            # Probe the model the FR would submit if it coasts this round (per coast_mode),
+            # not the raw received global. Under resend the candidate is the global (mark
             # ~0.5 -> correctly taps); under decay/graft the candidate holds the mark, so
             # threshold coasts while BER < target instead of degenerating to always-tap.
             ber_now = self._probe_ber(self._coast_candidate(global_state))
