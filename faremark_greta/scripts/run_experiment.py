@@ -119,6 +119,11 @@ def parse_args():
                    action="store_true", default=None,
                    help="sign-balanced key rows (removes unembeddable-bit artifact, STATUS F6).")
     p.add_argument("--no_wm_balanced_keys", dest="wm_balanced_keys", action="store_false")
+    p.add_argument("--wm_trigger_assign", type=str, default=None,
+                   choices=["roundrobin", "distribution"],
+                   help="trigger-class assignment: roundrobin (cid%%n, blind) or "
+                        "distribution (server gives each client a class it holds a lot "
+                        "of; non-IID starvation fix). Needs num_clients <= num_classes.")
     p.add_argument("--wm_f", type=str, default=None, choices=["power", "sin"],
                    help="smoothing f() in Eq.7-9: 'power' (p^alpha) or 'sin' (sin(alpha*p)). "
                         "sin is the paper's alternative; sweep --wm_alpha with it.")
@@ -148,6 +153,14 @@ def parse_args():
     p.add_argument("--tap_scope", type=str, default=None, choices=["full", "block2", "block", "head"])
     p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay", "graft"])
     p.add_argument("--tap_probe_holdout", type=int, default=None)
+    # dynamic adaptive-tap knobs (default to fixed behaviour)
+    p.add_argument("--tap_margin_mode", type=str, default=None, choices=["fixed", "derived"])
+    p.add_argument("--tap_margin_k", type=float, default=None)
+    p.add_argument("--tap_warmup_mode", type=str, default=None, choices=["fixed", "dynamic"])
+    p.add_argument("--tap_conv_eps", type=float, default=None)
+    p.add_argument("--tap_conv_patience", type=int, default=None)
+    p.add_argument("--tap_honest_min", type=int, default=None)
+    p.add_argument("--tap_warmup_cap", type=int, default=None)
     p.add_argument("--calib_on_all", dest="calib_on_all",
                    action="store_true", default=None,
                    help="calibrate eta over ALL clients (free-riders poison it)")
@@ -182,11 +195,14 @@ _OVERRIDABLE = [
     
     "autop_common_per_class", "autop_trigger_train_n", "autop_n_common_classes", 
     
-    "watermark", "wm_bits", "wm_balanced_keys", "wm_f", "wm_alpha", "wm_num_triggers",
+    "watermark", "wm_bits", "wm_balanced_keys", "wm_trigger_assign", "wm_f", "wm_alpha", "wm_num_triggers",
     "wm_trigger_mode", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
     "tap_eta_source", "tap_eta_k", "tap_margin", "tap_when", "tap_period",
     "tap_max_coast", "tap_data_cpc", "tap_scope", "tap_coast_mode", "tap_probe_holdout",
+    # dynamic adaptive-tap knobs
+    "tap_margin_mode", "tap_margin_k", "tap_warmup_mode", "tap_conv_eps",
+    "tap_conv_patience", "tap_honest_min", "tap_warmup_cap",
 ]
 
 
@@ -250,11 +266,21 @@ def collect_compute(clients, free_rider_indices):
         return round(sum(v) / len(v), 3) if v else 0.0
 
     hm_gpu, fm_gpu, hm_s, fm_s = _mean(honest_gpu), _mean(fr_gpu), _mean(honest_s), _mean(fr_s)
+    # Concurrency note for gpu_ms: honest & free-rider clients run in the SAME process,
+    # so if this run shares a GPU with others (WORKERS>1 in submit_pool), SM contention
+    # inflates every client's gpu_ms EQUALLY -> the RATIO (effort_ratio_gpu) and the
+    # gpu_savings fraction curve stay valid, but ABSOLUTE gpu_ms is not comparable across
+    # differently-loaded pods. `samples` is contention-free and is the safe cross-run axis.
+    concurrency = int(os.environ.get("POOL_WORKERS", "1") or "1")
     summary = {
         "honest_mean_gpu_ms": hm_gpu, "fr_mean_gpu_ms": fm_gpu,
         "honest_mean_samples": hm_s, "fr_mean_samples": fm_s,
         "effort_ratio_gpu": round(fm_gpu / hm_gpu, 4) if hm_gpu else None,
         "effort_ratio_samples": round(fm_s / hm_s, 4) if hm_s else None,
+        # provenance so plots can warn: gpu_ms absolute values are only clean at concurrency 1;
+        # the ratio is valid at any concurrency (same-process inflation cancels).
+        "gpu_concurrency": concurrency,
+        "gpu_ms_abs_reliable": concurrency <= 1,
     }
     return {"summary": summary, "per_client": per_client}
 
@@ -423,6 +449,10 @@ def main():
                 "wm_bits_m": registry.m,
                 "wm_group_size_l": registry.l,
                 "wm_unembeddable_frac": registry.unembeddable_frac,
+                # fairness / trigger-assignment provenance (for BER-vs-trigger-samples plots)
+                "wm_trigger_assign": getattr(registry, "trigger_assign", "roundrobin"),
+                "wm_trigger_holdings": getattr(registry, "trigger_holdings", {}),
+                "wm_shard_sizes": getattr(registry, "shard_sizes", {}),
             }
 
     # per-class test accuracy + loss of the final global model 

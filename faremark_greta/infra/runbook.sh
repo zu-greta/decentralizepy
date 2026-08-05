@@ -21,6 +21,12 @@ BATCH="${BATCH:-EFHIV}"          # UN-RUN / to-fix families: E(E1,E2,E3-fixed) F
                                 # A and D are done (3 seeds). C is EXCLUDED (sin crash, see R14).
                                 # J is the graft-coast suite (persistence/sawtooth/coast); run
                                 # it alone with BATCH=J after the clients.py graft fix is in.
+                                # K = DYNAMIC-submarine 1-seed tests (self-eta / derived margin /
+                                #     dynamic warmup / all-dynamic+block2). Run with BATCH=K.
+                                # EA = distribution-aware trigger assignment (non-IID fairness);
+                                #     run WITH E in parallel via BATCH=EEA.
+                                # To run the two NEW groups this task adds, together with E:
+                                #     BATCH=EEAK ./runbook.sh manifest && BATCH=EEAK ./runbook.sh submit
                                 # The pool SKIPS any family whose result.json EXISTS -- so the buggy
                                 # E3 a01/a03/a10 will NOT be re-run unless you first delete their dirs:
                                 #   rm -rf $RES/E3_*_niid_*_a0{1,3}_rep* $RES/E3_*_niid_*_a10_rep*
@@ -190,6 +196,81 @@ phase_plot(){
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_${fam}"
   done
+
+  # --- PER-FREE-RIDER split: one FIGURE per free-rider + same-class honest twin. ---
+  #     The meeting's plot: each FR on its own axis, taps/coasts, server BER vs self-probe,
+  #     with the honest GLOBAL mean AND the same-class honest twin (from $HON) on BOTH.
+  #     Auto-generated for every submarine family (J2/J5 + the dynamic K-suite).
+  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J4_scope_graft_block2_c36 \
+             K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
+             K4_alldyn_block2_c36; do
+    run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
+         --out $OUT/tap_perfr_${fam}"
+  done
+
+  # --- K-SUITE timelines + dynamics (the dynamic-submarine 1-seed tests) ---
+  for fam in K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
+             K4_alldyn_block2_c36; do
+    run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
+         --out $OUT/tap_${fam}"
+    run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
+  done
+
+  # --- ACCURACY: global test acc, attack vs honest, + FR trigger-class acc. ---
+  #     The 'Fig B' panels -- free-riders barely dent global accuracy while their own
+  #     trigger class is the sacrificed cost. Auto-generated for the key attack families.
+  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
+             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 \
+             A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
+             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36; do
+    run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
+         --out $OUT/accuracy_${fam}"
+  done
+  # non-IID accuracy uses the non-IID honest reference
+  run "$PL accuracy --in '$ALL' --family E2_reduced_niid_c36 \
+       --honest_in '$ALL' --honest_family E1_honest_niid_c100 --out $OUT/accuracy_E2_niid"
+
+  # --- GPU-CYCLES SAVED: cumulative gpu_ms per round, each FR vs honest mean, ---
+  #     + the running fraction-of-honest curve. Every free-rider family (with & without
+  #     free-riders logs gpu_ms per round now, so the honest baseline is real).
+  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
+             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 \
+             A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
+             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36; do
+    run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
+  done
+
+  # --- NON-IID TRIGGER FAIRNESS: BER vs #trigger images held, round-robin vs ---
+  #     distribution assignment overlaid. Shows whether starvation drives BER and
+  #     whether distribution assignment removes it. Needs the wm_trigger_holdings field
+  #     (runner patched) -- honest non-IID families carry it.
+  run "$PL trigger_fairness --in '$ALL' --tail 20 \
+       --families E1_honest_niid_c100 EA1_honest_niid_distrib_c100 \
+       --out $OUT/trigger_fairness_niid"
+  # per-alpha honest (round-robin only) as a fallback if EA hasn't run yet
+  run "$PL trigger_fairness --in '$ALL' --family E1_honest_niid_c100 --tail 20 \
+       --out $OUT/trigger_fairness_E1"
+
+  # --- DIRICHLET reference heatmap (NEW): what the non-IID skew looks like per alpha. ---
+  #     No result files needed (re-draws the datasets.py partition rule). --in is a placeholder.
+  run "$PL dirichlet_dist --in '$ALL' --out $OUT/dirichlet_dist"
+
+  # --- SAME-CLASS BER pair (iso_c*): the clean A4/AK replacement. Honest client from A1
+  #     and the reduced FR from A2/A3, plotted as individual per-round BER lines on the
+  #     SAME trigger class -- shows the FR mark is at least as clean as honest and the
+  #     frozen eta flags the wrong one. (BER only; the iso_ACC accuracy version is
+  #     `plots.py accuracy`.)
+  SCP="python ../scripts/plot_sameclass_pair.py"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 6 --out $OUT/iso_A3_c6"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 3 --out $OUT/iso_A3_c3"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 1 --out $OUT/iso_A2_c1"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 7 --out $OUT/iso_A2_c7"
+  # non-IID same-class pair (honest E1 vs reduced E2), + distribution variant (EA1 vs EA2)
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
+
+
+
 
   # --- plot: recall at a fixed honest FPR across every attack (one deployable eta) ---
   #     Crude c100 baseline H5 is the positive control (should light up); insiders stay ~0.

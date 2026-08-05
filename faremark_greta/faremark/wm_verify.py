@@ -27,6 +27,9 @@ class WatermarkRegistry:
         self.m = None                 # number of watermark bits per client
         self.l = None                 # group size (n//m or (n-1)//m)
         self.unembeddable_frac = 0.0  # mean fraction of same-sign (stuck) key rows
+        self.trigger_assign = "roundrobin"   # assignment policy actually used
+        self.trigger_holdings = {}    # cid -> #images of its trigger class in its shard
+        self.shard_sizes = {}         # cid -> total shard size
 
     def register(self, cid, trigger_class, key, target_bits, kind="power",
                  alpha=0.4, exclude="trigger"):

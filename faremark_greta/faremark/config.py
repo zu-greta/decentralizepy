@@ -24,7 +24,7 @@ class ExpConfig:
 
     # ---- free-rider selection / paper baselines ----
     attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"|"tap_oracle"
-                                            # ("submarine"/"autopilot" are DISABLED -- see clients.py PART 3)
+                                            # |"adaptive_tap" ("submarine"/"autopilot")
     num_free_riders: int = 0                # how many of num_clients are free-riders
     free_rider_ids: str = ""                # "3,6" pins which cids free-ride (overrides seeded choice). Empty => choose_free_riders(seed).
     noise_sigma: float = 0.1                # GaussianNoiseFreeRider std
@@ -34,55 +34,18 @@ class ExpConfig:
     wm_key_twins: str = ""                  # "fr_cid:honest_cid,..." -> FR match key and message to honest client
     trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default trigger_class = cid % num_classes
 
-    # ---- submarine adaptive free-rider ----
-    # SUBMARINE attacker: acts exactly like an honest client, except: 
-    # (1) it estimates the detection threshold eta (or is given it for testing), 
-    # (2) it behaves honestly until the server's eta is calibrated (the forced-honest window), then defects, 
-    # (3) it can train on trigger+N/common or the full shard, and 
-    # (4) after warmup it coasts and taps to hold its mark; a tap's cost = the data it trains on.
-    autop_oracle_eta: float = 0.0           # >0 => FR is given the true eta (testing). 0 => estimate.
-    # ---- warmup / calibration-window schedule (see clients.py SECTION 3) ----
-    # [SUBMARINE-ONLY, DISABLED] autop_warmup_mode: str = "fixed"        # DEFAULT "fixed": warmup ends at round autop_honest_until (W),
-    #     # calib window [W-K, W-1]. Position-independent
-    #     # "dynamic" = end warmup when the FR's own probe BER converges
-    #     # (position-dependent: hard positions converge later, warm up
-    #     # longer, pay more, defect later)
-    # [SUBMARINE-ONLY, DISABLED] autop_honest_min: int = 6               # dynamic: never defect before this round (protect window).
-    # [SUBMARINE-ONLY, DISABLED] autop_warmup_cap: int = 15              # dynamic: hard stop -- defect by here even if never converges.
-    # [SUBMARINE-ONLY, DISABLED] autop_conv_eps: float = 0.03            # dynamic: converged when the last (patience+1) probe BERs are
-    #     # within this tolerance (BER is coarse, 1/m steps, so this means
-    #     # "unchanged for patience+1 rounds").
-    # [SUBMARINE-ONLY, DISABLED] autop_conv_patience: int = 2            # dynamic: consecutive flat rounds required to declare convergence.
-    autop_honest_until: int = 12            # W: used in fixed mode (warmup=[1,W-1]) and as the dynamic fallback.
-    autop_calib_rounds: int = 4             # K: the K converged honest rounds that calibrate eta. Dynamic:
-                                            # [conv, conv+K-1]; fixed: [W-K, W-1]. Used by the server and by
-                                            # the free-rider's own eta estimate. Tagged "calib" in the trace.
-    # [SUBMARINE-ONLY, DISABLED] autop_eta_k: float = 3.0                # k in the FR's own frozen estimate mu + k*sigma over its calib BERs
-    # [SUBMARINE-ONLY, DISABLED] autop_eta_mode: str = "tight"           # which server threshold the FR reconstructs from its OWN
-    #     # honest BER: "tight" (mu+k*sigma/sqrt(N), the round-mean/strict
-    #     # eta -> stays under EVERY looser one), "loose" (mu+k*sigma,
-    #     # per-client), or "cumulative" (mu+k*sigma over full honest
-    #     # history, mirroring the paper's cumulative calibration).
-    # [SUBMARINE-ONLY, DISABLED] autop_num_clients_est: int = 10         # N for the sqrt(N) shrink in "tight" mode
-    # [SUBMARINE-ONLY, DISABLED] autop_margin0: float = 0.06             # TODO hardcoded guard: deliberate headroom (target = eta - margin0 - safety)
-    # [SUBMARINE-ONLY, DISABLED] autop_safety: float = 0.02              # TODO hardcoded guard: should be DERIVED from estimation uncertainty, not fixed
-    # [SUBMARINE-ONLY, DISABLED] autop_max_coast: int = 4                # force a re-tap after this many consecutive coasts
-    # [SUBMARINE-ONLY, DISABLED] autop_floor: float = 0.05               # "mark is good" bar
-    autop_trigger_train_n: int = -1         # TABLE V: num of trigger imgs trained on
+    # ---- shared free-rider schedule + data knobs ----
+    # used by the live attackers: reduced (attack="reduced"), tap_oracle, adaptive submarine (attack="adaptive_tap"). 
+    autop_oracle_eta: float = 0.0           # >0 => the FR is handed the true eta (controlled test).
+    autop_honest_until: int = 12            # W: fixed-warmup defect round (warmup=[1,W-1], calib=[W-K,W-1]).
+    autop_calib_rounds: int = 4             # K: the K honest rounds that calibrate eta (server + FR self-est).
+    autop_trigger_train_n: int = -1         # TABLE V: num of trigger imgs trained on (-1 = all)
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
-    autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
-                                            # -1/0 = all of them; K>0 = K randomly chosen classes.
-                                            # Separates "how many images" from "how much class
-                                            # diversity" in the +N sweep.
-    # [SUBMARINE-ONLY, DISABLED] autop_scope: str = "full"               # PARAMS per tap: full | block2 | block | head
-    # [SUBMARINE-ONLY, DISABLED] autop_stay_min: bool = False            # coast (no training) while safely under target, tap only when needed.
-    #     # False => tap EVERY post-warmup round (honest-style, for the data sweep).
-    # [SUBMARINE-ONLY, DISABLED] autop_holdout_ratio: float = 0.5        # fraction of trigger imgs reserved for the self-probe
-    # [SUBMARINE-ONLY, DISABLED] autop_honest_clone: bool = False        # embed via the exact honest path every round
-    #     # (control: shows the ~0.11 floor is the position, not the embedder)
+    autop_n_common_classes: int = -1        # num common classes FR draws from
+                                            # -1/0 = all of them; K>0 = K randomly chosen classes
 
-    # ---- adaptive tap free-rider  (attack="adaptive_tap")  ----
-    # FR that trains only on rounds when its own BER nears the estimated eta (submarine)
+    # ---- adaptive tap free-rider  (attack="adaptive_tap", aka the "submarine")  ----
+    # FR that trains only on rounds when its own BER nears the estimated eta. 
     tap_eta_source: str = "oracle"   # which eta the FR aims under: "oracle" = the true server eta
                                      # (wm_eta_fixed / autop_oracle_eta, for controlled tests);
                                      # "self" = the FR estimates it from its own calib-window probe BER
@@ -99,6 +62,14 @@ class ExpConfig:
                                      # unchanged (zero compute); "decay" = resend its own last tapped
                                      # weights (mark fades slower, but it submits stale weights)
     tap_probe_holdout: int = 16      # held-out trigger images for the FR's self-BER probe (generalisation)
+    # ---- DYNAMIC adaptive-tap knobs (default = the prior fixed behaviour) ----
+    tap_margin_mode: str = "fixed"   # "fixed" = constant tap_margin; "derived" = eta - margin_k*sigma(calib probe BER)
+    tap_margin_k: float = 1.0        # k for the derived margin (target = eta_hat - k*sigma)
+    tap_warmup_mode: str = "fixed"   # "fixed" = defect at autop_honest_until; "dynamic" = defect when own probe converges
+    tap_conv_eps: float = 0.03       # dynamic: converged when the last (patience+1) probe BERs are within this
+    tap_conv_patience: int = 2       # dynamic: consecutive flat rounds required to declare convergence
+    tap_honest_min: int = 6          # dynamic: never defect before this round (protect the calibration window)
+    tap_warmup_cap: int = 15         # dynamic: hard stop -- defect by here even if the probe never converges
 
     # ---- watermarking ----
     watermark: bool = False
@@ -106,6 +77,9 @@ class ExpConfig:
     wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys 
                                             # True = sign-balanced rows (removes that artifact by
                                             # construction, still pseudo-random)
+    wm_trigger_assign: str = "roundrobin"   # trigger-class -> client assignment policy:
+                                            #   "roundrobin" = cid % num_classes (blind; the paper default)
+                                            #   "distribution" = server assigns each client a class it has data on (fair)
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
@@ -191,16 +165,18 @@ CONFIGS = [
               attack="previous_models", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
 
-    # 14: CIFAR-100 attack base config.
-    #     NOTE: attack="submarine" below is the default but disabled. change to reduced when needed
-    ExpConfig("submarine_resnet18_cifar100", "resnet18", "cifar100",
+    # 14: CIFAR-100 attack base config. The runbook/run_now.sh always override
+    #     --attack (reduced / adaptive_tap / previous_models / ...) and the free-rider
+    #     ids per family, so the attack set here is just a non-crashing default.
+    ExpConfig("attack_base_resnet18_cifar100", "resnet18", "cifar100",
               num_clients=10, watermark=True, wm_lambda=5.0, wm_beta=0.6,
-              attack="submarine", num_free_riders=2,
+              attack="adaptive_tap", num_free_riders=2,
               expected_acc=(0.0, 100.0)),
 ]
 
-SUBMARINE_IDX = 14   # convenience for scripts
-AUTOPILOT_IDX = SUBMARINE_IDX   # back-compat alias
+ATTACK_BASE_IDX = 14   # convenience for scripts
+SUBMARINE_IDX = ATTACK_BASE_IDX   # back-compat alias
+AUTOPILOT_IDX = ATTACK_BASE_IDX   # back-compat alias
 
 
 def get_config(idx: int) -> ExpConfig:

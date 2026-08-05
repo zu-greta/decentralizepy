@@ -85,7 +85,7 @@ fi
 if has D; then
   echo "### GROUP D"
   FAMS=$(python - <<PY
-print(' '.join(f"D1_reduced_c100_c36_n{t}" for t in ['-1','0','1','2','5','10','25','50']))
+print(' '.join(f"D1_reduced_c100_c36_n{t}" for t in ['-1','0','1','2','5','10']))
 PY
 )
   run $PL sweep --in "'$ALL'" --families $FAMS --honest_in "'$ALL'" \

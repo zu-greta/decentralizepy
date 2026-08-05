@@ -244,7 +244,9 @@ PY
         echo "START $tag"
         local arr=($extra)
         [ -n "$note" ] && arr+=(--manifest_note "$note")
-        python -u "$SCRIPT" --config_idx "$cfg" --repeat "$rep" --device cuda --output_dir "$out" --data_root "$DATA_ROOT" "${arr[@]}" > "$out/pod_run.log" 2>&1
+        # POOL_WORKERS tells the runner how many concurrent runs share this GPU, so it
+        # can mark gpu_ms absolute-reliability in result.json (ratio stays valid regardless).
+        POOL_WORKERS="$WORKERS" python -u "$SCRIPT" --config_idx "$cfg" --repeat "$rep" --device cuda --output_dir "$out" --data_root "$DATA_ROOT" "${arr[@]}" > "$out/pod_run.log" 2>&1
         local rc=$?
         # exit 2 = accuracy outside the config band. NORMAL for attack runs and
         # result.json is written before the exit. Not a failure.

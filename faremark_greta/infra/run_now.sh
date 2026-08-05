@@ -9,8 +9,10 @@
 #   unset DRYRUN; WORKERS=6 PODS=2 ./submit_pool.sh
 #
 # Groups: A=proven baseline (+AK same-key)   C=smoothing   D=+N spectrum
-#         E=non-iid (+alpha sweep)   F=capacity (+Table IX)   H=paper baselines
+#         E=non-iid (+alpha sweep)   EA=non-iid DISTRIBUTION assignment (fairness)
+#         F=capacity (+Table IX)   H=paper baselines
 #         I=adaptive-tap single-knob sweeps   J=adaptive-tap multi-knob combos
+#         K=DYNAMIC-submarine 1-seed tests (self-eta / derived margin / dynamic warmup)
 #         V=trigger-sample mode + Table V     P=paper reproduction (probe-gated)
 # NEXT BATCH (does not disturb the running A/C/D/E/F/H jobs -- new families only):
 #         PAPER_OK=1 ./run_now.sh IJVF   then   unset DRYRUN; WORKERS=6 PODS=2 ./submit_pool.sh
@@ -432,6 +434,109 @@ if has NOW; then
     env $nbase TAP_MARGIN=0.05 TAP_MAX_COAST=20 TAP_PROBE_HOLDOUT=48 \
         FAMILY="J5_submarine_head_c36" \
         NOTE="J5 tuned submarine @3seeds: honest probe + margin 0.05 + deep coast (max_coast 20)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# GROUP K -- DYNAMIC SUBMARINE (1-seed tests, one run per new dynamic feature).
+#   BATCH=K ./runbook.sh manifest && BATCH=K ./runbook.sh submit
+#   Each new dynamic mechanism added to clients.py gets ONE 1-seed run here that
+#   toggles exactly that feature ON, everything else = the confirmed J2 recipe, so
+#   a diff against K0 isolates the feature. All default to J2 behaviour when the
+#   knob is unset, so these cannot disturb J2/J4/NOW.  Purpose: prove each dynamic
+#   piece RUNS and does the intended thing before spending 3 seeds on it.
+#   ('K' shares no letter with A C D E F H I J V NOW, so BATCH=K fires ONLY this.)
+# ---------------------------------------------------------------------------
+if has K; then
+  SEEDS_K="${SEEDS_K:-0}"          # 1 seed: these are wiring/logic tests, not tables
+  # the confirmed-J2 base; K runs flip ONE dynamic knob each on top of it.
+  kbase="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+         AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 \
+         TAP_SCOPE=head TAP_COAST_MODE=graft TAP_WHEN=threshold TAP_PROBE_HOLDOUT=16 \
+         TAP_MARGIN=0.03 TAP_MAX_COAST=12 ROUNDS=40 FAST_DATA=1"
+
+  # --- K0 CONTROL: exactly J2 (oracle eta, fixed margin, fixed warmup). The baseline
+  #     every K run is diffed against. Must reproduce the J2 shape (cid3 coasts, cid6 taps).
+  for s in $SEEDS_K; do
+    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
+        FAMILY="K0_control_J2_c36" \
+        NOTE="K0 control = J2 (oracle eta, fixed margin, fixed warmup) -- the diff baseline" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K1 SELF-eta: the FR estimates eta from its OWN calib-window probe BER (mu+k*sigma)
+  #     instead of being handed 0.264. CHECK in the trace: eta_self_est ~ 0.264 and it still evades.
+  for s in $SEEDS_K; do
+    env $kbase TAP_ETA_SOURCE=self TAP_ETA_K=3.0 TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
+        FAMILY="K1_selfeta_c36" \
+        NOTE="K1 self-estimated eta (mu+3sigma over own calib probes) -- removes the oracle crutch" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K2 DERIVED margin: target = eta_hat - k*sigma(calib probe BER) instead of a fixed
+  #     0.03. CHECK: margin_used in the trace scales with probe
+  #     noise (bigger on the hard class cid6 than the easy cid3).
+  for s in $SEEDS_K; do
+    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 TAP_WARMUP_MODE=fixed \
+        FAMILY="K2_derivedmargin_c36" \
+        NOTE="K2 derived margin (eta - k*sigma) -- safety gap scales with estimation noise" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K3 DYNAMIC warmup: defect when the FR's OWN probe BER converges, bounded
+  #     [honest_min, warmup_cap], K calib rounds after. CHECK:
+  #     defect_round in the trace differs by class (hard cid6 warms up longer than cid3).
+  for s in $SEEDS_K; do
+    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed \
+        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+        FAMILY="K3_dynwarmup_c36" \
+        NOTE="K3 dynamic warmup (defect on own-probe convergence, per-class defect round)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K4 ALL-DYNAMIC + block2 sawtooth: everything self-scheduling at once, with the
+  #     J4 block2 scope kept (the crisp sawtooth). This is the candidate 'complete,
+  #     self-sufficient submarine' -- compare its cid3/cid6 evade+cost to K0 (=J2).
+  for s in $SEEDS_K; do
+    env $kbase TAP_SCOPE=block2 TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+        FAMILY="K4_alldyn_block2_c36" \
+        NOTE="K4 all-dynamic submarine + block2 sawtooth (self-eta, derived margin, dynamic warmup)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+fi
+
+# ---------------------------------------------------------------------------
+# GROUP EA -- DISTRIBUTION-AWARE TRIGGER ASSIGNMENT (non-IID fairness fix).
+#   Runs ALONGSIDE Group E so the two assignment policies are directly comparable.
+#   The server assigns each client a trigger class it HOLDS a lot of (max-count
+#   matching) instead of the blind cid%n. Same alpha=0.5 as E1/E2. Enable together:
+#     BATCH=EEA ./runbook.sh manifest && BATCH=EEA ./runbook.sh submit
+#   (E and EA run in parallel in the same pool.)
+# ---------------------------------------------------------------------------
+if has EA; then
+  SEEDS_EA="${SEEDS_EA:-0 1 2}"
+  # EA1 honest, distribution assignment, a=0.5 -- the fair counterpart to E1.
+  for s in $SEEDS_EA; do
+    env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
+        WM_TRIGGER_ASSIGN=distribution ROUNDS=50 \
+        FAMILY="EA1_honest_niid_distrib_c100" \
+        NOTE="EA1 non-iid honest a=0.5, DISTRIBUTION trigger assignment (fairness fix)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+  # EA2 reduced FR, distribution assignment -- the fair counterpart to E2. 
+  # FR cids are 3,6 but they are fairly distributed since the server does not know who is a FR and who is honest
+  for s in $SEEDS_EA; do
+    env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
+        WM_TRIGGER_ASSIGN=distribution \
+        AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+        WM_ETA_FIXED=0.161 ROUNDS=50 \
+        FAMILY="EA2_reduced_niid_distrib_c36" \
+        NOTE="EA2 non-iid reduced a=0.5, DISTRIBUTION assignment (fair-vs-starved comparison)" \
         ./submit_experiment.sh 14 "$s"
   done
 fi

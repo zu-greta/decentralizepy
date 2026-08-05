@@ -2071,6 +2071,363 @@ def _tap_stats(trace):
     }
 
 
+def _cumulative_by_round(run, cid, field):
+    """Cumulative sum of a per-round compute field (samples|gpu_ms) for one client."""
+    comp = (run.get("compute", {}) or {}).get("per_client", {}) or {}
+    c = comp.get(str(cid)) or comp.get(cid) or {}
+    pr = c.get("per_round") or {}
+    rounds = sorted(int(k) for k in pr)
+    cum, run_tot = {}, 0.0
+    for rd in rounds:
+        run_tot += float(pr[str(rd)].get(field, 0.0) if str(rd) in pr else pr[rd].get(field, 0.0))
+        cum[rd] = run_tot
+    return cum
+
+
+def gpu_savings(a):
+    """Cumulative GPU-cycles (and samples) per communication round: each free-rider
+    vs the honest-client mean, plus the running "saved vs honest" gap. Answers the
+    meeting's question -- 'how much compute is the free-rider actually saving?' -- in
+    the cluster's real cost unit (gpu_ms), not just image count.
+
+    Two stacked panels: (top) cumulative gpu_ms per round, honest-mean line + each FR;
+    (bottom) cumulative FRACTION of honest compute spent (FR_cum / honest_cum) so the
+    'X% of honest effort' headline is a curve, not a single endpoint number.
+
+    Reads compute.per_client[cid].per_round.{gpu_ms,samples} (already logged by
+    ComputeMeter for BOTH taps and coasts -- a coast records gpu_ms~0, samples=0).
+        python plots.py gpu_savings --in 'results/*/result.json' --family J2_saw_graft_head_c36
+    """
+    fams = a.families or ([a.family] if a.family else None)
+    if not fams:
+        raise SystemExit("pass --family <fam> or --families f1 f2 ...")
+    runs_all = load(a.inp)
+    field = "gpu_ms"      # cluster cost unit; samples plotted alongside
+
+    for f in fams:
+        runs = pick(runs_all, f)
+        if not runs:
+            print(f"  (skip {f} -- no runs)"); continue
+        nseed = len(runs)
+
+        fr_cids = sorted({int(p["cid"]) for r in runs for h in r.get("history", [])
+                          for p in (h.get("wm_per_client") or []) if p.get("is_free_rider")})
+        all_cids = sorted({int(cidk) for r in runs
+                           for cidk in ((r.get("compute", {}) or {}).get("per_client", {}) or {})})
+        honest_cids = [c for c in all_cids if c not in fr_cids]
+        if not fr_cids:
+            print(f"  (skip {f} -- no free-riders)"); continue
+
+        # gather cumulative curves per cid per seed, then average over seeds
+        def _avg_cum(cids, fld):
+            per_round_acc = defaultdict(list)   # round -> [cum over (cid,seed)]
+            for r in runs:
+                for cid in cids:
+                    cum = _cumulative_by_round(r, cid, fld)
+                    for rd, v in cum.items():
+                        per_round_acc[rd].append(v)
+            xs = sorted(per_round_acc)
+            return xs, [float(np.mean(per_round_acc[rd])) for rd in xs]
+
+        hx, honest_cum = _avg_cum(honest_cids, field)
+        honest_at = dict(zip(hx, honest_cum))
+        # also compute the contention-free samples axis (always valid across pods)
+        hx_s, honest_cum_s = _avg_cum(honest_cids, "samples")
+        honest_at_s = dict(zip(hx_s, honest_cum_s))
+        # is absolute gpu_ms trustworthy? (concurrency==1). ratio always is.
+        concs = [(r.get("compute", {}) or {}).get("summary", {}).get("gpu_concurrency", 1)
+                 for r in runs]
+        gpu_reliable = all((c or 1) <= 1 for c in concs)
+
+        fig, axes = ps.stacked_panels(3, figsize=(11, 9), height_ratios=[2, 2, 1])
+        ax0, axS, ax1 = axes
+        # --- panel 0: cumulative gpu_ms (cluster cost) ---
+        ax0.plot(hx, honest_cum, color=ps.C_HONEST, lw=2.6, marker="o", ms=3,
+                 label="honest mean (cumulative)")
+        gap_rows = []
+        for i, cid in enumerate(fr_cids):
+            fx, fr_cum = _avg_cum([cid], field)
+            ax0.plot(fx, fr_cum, lw=2.2, color=ps.CYCLE[(i + 1) % len(ps.CYCLE)],
+                     marker="s", ms=3, label=f"free-rider cid{cid} (cumulative)")
+            frac = [fr_cum[j] / honest_at[rd] if honest_at.get(rd) else np.nan
+                    for j, rd in enumerate(fx)]
+            ax1.plot(fx, frac, lw=2.0, color=ps.CYCLE[(i + 1) % len(ps.CYCLE)],
+                     marker="s", ms=3, label=f"cid{cid}")
+            if fx:
+                fend, hend = fr_cum[-1], honest_at.get(fx[-1], float("nan"))
+                # samples endpoint too
+                fx_s, fr_cum_s = _avg_cum([cid], "samples")
+                fend_s = fr_cum_s[-1] if fr_cum_s else float("nan")
+                hend_s = honest_at_s.get(fx_s[-1], float("nan")) if fx_s else float("nan")
+                gap_rows.append((cid, fend, hend, (1 - fend / hend) if hend else float("nan"),
+                                 fend_s, hend_s, (1 - fend_s / hend_s) if hend_s else float("nan")))
+            # samples panel
+            axS.plot(fx_s, fr_cum_s, lw=2.0, color=ps.CYCLE[(i + 1) % len(ps.CYCLE)],
+                     marker="s", ms=3, label=f"cid{cid}")
+        axS.plot(hx_s, honest_cum_s, color=ps.C_HONEST, lw=2.4, marker="o", ms=3,
+                 label="honest mean")
+
+        rel = "" if gpu_reliable else "  \u26a0 gpu_ms inflated by GPU sharing (WORKERS>1) -- use the samples panel / ratio"
+        ax0.set_ylabel(f"cumulative {field}")
+        ax0.set_title(f"Cumulative compute per round  \u00b7  {f.split('_rep')[0]}  "
+                      f"({nseed} seed{'s' if nseed != 1 else ''})  \u00b7  "
+                      f"gap below honest = compute saved{rel}", fontsize=10)
+        ax0.grid(alpha=.3); ax0.legend(fontsize=8, loc="upper left")
+        if fr_cids:
+            fx, fr_cum = _avg_cum([fr_cids[0]], field)
+            ax0.fill_between(fx, fr_cum, [honest_at.get(rd, np.nan) for rd in fx],
+                             color=ps.C_GOOD, alpha=.12, label="_nolegend_")
+        axS.set_ylabel("cumulative samples\n(contention-free)")
+        axS.grid(alpha=.3); axS.legend(fontsize=8, loc="upper left")
+
+        ax1.axhline(1.0, color=ps.C_HONEST, ls="--", lw=1.2)
+        ax1.set_ylabel("cum FR / cum honest")
+        ax1.set_xlabel("communication round")
+        ax1.set_ylim(0, 1.15)
+        ax1.grid(alpha=.3); ax1.legend(fontsize=8, loc="upper right")
+
+        out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out else f"gpu_savings_{f}.png"
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        ps.finish(fig, out)
+
+        md = out[:-4] + ".md"
+        L = [f"# GPU-cycles saved by free-riding \u2014 {f}  ({nseed} seed(s))", "",
+             f"Cumulative **{field}** and **samples** over the whole run. 'saved' = 1 \u2212 "
+             "(FR cumulative / honest cumulative) at the final round. Whole-run figure "
+             "(warmup included); for the marginal attack-phase cost see the tap-fraction in "
+             "`tap_perfr`.", ""]
+        if not gpu_reliable:
+            L += ["> \u26a0 **gpu_ms absolute values are inflated** because these runs shared a GPU "
+                  "(WORKERS>1). The **ratio** (saved %) is still valid (same-process inflation "
+                  "cancels), and **samples** is contention-free. Prefer the samples column for "
+                  "cross-run cost.", ""]
+        L += ["| cid | FR gpu_ms | honest gpu_ms | saved (gpu) | FR samples | honest samples | saved (samples) |",
+              "|---|---|---|---|---|---|---|"]
+        for cid, fend, hend, saved, fend_s, hend_s, saved_s in gap_rows:
+            L.append(f"| {cid} | {fend:,.0f} | {hend:,.0f} | "
+                     f"{'n/a' if np.isnan(saved) else f'{saved:.0%}'} | "
+                     f"{fend_s:,.0f} | {hend_s:,.0f} | "
+                     f"{'n/a' if np.isnan(saved_s) else f'{saved_s:.0%}'} |")
+        open(md, "w").write("\n".join(L))
+        print("wrote", md)
+
+
+def trigger_fairness(a):
+    """BER vs the number of trigger-class images a client HOLDS -- the non-IID
+    fairness check. Under round-robin assignment a client is often starved on its
+    own trigger class (few images -> high BER); under distribution assignment the
+    server gives it a class it holds a lot of. This scatter shows whether BER is
+    still dictated by how many trigger samples the client got.
+
+    x = trigger-class images held (from summary.wm_trigger_holdings);
+    y = converged honest BER of that client (tail mean). One point per client per
+    seed; free-riders marked separately. Overlays the two assignment policies if
+    both families are passed via --families.
+        python plots.py trigger_fairness --in 'results/*/result.json' \
+            --families E1_honest_niid_c100 E4_honest_niid_distrib_c100
+    """
+    fams = a.families or ([a.family] if a.family else None)
+    if not fams:
+        raise SystemExit("pass --family <fam> or --families f1 f2 ...")
+    runs_all = load(a.inp)
+    tail = getattr(a, "tail", None) or TAIL
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    md_rows = []
+    for i, f in enumerate(fams):
+        runs = pick(runs_all, f)
+        if not runs:
+            print(f"  (skip {f} -- no runs)"); continue
+        col = ps.CYCLE[i % len(ps.CYCLE)]
+        xs, ys, is_fr = [], [], []
+        assign_mode = None
+        for r in runs:
+            summ = r.get("summary") or {}
+            holdings = summ.get("wm_trigger_holdings") or r.get("wm_trigger_holdings") or {}
+            assign_mode = summ.get("wm_trigger_assign") or r.get("wm_trigger_assign") or assign_mode
+            # tail BER per cid
+            perc = defaultdict(list)
+            frflag = {}
+            for h in r.get("history", [])[-tail:]:
+                for p in (h.get("wm_per_client") or []):
+                    if p.get("ber") is not None:
+                        perc[int(p["cid"])].append(float(p["ber"]))
+                        frflag[int(p["cid"])] = bool(p.get("is_free_rider"))
+            for cid, bers in perc.items():
+                hold = holdings.get(str(cid), holdings.get(cid))
+                if hold is None:
+                    continue
+                xs.append(int(hold)); ys.append(float(np.mean(bers))); is_fr.append(frflag.get(cid, False))
+        if not xs:
+            print(f"  (skip {f} -- no trigger_holdings in result.json; re-run with the patched runner)")
+            continue
+        hx = [x for x, fr in zip(xs, is_fr) if not fr]
+        hy = [y for y, fr in zip(ys, is_fr) if not fr]
+        fx = [x for x, fr in zip(xs, is_fr) if fr]
+        fy = [y for y, fr in zip(ys, is_fr) if fr]
+        lab = f"{f.split('_rep')[0]}" + (f" [{assign_mode}]" if assign_mode else "")
+        ax.scatter(hx, hy, s=55, color=col, alpha=.8, edgecolor="white", label=lab)
+        if fx:
+            ax.scatter(fx, fy, s=90, color=col, marker="X", edgecolor="black",
+                       zorder=5, label=f"{f.split('_rep')[0]} free-riders")
+        # correlation
+        if len(xs) > 2:
+            r_pear = float(np.corrcoef(xs, ys)[0, 1])
+            md_rows.append((lab, len(xs), min(xs), max(xs), r_pear))
+
+    ax.axhline(ETA_LOOSE_DEFAULT, color=ps.C_HONEST, ls="--", lw=1.4,
+               label=f"\u03b7 loose {ETA_LOOSE_DEFAULT:.3f}")
+    ax.set_xlabel("trigger-class images the client HOLDS  (fewer = more starved)")
+    ax.set_ylabel("converged BER (tail mean)  \u00b7  higher = worse mark")
+    ax.set_title("BER vs trigger-sample holdings (non-IID fairness check)\n"
+                 "flat/low = fair (holdings don't dictate BER); steep = starvation-driven")
+    ax.grid(alpha=.3); ax.legend(fontsize=8, loc="upper right")
+    out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out else "trigger_fairness.png"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    ps.finish(fig, out)
+
+    md = out[:-4] + ".md"
+    L = ["# BER vs trigger-sample holdings (non-IID fairness)", "",
+         "Correlation r near 0 = fair (a client's BER doesn't depend on how many trigger "
+         "images it happened to hold). Strong positive/negative r = starvation-driven BER, "
+         "which distribution-aware assignment is meant to remove.", "",
+         "| family [assign] | n points | min held | max held | corr(held, BER) |",
+         "|---|---|---|---|---|"]
+    for lab, n, mn, mx, r in md_rows:
+        L.append(f"| {lab} | {n} | {mn} | {mx} | {r:+.3f} |")
+    open(md, "w").write("\n".join(L))
+    print("wrote", md)
+
+
+def accuracy(a):
+    """Global test accuracy over rounds: attack run vs an honest reference, plus the
+    free-rider's own trigger-class TEST accuracy (from per_class of the final model)
+    when available. This is the 'Fig B' panel the meeting asked to auto-generate --
+    it shows the free-rider barely dents global accuracy (the whole point: it steals a
+    good model) while its own trigger class may be sacrificed.
+
+    Overlays every family passed. Honest reference via --honest_in/--honest_family
+    (falls back to any honest run in --in).
+        python plots.py accuracy --in 'results/*/result.json' --family J2_saw_graft_head_c36 \
+            --honest_in 'results/*/result.json' --honest_family A1_honest_c100
+    """
+    fams = a.families or ([a.family] if a.family else None)
+    if not fams:
+        raise SystemExit("pass --family <fam> or --families f1 f2 ...")
+    runs_all = load(a.inp)
+
+    def _acc_curve(runs):
+        acc = defaultdict(list)
+        for r in runs:
+            for h in r.get("history", []):
+                if h.get("test_acc") is not None:
+                    acc[h["round"]].append(float(h["test_acc"]))
+        xs = sorted(acc)
+        return xs, [float(np.mean(acc[rd])) for rd in xs], [float(np.std(acc[rd])) for rd in xs]
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+
+    # honest reference
+    hon = []
+    if getattr(a, "honest_in", None):
+        hon = [r for r in load(a.honest_in) if th.is_honest_run(r)
+               and (a.honest_family is None or fam(r) == a.honest_family)]
+    if not hon:
+        hon = [r for r in runs_all if th.is_honest_run(r)]
+    if hon:
+        hx, hm, hs = _acc_curve(hon)
+        ax.plot(hx, hm, color=ps.C_HONEST, lw=2.6, label="honest run (global)")
+        ax.fill_between(hx, np.array(hm) - np.array(hs), np.array(hm) + np.array(hs),
+                        color=ps.C_HONEST, alpha=.12)
+
+    md_rows = []
+    for i, f in enumerate(fams):
+        runs = pick(runs_all, f)
+        if not runs:
+            print(f"  (skip {f} -- no runs)"); continue
+        fx, fm, fsd = _acc_curve(runs)
+        col = ps.CYCLE[(i + 1) % len(ps.CYCLE)]
+        ax.plot(fx, fm, color=col, lw=2.2, ls="--",
+                label=f"{f.split('_rep')[0]} (global)")
+        final = fm[-1] if fm else float("nan")
+        # free-rider trigger-class TEST accuracy from per_class of the final model
+        fr_tc_acc = []
+        for r in runs:
+            frcids = {int(p["cid"]): int(p["trigger_class"])
+                      for h in r.get("history", []) for p in (h.get("wm_per_client") or [])
+                      if p.get("is_free_rider") and p.get("trigger_class") is not None}
+            by = ((r.get("per_class") or {}).get("by_class") or {})
+            for cid, tc in frcids.items():
+                cell = by.get(str(tc)) or by.get(tc)
+                if cell and cell.get("acc") is not None:
+                    fr_tc_acc.append((tc, float(cell["acc"])))
+        tc_txt = ", ".join(f"cls{tc}:{acc:.0f}%" for tc, acc in sorted(set(fr_tc_acc))) or "n/a"
+        md_rows.append((f.split("_rep")[0], final, tc_txt))
+
+    honest_final = hm[-1] if hon and hm else float("nan")
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("global test accuracy (%)")
+    ax.set_title("Global test accuracy: attack vs honest\n"
+                 "(free-riders barely dent global accuracy -- they steal a good model)")
+    ax.grid(alpha=.3); ax.legend(fontsize=8, loc="lower right")
+    out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out else "accuracy.png"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    ps.finish(fig, out)
+
+    md = out[:-4] + ".md"
+    L = ["# Accuracy: attack vs honest", "",
+         f"Honest final global accuracy: **{honest_final:.2f}%**.", "",
+         "| family | final global acc | free-rider trigger-class TEST acc (final model) |",
+         "|---|---|---|"]
+    for name, final, tc in md_rows:
+        L.append(f"| {name} | {final:.2f}% | {tc} |")
+    L += ["", "The free-rider's *global* accuracy tracks honest (it rides the shared model); "
+          "its own trigger-class accuracy is the sacrificed/hidden cost (see wrap-up 3.5)."]
+    open(md, "w").write("\n".join(L))
+    print("wrote", md)
+
+
+def dirichlet_dist(a):
+    """Reference figure: what a Dirichlet(alpha) label-skew partition actually looks
+    like, for alpha in {0.1, 0.5, 1.0}. NO result files needed -- it re-draws the
+    exact partition datasets.py::dirichlet_partition would produce (same rule), so
+    the reader can SEE why small alpha starves clients on most classes. One heatmap
+    per alpha: rows = clients, cols = classes, colour = fraction of that class the
+    client holds.  --classes sets n (default 10), --seed the RNG.
+        python plots.py dirichlet_dist --in x --out figs/dirichlet_dist
+    (--in is ignored; the subparser requires it, so pass any placeholder.)
+    """
+    alphas = [0.1, 0.5, 1.0]
+    n_classes = int(a.classes) if getattr(a, "classes", None) else 10
+    n_clients = 10
+    seed = int(a.seed) if getattr(a, "seed", None) else 0
+    rng = np.random.default_rng(seed)
+
+    fig, axes = plt.subplots(1, len(alphas), figsize=(4.2 * len(alphas), 4.2))
+    if len(alphas) == 1:
+        axes = [axes]
+    for ax, alpha in zip(axes, alphas):
+        # props[class] ~ Dirichlet(alpha over clients); matrix[client, class] = share
+        mat = np.zeros((n_clients, n_classes))
+        for c in range(n_classes):
+            props = rng.dirichlet(alpha * np.ones(n_clients))
+            mat[:, c] = props
+        im = ax.imshow(mat, aspect="auto", cmap="viridis", vmin=0, vmax=1)
+        ax.set_title(f"\u03b1 = {alpha}", fontsize=12)
+        ax.set_xlabel("class")
+        if ax is axes[0]:
+            ax.set_ylabel("client")
+        ax.set_xticks(range(n_classes)); ax.set_yticks(range(n_clients))
+    cb = fig.colorbar(im, ax=axes, fraction=0.025, pad=0.02)
+    cb.set_label("fraction of the class held by the client")
+    fig.suptitle("Dirichlet(\u03b1) label-skew partition (rows=clients, cols=classes)\n"
+                 "small \u03b1 = one client hogs each class (severe skew); larger \u03b1 = more even",
+                 fontsize=12, fontweight="bold")
+    out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out else "dirichlet_dist.png"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    ps.finish(fig, out)
+
+
 def tap_dynamics(a):
     runs = load(a.inp)
     fams = a.families or ([a.family] if a.family else None)
@@ -2162,14 +2519,48 @@ def tap_dynamics(a):
 #    python plots.py tap_perfr --in 'results/*/result.json' \
 #        --family J2_saw_graft_head_c36 --out figs/tap_perfr_J2
 # ===========================================================================
+def _honest_ber_by_round(runs, tclass_filter=None):
+    """{round: [ber over honest clients across seeds]}.
+
+    tclass_filter=None -> ALL honest clients (the global honest cloud).
+    tclass_filter=c    -> only honest clients whose trigger_class == c (the
+                          same-class honest twin: the fair comparison for a FR on
+                          class c). A client is honest iff is_free_rider is false.
+    """
+    out = defaultdict(list)
+    for r in runs:
+        for h in r.get("history", []):
+            rd = h["round"]
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider"):
+                    continue
+                if p.get("ber") is None:
+                    continue
+                if tclass_filter is not None and int(p.get("trigger_class", -1)) != int(tclass_filter):
+                    continue
+                out[rd].append(float(p["ber"]))
+    return out
+
+
 def tap_perfr(a):
+    """ONE FIGURE PER FREE-RIDER (not stacked). Each figure shows, for a single
+    free-rider on its own trigger class:
+      * the FR's server-measured BER (what actually gets flagged),
+      * the FR's self-probe (what drives its tap/coast decision),
+      * tap / coast markers per round,
+      * the GLOBAL honest BER cloud (mean over ALL honest clients) -- kept on BOTH
+        free-rider figures as the common reference, and
+      * the SAME-CLASS honest twin (honest clients on the FR's own trigger class):
+        the fair, apples-to-apples comparison the meeting asked for -- it isolates
+        "did the FR do less work?" from "is this class just hard for everyone?".
+    Aggregates over seeds. Emits <out>_<family>_cid<cid>.png + a combined .md table.
+    """
     fams = a.families or ([a.family] if a.family else None)
     if not fams:
         raise SystemExit("pass --family <adaptive_tap fam> or --families f1 f2 ...")
     runs_all = load(a.inp)
     eta_t = a.eta_tight if getattr(a, "eta_tight", None) is not None else ETA_TIGHT_DEFAULT
     eta_l = a.eta_loose if getattr(a, "eta_loose", None) is not None else ETA_LOOSE_DEFAULT
-    multi = len(fams) > 1
 
     for f in fams:
         runs = pick(runs_all, f)
@@ -2220,23 +2611,63 @@ def tap_perfr(a):
                     if t.get("target") is not None:
                         target_val[cid] = float(t["target"])
 
+        # honest references: the global cloud (all honest) once, and the same-class
+        # twin per free-rider trigger class.
+        #   In the standard 10-client setup the FR cids ARE cid3/cid6, so NO honest
+        #   client sits on classes 3/6 within the attack run -> the same-class twin
+        #   would be empty. Fall back to an external honest family (e.g. A1) passed
+        #   via --honest_in/--honest_family, exactly like `timeline` does, so the
+        #   fair same-class comparison is always available.
+        honest_all = _honest_ber_by_round(runs, tclass_filter=None)
+        honest_same = {tc: _honest_ber_by_round(runs, tclass_filter=tc)
+                       for tc in set(tclass.values())}
+        # external honest family (same pattern as timeline's --honest_in/--honest_family)
+        hon_ext = []
+        if getattr(a, "honest_in", None):
+            hon_ext = [r for r in load(a.honest_in) if th.is_honest_run(r)
+                       and (a.honest_family is None or fam(r) == a.honest_family)]
+        if hon_ext:
+            if not any(honest_all.values()):
+                honest_all = _honest_ber_by_round(hon_ext, tclass_filter=None)
+            for tc in set(tclass.values()):
+                if not honest_same.get(tc):
+                    honest_same[tc] = _honest_ber_by_round(hon_ext, tclass_filter=tc)
+
         lo, hi = th.calib_window(runs[0]); W = hi + 1
-        fig, axes = ps.stacked_panels(len(fr_cids), figsize=(12, 3.3 * len(fr_cids)))
+        base = a.out or "tap_perfr"
+        base = base[:-4] if str(base).endswith(".png") else str(base)
         md_rows = []
 
-        for ax, cid in zip(axes, fr_cids):
+        # ---- ONE FIGURE PER FREE-RIDER ----
+        for cid in fr_cids:
             tc = tclass.get(cid, "?")
+            fig, ax = plt.subplots(figsize=(12, 5.2))
             xr = sorted(set(list(srv[cid]) + list(probe[cid])))
             srv_mean = [np.mean(srv[cid][rd])   if srv[cid].get(rd)   else np.nan for rd in xr]
             prb_mean = [np.mean(probe[cid][rd]) if probe[cid].get(rd) else np.nan for rd in xr]
 
             # schedule bands
-            ax.axvspan(0.5, W - 0.5, color=ps.OKABE["yellow"], alpha=.12, lw=0)
-            ax.axvspan(lo - 0.5, hi + 0.5, color=ps.OKABE["green"], alpha=.16, lw=0)
+            ax.axvspan(0.5, W - 0.5, color=ps.OKABE["yellow"], alpha=.12, lw=0,
+                       label="warmup")
+            ax.axvspan(lo - 0.5, hi + 0.5, color=ps.OKABE["green"], alpha=.16, lw=0,
+                       label="calib window")
             ax.axvline(W - 0.5, color="0.5", ls="--", lw=1)
 
+            # honest references (on EVERY free-rider figure)
+            hx = sorted(honest_all)
+            ax.plot(hx, [np.mean(honest_all[rd]) for rd in hx],
+                    color=ps.C_HONEST, lw=1.6, alpha=.85, zorder=2,
+                    label="honest GLOBAL mean BER (all honest clients)")
+            hs = honest_same.get(tc, {})
+            if hs:
+                hsx = sorted(hs)
+                ax.plot(hsx, [np.mean(hs[rd]) for rd in hsx],
+                        color=ps.OKABE["purple"], lw=2.0, ls=(0, (1, 1)), zorder=3,
+                        label=f"honest SAME-CLASS twin (class {tc}) -- fair comparison")
+
+            # the free-rider
             ax.plot(xr, srv_mean, color=ps.C_FR, lw=2.4, marker="o", ms=3, zorder=4,
-                    label="server-measured BER (what gets flagged)")
+                    label="FR server-measured BER (what gets flagged)")
             ax.plot(xr, prb_mean, color=ps.OKABE["orange"], lw=1.3, ls=(0, (4, 2)),
                     alpha=.95, zorder=3, label="FR self-probe (drives tap/coast)")
 
@@ -2244,6 +2675,7 @@ def tap_perfr(a):
                 if srv[cid].get(rd):   return float(np.mean(srv[cid][rd]))
                 if probe[cid].get(rd): return float(np.mean(probe[cid][rd]))
                 return np.nan
+            # a round is a TAP/COAST if the majority of seeds tapped/coasted there
             tapx = [rd for rd in xr if tap_ct[cid].get(rd, 0) > nseed / 2]
             coax = [rd for rd in xr if coa_ct[cid].get(rd, 0) > nseed / 2]
             ax.scatter(tapx, [_yat(rd) for rd in tapx], marker="v", s=72,
@@ -2261,7 +2693,7 @@ def tap_perfr(a):
                 ax.axhline(target_val[cid], color="0.45", ls="-.", lw=1.0,
                            label=f"target {target_val[cid]:.3f}")
 
-            # per-seed attack-phase tap fraction (correct denominator = freeride rounds)
+            # per-seed attack-phase tap fraction (denominator = freeride rounds)
             fracs = []
             for r in runs:
                 comp = (r.get("compute", {}) or {}).get("per_client", {}) or {}
@@ -2275,46 +2707,55 @@ def tap_perfr(a):
             frac = float(np.mean(fracs)) if fracs else float("nan")
             tail = [np.mean(srv[cid][rd]) for rd in xr if rd >= W and srv[cid].get(rd)]
             srv_tail = float(np.mean(tail)) if tail else float("nan")
+            # same-class honest twin tail (fair reference value)
+            htail = [np.mean(hs[rd]) for rd in sorted(hs) if rd >= W and hs.get(rd)]
+            hon_tail = float(np.mean(htail)) if htail else float("nan")
             verdict = ("UNDER \u03b7_loose (evades)" if srv_tail < eta_l
                        else "OVER \u03b7_loose (per-client CAUGHT)")
-            ax.set_title(f"cid{cid} \u00b7 class {tc} \u00b7 tap-fraction {frac:.0%} (attack phase) "
-                         f"\u00b7 tail server-BER {srv_tail:.2f} \u2192 {verdict}", fontsize=10)
+            cmp = ("cleaner than" if srv_tail < hon_tail else "dirtier than") \
+                if not np.isnan(hon_tail) else "n/a"
+            ax.set_title(f"{f.split('_rep')[0]}  \u00b7  cid{cid} \u00b7 class {tc}  "
+                         f"({nseed} seed{'s' if nseed != 1 else ''})\n"
+                         f"tap-fraction {frac:.0%} (attack phase)  \u00b7  tail FR-BER {srv_tail:.2f} "
+                         f"vs same-class honest {hon_tail:.2f} ({cmp})  \u2192  {verdict}",
+                         fontsize=10)
+            ax.set_xlabel("communication round")
             ax.set_ylabel("bit-error-rate")
             ax.set_ylim(-0.03, max(0.62, eta_l + 0.06))
             ax.grid(alpha=.3)
-            if cid == fr_cids[0]:
-                ax.legend(fontsize=7, loc="upper right", ncol=2, framealpha=.95)
-            md_rows.append((cid, tc, frac, srv_tail, verdict))
+            ax.legend(fontsize=7, loc="upper right", ncol=2, framealpha=.95)
 
-        axes[-1].set_xlabel("communication round")
-        fig.suptitle(f"Per-free-rider tap/coast  \u00b7  {f.split('_rep')[0]}  "
-                     f"({nseed} seed{'s' if nseed != 1 else ''})  \u00b7  "
-                     f"yellow=warmup  green=calib  grey=free-riding starts",
-                     fontsize=12, fontweight="bold")
-        base = a.out or "tap_perfr"
-        base = base[:-4] if str(base).endswith(".png") else str(base)
-        out = f"{base}_{f}.png" if multi else f"{base}.png"
-        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-        ps.finish(fig, out)
+            out = f"{base}_{f}_cid{cid}.png"
+            os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+            ps.finish(fig, out)
+            md_rows.append((cid, tc, frac, srv_tail, hon_tail, verdict))
 
-        md = out[:-4] + ".md"
+        # combined markdown table for the family
+        md = f"{base}_{f}.md"
         L = [f"# Per-free-rider tap/coast \u2014 {f}  ({nseed} seed(s))", "",
-             "One row per free-rider. **tap-fraction** uses the attack-phase denominator "
-             "(freeride rounds only). **tail server-BER** is the server's read over the converged "
-             "tail \u2014 compare to \u03b7 loose = "
-             f"{eta_l:.3f}. A free-rider is only truly hidden if its *server* tail BER is under "
-             "\u03b7_loose; the self-probe can read lower and coast into a catch.", "",
-             "| cid | class | tap-fraction | tail server-BER | verdict |",
-             "|---|---|---|---|---|"]
-        for cid, tc, frac, srv_tail, verdict in md_rows:
-            L.append(f"| {cid} | {tc} | {frac:.0%} | {srv_tail:.3f} | {verdict} |")
+             "One FIGURE per free-rider (`*_cid<cid>.png`); each carries the global honest "
+             "mean AND the same-class honest twin. **tap-fraction** uses the attack-phase "
+             "denominator (freeride rounds only). **tail FR-BER** is the server's read over the "
+             "converged tail; compare to the **same-class honest** column (the fair baseline) and "
+             f"to \u03b7 loose = {eta_l:.3f}. A free-rider is only truly hidden if its *server* tail "
+             "BER is under \u03b7_loose; if it also sits at/under the same-class honest twin it is "
+             "*inseparable* from an honest client on that class.", "",
+             "| cid | class | tap-fraction | tail FR-BER | same-class honest BER | verdict |",
+             "|---|---|---|---|---|---|"]
+        for cid, tc, frac, srv_tail, hon_tail, verdict in md_rows:
+            L.append(f"| {cid} | {tc} | {frac:.0%} | {srv_tail:.3f} | "
+                     f"{'n/a' if np.isnan(hon_tail) else f'{hon_tail:.3f}'} | {verdict} |")
         open(md, "w").write("\n".join(L))
         print("wrote", md)
 
 
 CMDS = {
     "operating_point": operating_point,    # NEW: recall @ fixed honest FPR across attacks (the money plot)
-    "tap_perfr": tap_perfr,                # NEW: one panel per free-rider cid (per class) -- taps/coasts, server BER vs self-probe
+    "tap_perfr": tap_perfr,                # NEW: one FIGURE per free-rider (per class) -- taps/coasts, server BER vs self-probe, + same-class honest twin
+    "gpu_savings": gpu_savings,            # NEW: cumulative gpu_ms per round, FR vs honest, compute saved
+    "trigger_fairness": trigger_fairness,  # NEW: BER vs trigger-sample holdings (non-IID fairness)
+    "dirichlet_dist": dirichlet_dist,      # NEW: reference heatmap of the Dirichlet partition per alpha
+    "accuracy": accuracy,                  # NEW: global test acc attack-vs-honest + FR trigger-class acc
     "tap_dynamics": tap_dynamics,          # fade/recovery + stealth frontier (aggregate; use tap_perfr for per-cid)
     "eta_stability": eta_stability,        # per-seed BER curves + eta spread (threshold noise)
     "sanity": sanity,                      # TEXT: flag suspicious/degenerate runs first
