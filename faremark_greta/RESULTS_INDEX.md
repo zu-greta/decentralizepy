@@ -701,6 +701,4 @@ BER-thresholded free-rider detection still has no deployable operating point.
 - **cid6 degenerates to always-tap in J2** — the saving is a cid3 phenomenon. Report per-class.
 - **R33–40 instability is unresolved** and sits in the tail we read. Confirm across seeds first.
 - **Only J2 rep0 has a result.json; J5 rep0 log is partial (ends R39).** Nothing is 3-seed yet.
-- **local_epochs = 5, not the paper's 2** (`config.py:17`, never overridden) — flag before any
-  FareMark-table comparison.
 - **The pool skips a family by directory existence, not knob match** (`runbook.sh:24-27`) — delete stale

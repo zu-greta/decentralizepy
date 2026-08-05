@@ -518,6 +518,22 @@ meeting notes:
 - measure GPU cycles, for comm round budget used? cummulative budget used
 -> make a summary of the results, put each in context - start to wrap up project. next week discuss the storyline and how to present the results and write the paper.
 
+TODO:
+- fix the plottings for submarine and group D. 
+- get new code -> make sure it is correct and review the experiments to run: group E with fairer distribution + group K (submarine attack) with dynamic warmup + dynamic threshold estimation + dynamic coasting and tapping. make sure the sawtooth pattern is preserved and the plots are correct.
+- make sure all plotting and logging and code is present -> run the experiments and get the results.
+
+- clenaup results and codebase -> keep only result files and plots that will be used, cleanup the documentation files, cleanup the codebase and make sure everything is correct and ready for the final runs.
+- create the final runs list to run and get the final results for the paper
+
+- finish up th eproject wrapup document for next week meeting. paper storyline presentation and result summary
+
+August 11
+- TODO general context - present every result so far, all the setup and findings -> to be layed out for a paper
+- TODO summary of results for the attack, polished and ready for paper
+
+
+
 ---
 
 ## paper notes
