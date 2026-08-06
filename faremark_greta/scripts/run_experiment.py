@@ -152,6 +152,7 @@ def parse_args():
     p.add_argument("--tap_data_cpc", type=int, default=None)
     p.add_argument("--tap_scope", type=str, default=None, choices=["full", "block2", "block", "head"])
     p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay", "graft"])
+    p.add_argument("--tap_graft_decay", type=float, default=None)
     p.add_argument("--tap_probe_holdout", type=int, default=None)
     # dynamic adaptive-tap knobs (default to fixed behaviour)
     p.add_argument("--tap_margin_mode", type=str, default=None, choices=["fixed", "derived"])
@@ -199,7 +200,7 @@ _OVERRIDABLE = [
     "wm_trigger_mode", "wm_lambda", "wm_beta",
     "wm_eta_floor", "wm_eta_fixed", "calib_on_all",
     "tap_eta_source", "tap_eta_k", "tap_margin", "tap_when", "tap_period",
-    "tap_max_coast", "tap_data_cpc", "tap_scope", "tap_coast_mode", "tap_probe_holdout",
+    "tap_max_coast", "tap_data_cpc", "tap_scope", "tap_coast_mode", "tap_graft_decay", "tap_probe_holdout",
     # dynamic adaptive-tap knobs
     "tap_margin_mode", "tap_margin_k", "tap_warmup_mode", "tap_conv_eps",
     "tap_conv_patience", "tap_honest_min", "tap_warmup_cap",

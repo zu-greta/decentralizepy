@@ -334,16 +334,5 @@ cat <<EOF
 Resume after a preemption -- safe, skips finished runs:
   POOL_TAG=$POOL_TAG ./submit_pool.sh
 (reuse the SAME POOL_TAG so the claim directory is reused)
-
-PREEMPTION: only your DESERVED quota is guaranteed; pods beyond it are killed
-when the cluster gets busy. That is fine here -- claims carry a heartbeat, so a
-row abandoned by a killed pod is reclaimed after \$STALE (${STALE:-1200}s) and
-retried. Just resubmit with the SAME POOL_TAG whenever a pod disappears:
-  POOL_TAG=$POOL_TAG ./submit_pool.sh
-
-MEMORY NOTE: Eq.14 keeps a model copy PER CLIENT, so a 200-client run needs
-~9 GB on its own. Six concurrent would want ~57 GB -- fine on an 80 GB card,
-an OOM on a 40 GB one. If you cannot pin node-pools and therefore do not know
-which pod lands where, use a uniform WORKERS=3. Watch .poollogs for "OOM".
 EOF
 exit 0

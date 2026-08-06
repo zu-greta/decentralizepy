@@ -114,6 +114,7 @@ PY_EXTRA=""
 [ -n "${TAP_SCOPE:-}" ]        && PY_EXTRA="$PY_EXTRA --tap_scope ${TAP_SCOPE}"
 [ -n "${TAP_COAST_MODE:-}" ]   && PY_EXTRA="$PY_EXTRA --tap_coast_mode ${TAP_COAST_MODE}"
 [ -n "${TAP_PROBE_HOLDOUT:-}" ] && PY_EXTRA="$PY_EXTRA --tap_probe_holdout ${TAP_PROBE_HOLDOUT}"
+[ -n "${TAP_GRAFT_DECAY:-}" ] && PY_EXTRA="$PY_EXTRA --tap_graft_decay ${TAP_GRAFT_DECAY}"
 # dynamic adaptive-tap knobs (default to fixed behaviour if unset)
 [ -n "${TAP_MARGIN_MODE:-}" ]   && PY_EXTRA="$PY_EXTRA --tap_margin_mode ${TAP_MARGIN_MODE}"
 [ -n "${TAP_MARGIN_K:-}" ]      && PY_EXTRA="$PY_EXTRA --tap_margin_k ${TAP_MARGIN_K}"

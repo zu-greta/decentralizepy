@@ -2234,10 +2234,11 @@ def trigger_fairness(a):
 
     fig, ax = plt.subplots(figsize=(9, 6))
     md_rows = []
+    skipped = []
     for i, f in enumerate(fams):
         runs = pick(runs_all, f)
         if not runs:
-            print(f"  (skip {f} -- no runs)"); continue
+            print(f"  (skip {f} -- no runs)"); skipped.append(f + " (no runs)"); continue
         col = ps.CYCLE[i % len(ps.CYCLE)]
         xs, ys, is_fr = [], [], []
         assign_mode = None
@@ -2259,7 +2260,9 @@ def trigger_fairness(a):
                     continue
                 xs.append(int(hold)); ys.append(float(np.mean(bers))); is_fr.append(frflag.get(cid, False))
         if not xs:
-            print(f"  (skip {f} -- no trigger_holdings in result.json; re-run with the patched runner)")
+            print(f"  (skip {f} -- no trigger_holdings in result.json; run backfill_holdings.py "
+                  f"or re-run with the patched runner)")
+            skipped.append(f + " (no holdings -- backfill or re-run)")
             continue
         hx = [x for x, fr in zip(xs, is_fr) if not fr]
         hy = [y for y, fr in zip(ys, is_fr) if not fr]
@@ -2282,6 +2285,11 @@ def trigger_fairness(a):
     ax.set_title("BER vs trigger-sample holdings (non-IID fairness check)\n"
                  "flat/low = fair (holdings don't dictate BER); steep = starvation-driven")
     ax.grid(alpha=.3); ax.legend(fontsize=8, loc="upper right")
+    if skipped:
+        ax.text(0.5, 0.4, "No holdings for:\n" + "\n".join(skipped) +
+                "\n\nFix: python backfill_holdings.py --in '<those runs>/result.json'",
+                transform=ax.transAxes, ha="center", va="center", fontsize=9,
+                color=ps.C_BAD, bbox=dict(boxstyle="round", fc="white", ec=ps.C_BAD, alpha=.95))
     out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out else "trigger_fairness.png"
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     ps.finish(fig, out)

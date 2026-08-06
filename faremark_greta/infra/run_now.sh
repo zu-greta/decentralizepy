@@ -454,7 +454,7 @@ if has K; then
   kbase="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
          AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 \
          TAP_SCOPE=head TAP_COAST_MODE=graft TAP_WHEN=threshold TAP_PROBE_HOLDOUT=16 \
-         TAP_MARGIN=0.03 TAP_MAX_COAST=12 ROUNDS=40 FAST_DATA=1"
+         TAP_MARGIN=0.03 TAP_MAX_COAST=12 ROUNDS=50 FAST_DATA=1"
 
   # --- K0 CONTROL: exactly J2 (oracle eta, fixed margin, fixed warmup). The baseline
   #     every K run is diffed against. Must reproduce the J2 shape (cid3 coasts, cid6 taps).
@@ -466,7 +466,8 @@ if has K; then
   done
 
   # --- K1 SELF-eta: the FR estimates eta from its OWN calib-window probe BER (mu+k*sigma)
-  #     instead of being handed 0.264. CHECK in the trace: eta_self_est ~ 0.264 and it still evades.
+  #     instead of being handed 0.264. The headline 'remove the oracle crutch' run
+  #     (STATUS_AND_PLAN 10.4 #1). CHECK in the trace: eta_self_est ~ 0.264 and it still evades.
   for s in $SEEDS_K; do
     env $kbase TAP_ETA_SOURCE=self TAP_ETA_K=3.0 TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
         FAMILY="K1_selfeta_c36" \
@@ -475,7 +476,7 @@ if has K; then
   done
 
   # --- K2 DERIVED margin: target = eta_hat - k*sigma(calib probe BER) instead of a fixed
-  #     0.03. CHECK: margin_used in the trace scales with probe
+  #     0.03 (STATUS_AND_PLAN 10.4 #2). CHECK: margin_used in the trace scales with probe
   #     noise (bigger on the hard class cid6 than the easy cid3).
   for s in $SEEDS_K; do
     env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 TAP_WARMUP_MODE=fixed \
@@ -485,7 +486,7 @@ if has K; then
   done
 
   # --- K3 DYNAMIC warmup: defect when the FR's OWN probe BER converges, bounded
-  #     [honest_min, warmup_cap], K calib rounds after. CHECK:
+  #     [honest_min, warmup_cap], K calib rounds after (STATUS_AND_PLAN 10.4 #3). CHECK:
   #     defect_round in the trace differs by class (hard cid6 warms up longer than cid3).
   for s in $SEEDS_K; do
     env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed \
@@ -497,15 +498,57 @@ if has K; then
   done
 
   # --- K4 ALL-DYNAMIC + block2 sawtooth: everything self-scheduling at once, with the
-  #     J4 block2 scope kept (the crisp sawtooth). This is the candidate 'complete,
-  #     self-sufficient submarine' -- compare its cid3/cid6 evade+cost to K0 (=J2).
+  #     J4 block2 scope kept (the crisp sawtooth). The ILLUSTRATIVE "expensive but visible"
+  #     submarine -- compare its cid3/cid6 evade+cost to the cheaper head configs (K5/K6).
+  #     Non-polluting: graft_decay=0.25 (light -- keeps the sawtooth visible while stopping
+  #     stale-head injection) + max_coast=6. block2 fades faster so it taps often anyway,
+  #     which already limits stale-head accumulation; the light decay finishes the job.
   for s in $SEEDS_K; do
     env $kbase TAP_SCOPE=block2 TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
         TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
         TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
         TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.25 \
         FAMILY="K4_alldyn_block2_c36" \
-        NOTE="K4 all-dynamic submarine + block2 sawtooth (self-eta, derived margin, dynamic warmup)" \
+        NOTE="K4 all-dynamic + block2 sawtooth (self-eta, derived margin, dynamic warmup, non-polluting)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K5 = the RECOMMENDED candidate after the 1-seed sweep: self-eta + DERIVED margin
+  #     on HEAD scope (not block2). Rationale from the K1/K2 1-seed reads: K1 self-eta
+  #     alone over-estimates the target on the HARD class (cid6) and gets caught; K2's
+  #     derived margin auto-widens exactly where the estimate is noisy. Combining them
+  #     should keep self-sufficiency (no oracle eta) AND rescue the hard class, at the
+  #     low tap-cost of head scope. This is the config to promote to 3 seeds if it holds.
+  for s in $SEEDS_K; do
+    env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
+        FAMILY="K5_selfeta_derivedmargin_head_c36" \
+        NOTE="K5 self-eta + derived margin, head scope, non-polluting (fixes K1 hard-class overshoot)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
+  # --- K6 = THE COMPLETE SUBMARINE: fully dynamic (self-eta + derived margin + dynamic
+  #     warmup) + HEAD scope (cheap, flat, low-amplitude) + TAIL-SPIKE FIX so it does NOT
+  #     pollute the global model. This is the config you REPORT as "the working dynamic
+  #     submarine": nothing is handed to it (no oracle eta, no fixed defect round), it
+  #     obtains the model for free, and it leaves other clients' watermarks intact.
+  #       - self-eta ......... TAP_ETA_SOURCE=self  (estimates eta from its own calib window)
+  #       - derived margin ... TAP_MARGIN_MODE=derived (safety gap scales with probe noise)
+  #       - dynamic warmup ... TAP_WARMUP_MODE=dynamic (defects on its own convergence)
+  #       - head scope ....... cheap re-embed, flat plateau (not a big sawtooth)
+  #       - tail fix ......... TAP_GRAFT_DECAY=0.5 + TAP_MAX_COAST=6 (no stale-head pollution)
+  #     If K6 evades on both classes AND its honest tail is flat (no R36-40 spike), it is
+  #     the headline config -> promote to 3 then 10 seeds.
+  for s in $SEEDS_K; do
+    env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
+        FAMILY="K6_full_submarine_head_c36" \
+        NOTE="K6 COMPLETE submarine: fully dynamic (self-eta+derived margin+dynamic warmup) + head + tail-fix (no pollution)" \
         ./submit_experiment.sh 14 "$s"
   done
 fi
@@ -528,15 +571,37 @@ if has EA; then
         NOTE="EA1 non-iid honest a=0.5, DISTRIBUTION trigger assignment (fairness fix)" \
         ./submit_experiment.sh 14 "$s"
   done
-  # EA2 reduced FR, distribution assignment -- the fair counterpart to E2. 
-  # FR cids are 3,6 but they are fairly distributed since the server does not know who is a FR and who is honest
+  # EA2 reduced FR, distribution assignment -- the REALISTIC/fair-to-server counterpart to E2.
+  #   IMPORTANT: the server does NOT know who is a free-rider, so the free-riders are
+  #   assigned trigger classes by the SAME distribution rule as everyone else. We set
+  #   FREE_RIDER_IDS=3,6 (which CLIENTS free-ride) but do NOT pin their trigger CLASS, so
+  #   cid3/cid6 also get a class they hold a lot of. Consequence: the FR's trigger class
+  #   varies by seed (it depends on the dirichlet draw), which is exactly the fair, no-
+  #   special-treatment scenario. Answers: "with fully fair assignment for everyone, does
+  #   the FR still hide?"
   for s in $SEEDS_EA; do
     env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
         WM_TRIGGER_ASSIGN=distribution \
         AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
         WM_ETA_FIXED=0.161 ROUNDS=50 \
         FAMILY="EA2_reduced_niid_distrib_c36" \
-        NOTE="EA2 non-iid reduced a=0.5, DISTRIBUTION assignment (fair-vs-starved comparison)" \
+        NOTE="EA2 non-iid reduced a=0.5, DISTRIBUTION assignment for ALL incl. free-riders (fair to server)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+  # EA2b CONTROLLED variant: pin the free-riders to classes 3 (medium) & 6 (hard) in BOTH
+  #   E2 and EA2b via trigger_class_map, and let ONLY the honest clients be distribution-
+  #   assigned. This isolates the honest-floor effect at FIXED free-rider difficulty, so the
+  #   E2 <-> EA2b comparison is apples-to-apples (same FR classes, only honest assignment
+  #   changes). trigger_class_map pins cid3->3, cid6->6 as forced reservations; the matcher
+  #   assigns the honest clients around them.
+  for s in $SEEDS_EA; do
+    env ATTACK=reduced FREE_RIDER_IDS=3,6 TRIGGER_CLASS_MAP="3:3,6:6" \
+        PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
+        WM_TRIGGER_ASSIGN=distribution \
+        AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+        WM_ETA_FIXED=0.161 ROUNDS=50 \
+        FAMILY="EA2b_reduced_niid_distrib_pin_c36" \
+        NOTE="EA2b non-iid reduced a=0.5, DISTRIBUTION for honest, FR pinned to cls 3&6 (controlled vs E2)" \
         ./submit_experiment.sh 14 "$s"
   done
 fi

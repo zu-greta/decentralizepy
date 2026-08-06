@@ -197,32 +197,32 @@ phase_plot(){
          --out $OUT/tap_${fam}"
   done
 
-  # --- PER-FREE-RIDER split: one FIGURE per free-rider + same-class honest twin. ---
+  # --- PER-FREE-RIDER split (NEW): one FIGURE per free-rider + same-class honest twin. ---
   #     The meeting's plot: each FR on its own axis, taps/coasts, server BER vs self-probe,
   #     with the honest GLOBAL mean AND the same-class honest twin (from $HON) on BOTH.
   #     Auto-generated for every submarine family (J2/J5 + the dynamic K-suite).
   for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J4_scope_graft_block2_c36 \
              K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
-             K4_alldyn_block2_c36; do
+             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36; do
     run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_perfr_${fam}"
   done
 
   # --- K-SUITE timelines + dynamics (the dynamic-submarine 1-seed tests) ---
   for fam in K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
-             K4_alldyn_block2_c36; do
+             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36; do
     run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_${fam}"
     run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
   done
 
-  # --- ACCURACY: global test acc, attack vs honest, + FR trigger-class acc. ---
+  # --- ACCURACY (NEW): global test acc, attack vs honest, + FR trigger-class acc. ---
   #     The 'Fig B' panels -- free-riders barely dent global accuracy while their own
   #     trigger class is the sacrificed cost. Auto-generated for the key attack families.
   for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 \
+             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36 \
              A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
-             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36; do
+             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 EA2b_reduced_niid_distrib_pin_c36; do
     run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/accuracy_${fam}"
   done
@@ -230,17 +230,17 @@ phase_plot(){
   run "$PL accuracy --in '$ALL' --family E2_reduced_niid_c36 \
        --honest_in '$ALL' --honest_family E1_honest_niid_c100 --out $OUT/accuracy_E2_niid"
 
-  # --- GPU-CYCLES SAVED: cumulative gpu_ms per round, each FR vs honest mean, ---
+  # --- GPU-CYCLES SAVED (NEW): cumulative gpu_ms per round, each FR vs honest mean, ---
   #     + the running fraction-of-honest curve. Every free-rider family (with & without
   #     free-riders logs gpu_ms per round now, so the honest baseline is real).
   for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 \
+             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36 \
              A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
-             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36; do
+             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 EA2b_reduced_niid_distrib_pin_c36; do
     run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
   done
 
-  # --- NON-IID TRIGGER FAIRNESS: BER vs #trigger images held, round-robin vs ---
+  # --- NON-IID TRIGGER FAIRNESS (NEW): BER vs #trigger images held, round-robin vs ---
   #     distribution assignment overlaid. Shows whether starvation drives BER and
   #     whether distribution assignment removes it. Needs the wm_trigger_holdings field
   #     (runner patched) -- honest non-IID families carry it.
@@ -268,6 +268,7 @@ phase_plot(){
   # non-IID same-class pair (honest E1 vs reduced E2), + distribution variant (EA1 vs EA2)
   run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
   run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2b_reduced_niid_distrib_pin_c36 --class 6 --out $OUT/iso_EA2b_c6"
 
 
 
