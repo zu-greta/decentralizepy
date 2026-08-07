@@ -203,14 +203,12 @@ phase_plot(){
   # panels) -- they do not tap together, so never collapse them. Each panel carries
   # the honest GLOBAL mean AND the same-class honest twin (from $HON) for the
   # "does it blend in on its own class" read. 
-  for fam in K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
-             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
+  for fam in K4_alldyn_block2_c36; do
     run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_perfr_${fam}"
   done
   # accuracy: the FR barely dents global test-acc while its own trigger class pays.
-  for fam in K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
-             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
+  for fam in K4_alldyn_block2_c36; do
     run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/accuracy_${fam}"
   done
@@ -219,8 +217,7 @@ phase_plot(){
   # cumulative gpu_ms / samples per round, each FR vs the honest mean, for the
   # kept attack families (D, E, EA, K).
   for fam in D1_reduced_c100_c36_n5 E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 \
-             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
-             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
+             K4_alldyn_block2_c36; do
     run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
   done
   # sharing-inflation check: single-tenant (WORKERS=1) vs shared saved-% ratio.

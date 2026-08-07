@@ -153,6 +153,7 @@ runai submit "$JOB_NAME" \
   -e "CONFIG_IDX=$CONFIG_IDX" -e "REPEAT=$REPEAT" -e "OUTPUT_DIR=$OUTPUT_DIR" \
   -e "DATA_ROOT=$DATA_ROOT" -e "GIT_REPO=$GIT_REPO" -e "GIT_BRANCH=$GIT_BRANCH" \
   -e "PKG_SUBDIR=$PKG_SUBDIR" -e "SCRIPT=$SCRIPT" -e "PY_EXTRA=$PY_EXTRA" \
+  -e "SMOOTH_EPS=${SMOOTH_EPS:-1e-3}" \
   -e "NOTE=${NOTE:-}" -e "DEBUG_HOLD=$DEBUG_HOLD" \
   --command -- bash -c '
     set -euo pipefail

@@ -435,60 +435,46 @@ fi
 #   ('K' shares no letter with A C D E F H I J V NOW, so BATCH=K fires ONLY this.)
 # ---------------------------------------------------------------------------
 if has K; then
-  SEEDS_K="${SEEDS_K:-0}"          # 1 seed: these are wiring/logic tests, not tables
+  SEEDS_K="${SEEDS_K:-0 1 2}"     # K4 is now the 3-seed free-riding headline (was 1-seed wiring tests)
+  # NOTE: for the clean re-run, run submit with SMOOTH_EPS=1e-8 exported so the pod
+  #       forwards it (submit_experiment.sh -e SMOOTH_EPS). Unset => legacy 1e-3.
   # the confirmed-J2 base; K runs flip ONE dynamic knob each on top of it.
   kbase="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
          AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 \
          TAP_SCOPE=head TAP_COAST_MODE=graft TAP_WHEN=threshold TAP_PROBE_HOLDOUT=16 \
          TAP_MARGIN=0.03 TAP_MAX_COAST=12 ROUNDS=50 FAST_DATA=1"
 
-  # --- K0 CONTROL: exactly J2 (oracle eta, fixed margin, fixed warmup). The baseline
-  #     every K run is diffed against. Must reproduce the J2 shape (cid3 coasts, cid6 taps).
-  for s in $SEEDS_K; do
-    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
-        FAMILY="K0_control_J2_c36" \
-        NOTE="K0 control = J2 (oracle eta, fixed margin, fixed warmup) -- the diff baseline" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # --- K0/K1/K2/K3 ablations: DISABLED. These were the 1-seed feature-isolation runs;
+  #     the sweep is done and K4 is the config to table. Re-enable (uncomment) only if
+  #     you need the per-feature diff again.
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
+  #       FAMILY="K0_control_J2_c36" \
+  #       NOTE="K0 control = J2 (oracle eta, fixed margin, fixed warmup) -- the diff baseline" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_ETA_SOURCE=self TAP_ETA_K=3.0 TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
+  #       FAMILY="K1_selfeta_c36" \
+  #       NOTE="K1 self-estimated eta (mu+3sigma over own calib probes) -- removes the oracle crutch" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 TAP_WARMUP_MODE=fixed \
+  #       FAMILY="K2_derivedmargin_c36" \
+  #       NOTE="K2 derived margin (eta - k*sigma) -- safety gap scales with estimation noise" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed \
+  #       TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+  #       TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+  #       FAMILY="K3_dynwarmup_c36" \
+  #       NOTE="K3 dynamic warmup (defect on own-probe convergence, per-class defect round)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
 
-  # --- K1 SELF-eta: the FR estimates eta from its OWN calib-window probe BER (mu+k*sigma)
-  #     instead of being handed 0.264. The headline 'remove the oracle crutch' run
-  #     (STATUS_AND_PLAN 10.4 #1). CHECK in the trace: eta_self_est ~ 0.264 and it still evades.
-  for s in $SEEDS_K; do
-    env $kbase TAP_ETA_SOURCE=self TAP_ETA_K=3.0 TAP_MARGIN_MODE=fixed TAP_WARMUP_MODE=fixed \
-        FAMILY="K1_selfeta_c36" \
-        NOTE="K1 self-estimated eta (mu+3sigma over own calib probes) -- removes the oracle crutch" \
-        ./submit_experiment.sh 14 "$s"
-  done
-
-  # --- K2 DERIVED margin: target = eta_hat - k*sigma(calib probe BER) instead of a fixed
-  #     0.03 (STATUS_AND_PLAN 10.4 #2). CHECK: margin_used in the trace scales with probe
-  #     noise (bigger on the hard class cid6 than the easy cid3).
-  for s in $SEEDS_K; do
-    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 TAP_WARMUP_MODE=fixed \
-        FAMILY="K2_derivedmargin_c36" \
-        NOTE="K2 derived margin (eta - k*sigma) -- safety gap scales with estimation noise" \
-        ./submit_experiment.sh 14 "$s"
-  done
-
-  # --- K3 DYNAMIC warmup: defect when the FR's OWN probe BER converges, bounded
-  #     [honest_min, warmup_cap], K calib rounds after (STATUS_AND_PLAN 10.4 #3). CHECK:
-  #     defect_round in the trace differs by class (hard cid6 warms up longer than cid3).
-  for s in $SEEDS_K; do
-    env $kbase TAP_ETA_SOURCE=oracle TAP_MARGIN_MODE=fixed \
-        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
-        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
-        FAMILY="K3_dynwarmup_c36" \
-        NOTE="K3 dynamic warmup (defect on own-probe convergence, per-class defect round)" \
-        ./submit_experiment.sh 14 "$s"
-  done
-
-  # --- K4 ALL-DYNAMIC + block2 sawtooth: everything self-scheduling at once, with the
-  #     J4 block2 scope kept (the crisp sawtooth). The ILLUSTRATIVE "expensive but visible"
-  #     submarine -- compare its cid3/cid6 evade+cost to the cheaper head configs (K5/K6).
-  #     Non-polluting: graft_decay=0.25 (light -- keeps the sawtooth visible while stopping
-  #     stale-head injection) + max_coast=6. block2 fades faster so it taps often anyway,
-  #     which already limits stale-head accumulation; the light decay finishes the job.
+  # --- K4 ALL-DYNAMIC + block2 sawtooth: THE free-riding submarine to table (3 seeds).
   for s in $SEEDS_K; do
     env $kbase TAP_SCOPE=block2 TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
         TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
@@ -500,43 +486,29 @@ if has K; then
         ./submit_experiment.sh 14 "$s"
   done
 
-  # --- K5 = the RECOMMENDED candidate after the 1-seed sweep: self-eta + DERIVED margin
-  #     on HEAD scope (not block2). Rationale from the K1/K2 1-seed reads: K1 self-eta
-  #     alone over-estimates the target on the HARD class (cid6) and gets caught; K2's
-  #     derived margin auto-widens exactly where the estimate is noisy. Combining them
-  #     should keep self-sufficiency (no oracle eta) AND rescue the hard class, at the
-  #     low tap-cost of head scope. This is the config to promote to 3 seeds if it holds.
-  for s in $SEEDS_K; do
-    env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
-        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
-        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
-        FAMILY="K5_selfeta_derivedmargin_head_c36" \
-        NOTE="K5 self-eta + derived margin, head scope, non-polluting (fixes K1 hard-class overshoot)" \
-        ./submit_experiment.sh 14 "$s"
-  done
-
-  # --- K6 = THE COMPLETE SUBMARINE: fully dynamic (self-eta + derived margin + dynamic
-  #     warmup) + HEAD scope (cheap, flat, low-amplitude) + TAIL-SPIKE FIX so it does NOT
-  #     pollute the global model. This is the config you REPORT as "the working dynamic
-  #     submarine": nothing is handed to it (no oracle eta, no fixed defect round), it
-  #     obtains the model for free, and it leaves other clients' watermarks intact.
-  #       - self-eta ......... TAP_ETA_SOURCE=self  (estimates eta from its own calib window)
-  #       - derived margin ... TAP_MARGIN_MODE=derived (safety gap scales with probe noise)
-  #       - dynamic warmup ... TAP_WARMUP_MODE=dynamic (defects on its own convergence)
-  #       - head scope ....... cheap re-embed, flat plateau (not a big sawtooth)
-  #       - tail fix ......... TAP_GRAFT_DECAY=0.5 + TAP_MAX_COAST=6 (no stale-head pollution)
-  #     If K6 evades on both classes AND its honest tail is flat (no R36-40 spike), it is
-  #     the headline config -> promote to 3 then 10 seeds.
-  for s in $SEEDS_K; do
-    env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
-        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
-        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
-        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
-        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
-        FAMILY="K6_full_submarine_head_c36" \
-        NOTE="K6 COMPLETE submarine: fully dynamic (self-eta+derived margin+dynamic warmup) + head + tail-fix (no pollution)" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # --- K5/K6 head configs: DISABLED. The re-uploaded tap_perfr plots show head taps ~100%
+  #     on both classes (self-sufficient + evades, but saves NO compute -> not a free-rider
+  #     in the effort sense). K4/block2 is the free-riding config we table. Re-enable only
+  #     to quote K6/head for the "needs no oracle" point, or after a self-probe fix
+  #     (raise the n_trig//2 cap in clients.py:_prepare + EMA-smooth) lets head coast.
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+  #       TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+  #       TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
+  #       FAMILY="K5_selfeta_derivedmargin_head_c36" \
+  #       NOTE="K5 self-eta + derived margin, head scope, non-polluting (fixes K1 hard-class overshoot)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in $SEEDS_K; do
+  #   env $kbase TAP_SCOPE=head TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+  #       TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+  #       TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+  #       TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+  #       TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.5 \
+  #       FAMILY="K6_full_submarine_head_c36" \
+  #       NOTE="K6 COMPLETE submarine: fully dynamic (self-eta+derived margin+dynamic warmup) + head + tail-fix (no pollution)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
 fi
 
 # ---------------------------------------------------------------------------
