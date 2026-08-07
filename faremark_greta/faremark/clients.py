@@ -3,14 +3,13 @@
 SECTION 1  HONEST      Client, _to_cpu_state        
 SECTION 2  WATERMARK   WatermarkClient (Eq.11-12 + Eq.14 memory)
                         build_watermarked_clients      
-SECTION 3  ATTACKERS   _SimpleFRMixin, make_reduced_attack, make_tap_attack,
+SECTION 3  ATTACKERS   _SimpleFRMixin, make_reduced_attack,
                         make_adaptive_tap_attack (the adaptive "submarine")
 
 inheritance chain:
     Client                          honest FedAvg: load global -> local SGD -> return
       +-- WatermarkClient           ... + L_wm on trigger-class samples + Eq.14 memory update
         +-- ReducedFreeRider        ... but trains on a reduced shard after round W
-        +-- OracleTapFreeRider      ... but taps only when its own BER nears eta
         +-- AdaptiveTapFreeRider    ... the submarine: estimates eta, warms up
                                         (fixed or dynamic), then coasts/taps to hold
                                         its mark. graft coast -> the sawtooth.
@@ -318,14 +317,6 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             a, b = tok.split(":")
             tmap[int(a)] = int(b) % num_classes
 
-    # KEY-TWIN map 
-    key_twin = {}
-    _kt = getattr(cfg, "wm_key_twins", None)
-    if _kt:
-        for pair in str(_kt).split(","):
-            if ":" in pair:
-                a, b = pair.split(":"); key_twin[int(a)] = int(b)
-
     # ---- trigger-class assignment policy -----------------------------------
     #   roundrobin (default): cid % n  -- blind, ignores what the client holds.
     #   distribution: the server assigns each client a class it holds a lot of
@@ -365,10 +356,9 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             trigger_class = cid % num_classes
         # key balance config: balanced=True removes structurally-unembeddable same-sign rows 
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
-        key_cid = key_twin.get(cid, cid)   # derive key/bits from the twin's cid if set
-        key = wm.make_key(m, l, seed=seed + 1000 * key_cid + 1, balanced=bal)
+        key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
-        bits = wm.make_bits(m, seed=seed + 1000 * key_cid + 1) # random target bits for the watermark
+        bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
         reg_exclude = None                     # full softmax
         registry.register(cid, trigger_class, key, bits,
                           kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude) # register the client's watermark parameters in the registry
@@ -400,14 +390,6 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     honest_rounds=getattr(cfg, "autop_honest_until", 12),
                     calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
                     trigger_train_n=int(getattr(cfg, "autop_trigger_train_n", -1)),
-                    **wm_args, **common))
-            elif attack == "tap_oracle":
-                cls = make_tap_attack(WatermarkClient)
-                clients.append(cls(
-                    oracle_eta=getattr(cfg, "autop_oracle_eta", 0.0) or getattr(cfg, "wm_eta_fixed", 0.0),
-                    honest_rounds=getattr(cfg, "autop_honest_until", 12),
-                    calib_rounds=getattr(cfg, "autop_calib_rounds", 4),
-                    common_per_class=max(0, getattr(cfg, "autop_common_per_class", 5)),
                     **wm_args, **common))
             elif attack in ("adaptive_tap", "submarine", "autopilot"):
                 # "submarine"/"autopilot" are aliases for the adaptive tap free-rider.
@@ -449,7 +431,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             else:
                 raise ValueError(
                     f"attack='{attack}' not supported in the watermark path "
-                    f"(use 'reduced', 'tap_oracle', 'adaptive_tap' (aka 'submarine'), "
+                    f"(use 'reduced', 'adaptive_tap' (aka 'submarine'), "
                     f"'previous_models', 'gaussian', or 'none').")
         else:
             clients.append(WatermarkClient(
@@ -675,7 +657,7 @@ class _SimpleFRMixin:
     @torch.no_grad()
     def _probe_ber(self, state) -> float | None:
         """BER of this client's mark in `state`, on held-out trigger images.
-        used by the OracleTapFreeRider to decide whether to coast or tap."""
+        used by the adaptive-tap free-rider to decide whether to coast or tap."""
         if getattr(self, "_probe_x", None) is None:
             return None
         self.model.load_state_dict(state)
@@ -748,65 +730,6 @@ def make_reduced_attack(base_cls):
     return ReducedDataFreeRider
 
 
-# --------------------------------------------------------------------------- #
-# Oracle Tap Attack: honest, then oracle-threshold tap/coast                 #
-# --------------------------------------------------------------------------- #
-def make_tap_attack(base_cls):
-
-    class OracleTapFreeRider(_SimpleFRMixin, base_cls):
-        is_free_rider = True
-        attack_name = "tap_oracle"
-
-        def __init__(self, *a, oracle_eta: float, honest_rounds: int = 12,
-                     calib_rounds: int = 4, common_per_class: int = 5,
-                     margin: float = 0.02, **kw):
-            super().__init__(*a, **kw)
-            self.oracle_eta = float(oracle_eta)          # the true server threshold
-            self.honest_rounds = int(honest_rounds)
-            self.calib_rounds = int(calib_rounds)
-            self.common_per_class = int(common_per_class)
-            self.margin = float(margin)                  # stay this far under eta
-            self._prepared = False
-            self._orig_loader = self.loader
-            self.trace = []
-
-        def produce_update(self, global_state, prev_global_state, round_idx):
-            phase = self._phase_action(round_idx)
-
-            if phase != "freeride":
-                # honest warmup / calibration on the original shard
-                submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-                # expose the oracle on the last calib round so the timeline can draw it
-                eta = self.oracle_eta if phase == "calib" else None
-                self.trace.append({"round": round_idx, "action": phase, "eta_frozen": eta})
-                return submit, n
-
-            # ---- free-ride: coast if the mark is safely present, else tap ----
-            self._prepare(self.common_per_class, n_probe_holdout=16)
-            target = max(0.0, self.oracle_eta - self.margin)
-            ber_now = self._probe_ber(global_state)      # is my mark still in the model?
-
-            if ber_now is not None and ber_now <= target:
-                # COAST: submit the global unchanged -> zero training compute
-                self.meter.start_round(round_idx); self.meter.end_round(trained=False)
-                self.trace.append({"round": round_idx, "action": "coast",
-                                   "eta_frozen": self.oracle_eta,
-                                   "ber_after": round(ber_now, 4)})
-                return {k: v.clone() for k, v in global_state.items()}, self.num_samples
-
-            # TAP: one honest-style pass on the reduced shard to refresh the mark
-            self.loader = self._reduced_loader
-            submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-            self.loader = self._orig_loader
-            self.trace.append({"round": round_idx, "action": "tap",
-                               "eta_frozen": self.oracle_eta,
-                               "ber_after": None if self._probe_ber(submit) is None
-                                            else round(self._probe_ber(submit), 4)})
-            return submit, n
-
-    return OracleTapFreeRider
-
-
 # ------------------------------------------------------------------------------ #
 #  Adaptive Tap Attack: the submarine (attack="adaptive_tap")                    #  
 #  honest, then train (full or reduced) when nearing (estimated) threshold       #
@@ -863,12 +786,9 @@ def make_adaptive_tap_attack(base_cls):
             # ---- DYNAMIC config (opt-in; "fixed" reproduces the prior behaviour) ----
             #  margin_mode="derived": target = eta_hat - margin_k * sigma(calib probe BER),
             #      so the safety gap scales with how noisy the FR's own eta estimate is
-            #      (STATUS_AND_PLAN 10.4 #2) instead of the hand-tuned constant `margin`.
             #  warmup_mode="dynamic": defect when the FR's OWN probe BER has converged
             #      (flat within conv_eps for conv_patience+1 rounds), bounded to
-            #      [honest_min, warmup_cap]; the K calib rounds then run AFTER convergence
-            #      (STATUS_AND_PLAN 10.4 #3). Hard classes converge later -> warm up
-            #      longer -> defect later, which is the honest behaviour a real submarine needs.
+            #      [honest_min, warmup_cap]; the K calib rounds then run after convergence
             self.margin_mode = str(margin_mode)
             self.margin_k = float(margin_k)
             self.warmup_mode = str(warmup_mode)
@@ -909,8 +829,7 @@ def make_adaptive_tap_attack(base_cls):
         # ---- dynamic warmup: when to defect ----------------------------------
         def _probe_converged(self):
             """True once the FR's own probe BER has been flat (within conv_eps)
-            for conv_patience+1 consecutive rounds. BER is quantised (1/m steps),
-            so 'flat' == 'unchanged'. Used only in warmup_mode='dynamic'."""
+            for conv_patience+1 consecutive rounds."""
             need = self.conv_patience + 1
             if len(self._probe_hist) < need:
                 return False
@@ -919,14 +838,11 @@ def make_adaptive_tap_attack(base_cls):
 
         def _phase_action(self, round_idx: int) -> str:
             """honest | calib | freeride.
-
             fixed   : the original schedule -- warmup [1, W-1], calib [W-K, W-1],
-                      freeride >= W (W=honest_rounds, K=calib_rounds). Position-independent.
-            dynamic : defect after the probe converges. We watch the probe flatten
+                      freeride >= W (W=honest_rounds, K=calib_rounds). 
+            dynamic : defect after the probe converges. Watch the probe flatten
                       (>= honest_min rounds, at most warmup_cap), then run K calib
-                      rounds, then free-ride. Hard classes converge later, so they
-                      warm up longer and defect later -- which is what an honest
-                      self-scheduling submarine must do (STATUS_AND_PLAN 10.4 #3).
+                      rounds, then free-ride. 
             """
             if self.warmup_mode != "dynamic":
                 return super()._phase_action(round_idx)
@@ -1013,9 +929,7 @@ def make_adaptive_tap_attack(base_cls):
         # ---- graft support (coast_mode="graft") ------------------------------
         def _graft_keys(self):
             """State-dict keys of the watermark-carrying output layer to keep
-            frozen during a graft coast. Uses the tap scope's kept params; if the
-            tap trains 'full', fall back to the head (last 2 params) so graft
-            still leaves the body free to follow the global."""
+            frozen during a graft coast. Uses the tap scope's kept params"""
             keep = self._SCOPE_KEEP.get(self.scope) or 2
             named = list(self.model.named_parameters())
             return [name for name, _ in named[len(named) - int(keep):]]
@@ -1033,11 +947,7 @@ def make_adaptive_tap_attack(base_cls):
                 return global_state
             if self.coast_mode == "decay":
                 return self._last_submit
-            # graft: start from the fresh global, overwrite only the mark-head params.
-            # With graft_decay in (0,1), blend the frozen head toward the fresh global
-            # head so a long coast streak stops re-injecting the SAME stale head into
-            # FedAvg (the R36-40 honest-BER pollution). decay=0 -> pure frozen head
-            # (original behaviour); decay=1 -> pure global head (mark gone immediately).
+            # graft: start from the fresh global, overwrite only the mark-head params
             out = {k: v.clone() for k, v in global_state.items()}
             d = float(getattr(self, "graft_decay", 0.0))
             for k in self._graft_keys():
@@ -1076,9 +986,8 @@ def make_adaptive_tap_attack(base_cls):
             # warmup + calibration window: pure honest client on the full shard
             if phase != "freeride":
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-                # dynamic warmup needs a probe EVERY warmup round to detect convergence;
-                # fixed warmup only needs it during the calib window. Build the probe
-                # holdout as soon as we might need it.
+                # dynamic warmup needs a probe every warmup round to detect convergence;
+                # fixed warmup only needs it during the calib window
                 if self.warmup_mode == "dynamic" or phase == "calib":
                     self._prepare(max(0, self.data_cpc), n_probe_holdout=holdout,
                                   trigger_train_n=self.trigger_train_n)
@@ -1131,7 +1040,7 @@ def make_adaptive_tap_attack(base_cls):
 # =============================================================================
 # NOTE ON THE "SUBMARINE"
 # =============================================================================
-# The adaptive submarine IS `AdaptiveTapFreeRider` above (attack="adaptive_tap").
+# The adaptive submarine is `AdaptiveTapFreeRider` above (attack="adaptive_tap").
 # It subsumes what an earlier, separate `SubmarineFreeRider` prototype was meant to
 # do -- estimate its own eta, warm up until convergence, then coast/tap to hold its
 # mark -- via the tap_* knobs:
@@ -1140,6 +1049,3 @@ def make_adaptive_tap_attack(base_cls):
 #                                honest_min, warmup_cap
 #   * uncertainty-scaled margin  margin_mode="derived", margin_k
 #   * coast without a replay ... coast_mode="graft" (+ scope) -> the gradual-fade sawtooth
-# The old prototype never worked (its warmup loader was broken) and has been removed
-# to avoid confusion. Everything it aimed for is covered and tested by the knobs above;
-# Group K in run_now.sh exercises each dynamic piece with a 1-seed run.

@@ -23,7 +23,7 @@ class ExpConfig:
     expected_acc: tuple = (0.0, 100.0)      # correctness band
 
     # ---- free-rider selection / paper baselines ----
-    attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"|"tap_oracle"
+    attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"
                                             # |"adaptive_tap" (aka "submarine"/"autopilot")
     num_free_riders: int = 0                # how many of num_clients are free-riders
     free_rider_ids: str = ""                # "3,6" pins which cids free-ride (overrides seeded choice). Empty => choose_free_riders(seed).
@@ -31,14 +31,9 @@ class ExpConfig:
     noise_decay: float = 0.0                # >0 -> sigma_t = sigma0 * t^(-decay)
     partition: str = "iid"                  # 'iid' or 'dirichlet' (non-IID)
     dirichlet_alpha: float = 0.5            # dirichlet skew; small=severe non-IID, large~=IID
-    wm_key_twins: str = ""                  # "fr_cid:honest_cid,..." -> FR match key and message to honest client
     trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default trigger_class = cid % num_classes
 
     # ---- shared free-rider schedule + data knobs ----
-    # These are used by the LIVE attackers: reduced (attack="reduced"), tap_oracle,
-    # and the adaptive submarine (attack="adaptive_tap"). The submarine's OWN
-    # dynamic behaviour (self-eta, dynamic warmup, derived margin) lives in the
-    # tap_* knobs below; these autop_* knobs are the shared schedule/data controls.
     autop_oracle_eta: float = 0.0           # >0 => the FR is handed the true eta (controlled test).
                                             # For the submarine, tap_eta_source="self" ignores this.
     autop_honest_until: int = 12            # W: fixed-warmup defect round (warmup=[1,W-1], calib=[W-K,W-1]).
@@ -48,14 +43,10 @@ class ExpConfig:
     autop_trigger_train_n: int = -1         # TABLE V: num of trigger imgs trained on (-1 = all)
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
     autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
-                                            # -1/0 = all of them; K>0 = K randomly chosen classes.
-                                            # Separates "how many images" from "how much class
-                                            # diversity" in the +N sweep.
+                                            # -1/0 = all of them; K>0 = K randomly chosen classes
 
     # ---- adaptive tap free-rider  (attack="adaptive_tap", aka the "submarine")  ----
-    # FR that trains only on rounds when its own BER nears the estimated eta. The
-    # dynamic pieces below make it fully self-scheduling (self-eta + dynamic warmup +
-    # derived margin); all default to the FIXED behaviour so they are opt-in.
+    # FR that trains only on rounds when its own BER nears the estimated eta.
     tap_eta_source: str = "oracle"   # which eta the FR aims under: "oracle" = the true server eta
                                      # (wm_eta_fixed / autop_oracle_eta, for controlled tests);
                                      # "self" = the FR estimates it from its own calib-window probe BER
@@ -74,9 +65,6 @@ class ExpConfig:
     tap_graft_decay: float = 0.0      # graft coast: blend frozen mark-head toward global head each coast (0=off, tail-spike fix)
     tap_probe_holdout: int = 16      # held-out trigger images for the FR's self-BER probe (generalisation)
     # ---- DYNAMIC adaptive-tap knobs (default = the prior FIXED behaviour) ----
-    # These make the three hardcoded pieces from STATUS_AND_PLAN 10.4 dynamic. All
-    # default to values that reproduce the existing runs, so turning them on is opt-in
-    # and cannot change J2/J4 unless explicitly set.
     tap_margin_mode: str = "fixed"   # "fixed" = constant tap_margin; "derived" = eta - margin_k*sigma(calib probe BER)
     tap_margin_k: float = 1.0        # k for the derived margin (target = eta_hat - k*sigma)
     tap_warmup_mode: str = "fixed"   # "fixed" = defect at autop_honest_until; "dynamic" = defect when own probe converges
@@ -93,10 +81,7 @@ class ExpConfig:
                                             # construction, still pseudo-random)
     wm_trigger_assign: str = "roundrobin"   # trigger-class -> client assignment policy:
                                             #   "roundrobin" = cid % num_classes (blind; the paper default)
-                                            #   "distribution" = server assigns each client a class it
-                                            #     HOLDS a lot of (greedy max-count matching), so non-IID
-                                            #     clients are not starved on their own trigger class
-                                            #     (Group-E fairness fix). Needs num_clients <= num_classes.
+                                            #   "distribution" = server assigns each client a class it holds a lot of
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"

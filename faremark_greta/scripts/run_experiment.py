@@ -68,14 +68,9 @@ def parse_args():
     p.add_argument("--trigger_class_map", type=str, default=None,
                    help="pin trigger classes, e.g. '0:6' forces cid 0 onto class 6 "
                         "(same-trigger-class control; overrides cid%%num_classes)")
-    p.add_argument("--wm_key_twins", type=str, default=None,
-                   help="give a free-rider the SAME key+message as an honest client, "
-                        "e.g. '0:6' makes cid 0 reuse cid 6's key and bits. Combined "
-                        "with --trigger_class_map it isolates training effort as the "
-                        "only difference between the two clients.")
     # ---- free-rider selection ----
     p.add_argument("--attack", type=str, default=None,
-                   choices=["none", "previous_models", "gaussian", "submarine", "autopilot", "reduced", "tap_oracle", "adaptive_tap"])
+                   choices=["none", "previous_models", "gaussian", "submarine", "autopilot", "reduced", "adaptive_tap"])
     p.add_argument("--num_free_riders", type=int, default=None)
     p.add_argument("--free_rider_ids", type=str, default=None,
                    help="pin which cids free-ride, e.g. '3,6' (overrides the seeded choice)")
@@ -83,7 +78,7 @@ def parse_args():
     p.add_argument("--noise_decay", type=float, default=None)
     # ---- autopilot / submarine overrides ----
     # 16 --autop_* flags are COMMENTED OUT below with the submarine attacker.
-    # The 5 that remain are used by the live `reduced` / `tap_oracle` attackers.
+    # The 5 that remain are used by the live `reduced` / `adaptive_tap` attackers.
     p.add_argument("--autop_oracle_eta", type=float, default=None)
 #     p.add_argument("--autop_warmup_mode", type=str, default=None,
 #                    choices=["dynamic", "fixed"])
@@ -184,7 +179,7 @@ def _gpu_name():
 
 
 _OVERRIDABLE = [
-    "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map", "wm_key_twins",
+    "model", "dataset", "partition", "dirichlet_alpha", "trigger_class_map",
     "num_clients", "rounds", "local_epochs",
     "batch_size", "lr", "attack", "num_free_riders", "free_rider_ids",
     "noise_sigma", "noise_decay",
@@ -394,7 +389,7 @@ def main():
                    "n_common_classes": cfg.autop_n_common_classes,
                    "honest_until (W)": cfg.autop_honest_until,
                    "calib_rounds (K)": cfg.autop_calib_rounds}
-            if cfg.attack in ("reduced", "submarine", "autopilot", "tap_oracle") else None)
+            if cfg.attack in ("reduced", "submarine", "autopilot", "adaptive_tap") else None)
         verify_hook = make_verifier(registry, trigger_bank, verify_model, device,
                                     free_rider_indices, eta_floor=cfg.wm_eta_floor,
                                     verify_every=cfg.wm_verify_every,

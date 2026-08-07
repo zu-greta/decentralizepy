@@ -13,6 +13,12 @@
 #
 # eta is calibrated ONCE from the honest family of each dataset and reused on the
 # attack timelines, so the dashed line is the REAL threshold, not the provisional.
+#
+# NOTE: the A4 (same-class, one run) and AK (same-class + same-key twin, one run)
+# figures were REMOVED -- those put two clients on the same trigger class inside a
+# single run, which is the class-conflict case. The fair FR-vs-honest comparison is
+# done CROSS-RUN by plot_sameclass_pair.py (honest twin from a separate all-honest
+# run, matched by trigger class), not here.
 # =============================================================================
 set -uo pipefail
 RES="${RES:?set RES to your local results dir}"
@@ -58,17 +64,9 @@ if has A; then
   run $PL honest_lines --in "'$ALL'" --family A1_honest_c100 --tail 20 --out "$OUT/A1_class_floors.png"
   run $PL class_probe  --in "'$ALL'" --family A1_honest_c100 --out "$OUT/A1_class_probe"
   run $PL eta_stability --in "'$ALL'" --family A1_honest_c100 --out "$OUT/A1_eta_stability"   # the seed-variance of eta (F2)
-  # attacks: easy (c17), hard (c36), sameclass, sameclass+samekey
+  # attacks: easy (c17), hard (c36). Fair FR-vs-honest is CROSS-RUN via plot_sameclass_pair.py.
   pair A2_reduced_c100_c17   A1_honest_c100 "$ETA_C100" A2_easy
   pair A3_reduced_c100_c36   A1_honest_c100 "$ETA_C100" A3_hard
-  pair A4_sameclass_c100_c6  A1_honest_c100 "$ETA_C100" A4_sameclass
-fi
-
-# ============================ AK ==============================================
-# same class + same key + same message: only effort differs
-if has AK || has A; then
-  echo "### AK"
-  pair AK_sameclass_samekey_c6 A1_honest_c100 "$ETA_C100" AK_samekey
 fi
 
 # ============================ GROUP C =========================================

@@ -1395,6 +1395,115 @@ def class_difficulty(a):
         print("  per-class acc:", [(c, round(np.mean(acc_by[c]), 1)) for c in ts])
 
 
+def class_acc(a):
+    """PER-CLIENT trigger-class accuracy check (all-honest run).
+
+    One panel PER CLIENT. Each panel shows three test-accuracy bars for the SINGLE
+    shared global model, read off `result['per_class']['by_class']` (averaged over
+    seeds):
+      * trigger class   -- this client's own assigned trigger class
+      * non-trigger     -- mean over all the OTHER classes
+      * global          -- overall test accuracy (per_class.overall_acc)
+    The cid->trigger-class map comes from the last round's wm_per_client rows.
+
+    Why: it isolates trigger-class DIFFICULTY from the watermark. If a client's
+    watermark BER is high, this plot says whether that is because its trigger class
+    is intrinsically hard to classify (low trigger-class bar, well below global) or
+    not (trigger-class bar ~ global). A hard draw shows up as a short orange bar.
+    Runs on an all-honest family so no free-rider effects are in play.
+    """
+    runs = pick(load(a.inp), a.family)
+    if not runs:
+        print("no runs for", a.family); return
+
+    # per-class test acc (final model), averaged over seeds
+    acc_by = defaultdict(list)
+    overall = []
+    for r in runs:
+        pc = r.get("per_class")
+        if pc and pc.get("by_class"):
+            for c, d in pc["by_class"].items():
+                acc_by[int(c)].append(d["acc"])
+        if pc and pc.get("overall_acc") is not None:
+            overall.append(float(pc["overall_acc"]))
+    if not acc_by:
+        print("  NOTE: result['per_class'] absent -> re-run run_experiment.py "
+              "(it logs per_class.by_class). Cannot draw class_acc.")
+        return
+    acc_mean = {c: float(np.mean(v)) for c, v in acc_by.items()}
+    global_acc = float(np.mean(overall)) if overall else float(np.mean(list(acc_mean.values())))
+
+    # cid -> trigger class from the last round's rows (any run; they agree)
+    cid_tc = {}
+    for r in runs:
+        h = r.get("history") or []
+        if not h:
+            continue
+        for p in (h[-1].get("wm_per_client") or []):
+            if p.get("trigger_class") is not None:
+                cid_tc[int(p["cid"])] = int(p["trigger_class"])
+    if not cid_tc:
+        print("  NOTE: no wm_per_client rows -> cannot map clients to trigger classes.")
+        return
+    cids = sorted(cid_tc)
+
+    ncol = min(5, len(cids))
+    nrow = int(np.ceil(len(cids) / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.7 * ncol, 3.0 * nrow),
+                             squeeze=False, sharey=True)
+    rows_md = []
+    for i, cid in enumerate(cids):
+        ax = axes[i // ncol][i % ncol]
+        tc = cid_tc[cid]
+        trig = acc_mean.get(tc, float("nan"))
+        others = [acc_mean[c] for c in acc_mean if c != tc]
+        nontrig = float(np.mean(others)) if others else float("nan")
+        vals = [trig, nontrig, global_acc]
+        colors = [C_FR, C_HONEST, GREY]
+        bars = ax.bar([0, 1, 2], vals, color=colors, width=0.7, edgecolor="white")
+        for b, v in zip(bars, vals):
+            if not np.isnan(v):
+                ax.text(b.get_x() + b.get_width() / 2, v + 1, f"{v:.0f}",
+                        ha="center", va="bottom", fontsize=8)
+        ax.axhline(global_acc, color=GREY, ls="--", lw=1.0, zorder=0)
+        gap = trig - global_acc
+        flag = "  (HARD draw)" if (not np.isnan(gap) and gap <= -10) else ""
+        ax.set_title(f"cid {cid} · trig cls {tc}{flag}", fontsize=9.5,
+                     color=(C_BAD if flag else "black"))
+        ax.set_xticks([0, 1, 2])
+        ax.set_xticklabels(["trig", "non-trig", "global"], fontsize=8)
+        ax.set_ylim(0, 100)
+        if i % ncol == 0:
+            ax.set_ylabel("test acc (%)")
+        rows_md.append((cid, tc, trig, nontrig, global_acc, gap))
+    # blank any unused panels
+    for j in range(len(cids), nrow * ncol):
+        axes[j // ncol][j % ncol].axis("off")
+
+    fam_ = a.family or "all"
+    fig.suptitle(
+        f"Per-client trigger-class accuracy (all-honest) · {fam_}\n"
+        f"orange = client's trigger class · blue = mean of other classes · grey = global "
+        f"({global_acc:.1f}%). A short orange bar = a hard trigger-class draw, not a watermark effect.",
+        fontsize=11, y=1.005)
+    out = a.out if str(a.out).endswith(".png") else str(a.out) + ".png"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    finish(fig, out)
+
+    md = out[:-4] + ".md"
+    L = [f"# Per-client trigger-class accuracy — {fam_}", "",
+         f"Global test acc: **{global_acc:.2f}%**. A trigger-class bar far below global "
+         "means that client sits on an intrinsically hard class (its watermark BER floor is "
+         "a class-difficulty artifact, not evidence about the mark).", "",
+         "| cid | trigger class | trig-class acc | non-trigger acc | global | trig − global |",
+         "|---|---|---|---|---|---|"]
+    for cid, tc, trig, nontrig, g, gap in rows_md:
+        hard = " ⚠️ hard" if (not np.isnan(gap) and gap <= -10) else ""
+        L.append(f"| {cid} | {tc} | {trig:.1f}% | {nontrig:.1f}% | {g:.1f}% | {gap:+.1f}{hard} |")
+    open(md, "w").write("\n".join(L))
+    print("wrote", md)
+
+
 def sanity(a):
     """TEXT report (no figure) that flags suspicious/degenerate runs BEFORE you
     trust any plot -- the failure modes you hit before: flat or zero BER, an FR that
@@ -2757,7 +2866,351 @@ def tap_perfr(a):
         print("wrote", md)
 
 
+def gpu_inflation(a):
+    """GPU-SHARING INFLATION CHECK. Validates that the free-rider 'compute saved %'
+    ratio is trustworthy even though absolute gpu_ms is inflated when many runs share a
+    GPU (MPS, WORKERS>1). It splits a family's runs into a SHARED bucket
+    (gpu_concurrency>1, gpu_ms inflated) and a SINGLE-TENANT bucket (gpu_concurrency==1,
+    gpu_ms reliable) -- the two K4 runs differ only in this -- and shows:
+      (A) honest absolute cumulative gpu_ms (shared >> single) while samples are
+          identical (samples are contention-free);
+      (B) per-free-rider compute-saved %, computed from gpu_ms AND from samples, for
+          BOTH buckets. If gpu_ms-saved == samples-saved WITHIN each bucket, the ratio
+          is inflation-invariant, so the shared-GPU saved-% headline is trustworthy.
+    Run it on the family that has both a WORKERS>1 and a WORKERS=1 run in the pool:
+        python plots.py gpu_inflation --in 'results/*/result.json' --family K4_alldyn_block2_c36
+    """
+    fam_ = a.family or (a.families[0] if a.families else None)
+    if not fam_:
+        raise SystemExit("pass --family <fam that has a WORKERS=1 and a WORKERS>1 run>")
+    runs = pick(load(a.inp), fam_)
+    if not runs:
+        raise SystemExit(f"no runs for {fam_}")
+
+    def _conc(r):
+        return int((r.get("compute", {}) or {}).get("summary", {}).get("gpu_concurrency", 1) or 1)
+    shared = [r for r in runs if _conc(r) > 1]
+    single = [r for r in runs if _conc(r) <= 1]
+
+    def _cum(run, cid, field):
+        pr = (run.get("compute", {}) or {}).get("per_client", {}).get(str(cid), {}).get("per_round", {}) or {}
+        return float(sum(float(pr[k].get(field, 0.0)) for k in pr))
+    def _bucket(rs):
+        if not rs:
+            return None
+        fr = sorted({int(p["cid"]) for r in rs for h in r.get("history", [])
+                     for p in (h.get("wm_per_client") or []) if p.get("is_free_rider")})
+        allc = sorted({int(c) for r in rs for c in ((r.get("compute", {}) or {}).get("per_client", {}) or {})})
+        hon = [c for c in allc if c not in fr]
+        hg = float(np.mean([np.mean([_cum(r, c, "gpu_ms") for c in hon]) for r in rs]))
+        hs = float(np.mean([np.mean([_cum(r, c, "samples") for c in hon]) for r in rs]))
+        d = {"hon_gpu": hg, "hon_smp": hs, "conc": _conc(rs[0]), "fr": {}}
+        for c in fr:
+            fg = float(np.mean([_cum(r, c, "gpu_ms") for r in rs]))
+            fs = float(np.mean([_cum(r, c, "samples") for r in rs]))
+            d["fr"][c] = {"sg": 1 - fg / hg if hg else float("nan"),
+                          "ss": 1 - fs / hs if hs else float("nan")}
+        return d
+    M = _bucket(shared); S = _bucket(single)
+    if M is None and S is None:
+        raise SystemExit("no usable runs")
+    if M is None or S is None:
+        have = "single-tenant (WORKERS=1)" if S else "shared (WORKERS>1)"
+        print(f"  (only the {have} bucket is present for {fam_}; plotting it alone. "
+              f"Add the other WORKERS setting to the pool for the full inflation check.)")
+
+    out = (a.out if str(a.out).endswith(".png") else str(a.out) + ".png") if a.out \
+        else f"gpu_inflation_{fam_}.png"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    CYCLE = getattr(ps, "CYCLE", [OK["blue"], OK["vermillion"], OK["green"], OK["orange"]])
+    C_M, C_S = OK["vermillion"], OK["blue"]
+
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(14.5, 6.2),
+                                   gridspec_kw={"width_ratios": [1, 1.35]})
+    # Panel A: honest absolute cumulative compute
+    x = np.arange(2); w = 0.36
+    if M:
+        axA.bar(x - w / 2, [M["hon_gpu"] / 1e6, M["hon_smp"] / 1e6], w, color=C_M,
+                label=f"shared (concurrency {M['conc']})")
+    if S:
+        axA.bar(x + w / 2, [S["hon_gpu"] / 1e6, S["hon_smp"] / 1e6], w, color=C_S,
+                label="single-tenant (WORKERS=1)")
+    if M and S and S["hon_gpu"]:
+        axA.annotate(f"gpu_ms inflated \u00d7{M['hon_gpu']/S['hon_gpu']:.2f}\nby GPU sharing",
+                     xy=(0 - w / 2, M["hon_gpu"] / 1e6), xytext=(0.02, M['hon_gpu'] / 1e6 * 0.78),
+                     fontsize=9.5, color=C_M,
+                     arrowprops=dict(arrowstyle="->", color=C_M, lw=1.3))
+    axA.set_xticks(x); axA.set_xticklabels(["gpu_ms\n(cluster cost)", "samples\n(contention-free)"])
+    axA.set_ylabel("honest-client cumulative compute  (\u00d710\u2076)")
+    axA.set_title("A. Inflation is real and only in gpu_ms\n(samples identical)", fontsize=10.5)
+    axA.legend(fontsize=8.5, loc="upper right"); axA.grid(alpha=.3)
+    # Panel B: per-cid saved %, gpu vs samples, both buckets
+    cids = sorted(set(list((M or {"fr": {}})["fr"]) + list((S or {"fr": {}})["fr"])))
+    xc = np.arange(len(cids)); bw = 0.19
+    series = [("shared \u00b7 gpu_ms", C_M, M, "sg", None),
+              ("shared \u00b7 samples", C_M, M, "ss", "///"),
+              ("single \u00b7 gpu_ms", C_S, S, "sg", None),
+              ("single \u00b7 samples", C_S, S, "ss", "///")]
+    for i, (lab, col, D, key, hatch) in enumerate(series):
+        if D is None:
+            continue
+        vals = [D["fr"].get(c, {}).get(key, np.nan) * 100 for c in cids]
+        bars = axB.bar(xc + (i - 1.5) * bw, vals, bw, color=col, edgecolor="white",
+                       hatch=hatch, label=lab, alpha=0.6 if hatch else 1.0)
+        for b, v in zip(bars, vals):
+            if not np.isnan(v):
+                axB.text(b.get_x() + b.get_width() / 2, v + 0.6, f"{v:.0f}",
+                         ha="center", va="bottom", fontsize=8)
+    axB.set_xticks(xc); axB.set_xticklabels([f"cid{c} (cls {c})" for c in cids])
+    axB.set_ylabel("compute SAVED vs honest  (%)"); axB.set_ylim(0, 100)
+    axB.set_title("B. Within each bucket, gpu_ms-saved \u2248 samples-saved\n"
+                  "\u21d2 saved-% ratio is inflation-invariant \u2192 trustworthy", fontsize=10.5)
+    axB.legend(fontsize=8.5, ncol=2, loc="lower center"); axB.grid(alpha=.3)
+    for c, xi in zip(cids, xc):
+        gaps = []
+        if M and c in M["fr"]:
+            gaps.append(f"shared gap {abs(M['fr'][c]['sg']-M['fr'][c]['ss'])*100:.1f}pp")
+        if S and c in S["fr"]:
+            gaps.append(f"single gap {abs(S['fr'][c]['sg']-S['fr'][c]['ss'])*100:.1f}pp")
+        if gaps:
+            axB.text(xi, 10, "\n".join(gaps), ha="center", va="bottom", fontsize=8,
+                     color="0.3", bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=.9))
+    fig.suptitle(f"GPU-sharing inflation check \u00b7 {fam_}  \u00b7  single-tenant vs shared\n"
+                 "absolute gpu_ms is inflated by MPS sharing, but FR/honest saved-% "
+                 "tracks the contention-free samples ratio in both regimes", fontsize=11.5, y=1.02)
+    fig.tight_layout(); ps.finish(fig, out)
+
+    md = out[:-4] + ".md"
+    L = [f"# GPU-sharing inflation check \u2014 {fam_}", "",
+         "Splits the family's runs by `gpu_concurrency` (>1 = shared/inflated, ==1 = "
+         "single-tenant/reliable). The saved-% ratio is trustworthy iff gpu_ms-saved "
+         "\u2248 samples-saved within each bucket.", "",
+         "| bucket | concurrency | honest gpu_ms | honest samples | cid | saved (gpu) | saved (samples) | gap |",
+         "|---|---|---|---|---|---|---|---|"]
+    for D, name in [(M, "shared"), (S, "single-tenant")]:
+        if D is None:
+            continue
+        for c in cids:
+            if c in D["fr"]:
+                L.append(f"| {name} | {D['conc']} | {D['hon_gpu']:,.0f} | {D['hon_smp']:,.0f} | "
+                         f"cid{c} | {D['fr'][c]['sg']*100:.1f}% | {D['fr'][c]['ss']*100:.1f}% | "
+                         f"{abs(D['fr'][c]['sg']-D['fr'][c]['ss'])*100:.1f}pp |")
+    open(md, "w").write("\n".join(L))
+    print("wrote", md)
+
+
+def _ovl_and_balerr(honest_bers, fr_bers, m_bits_=10):
+    """Threshold-independent separability of two BER samples.
+    OVL = shared histogram area (1.0 = identical distributions, inseparable);
+    best_balanced_error = the LOWEST balanced error any threshold achieves, even
+    an oracle one that peeks at the free-riders (0.5 = a coin flip = inseparable).
+    Both self-contained (no dependency on detection.py) so this renders anywhere."""
+    H = np.asarray([b for b in honest_bers if b is not None], float)
+    F = np.asarray([b for b in fr_bers if b is not None], float)
+    if len(H) == 0 or len(F) == 0:
+        return float("nan"), float("nan")
+    # BER is quantised to k/m; bin on those exact levels
+    edges = (np.arange(0, m_bits_ + 2) - 0.5) / m_bits_
+    ph, _ = np.histogram(H, bins=edges, density=False)
+    pf, _ = np.histogram(F, bins=edges, density=False)
+    ph = ph / ph.sum(); pf = pf / pf.sum()
+    ovl = float(np.minimum(ph, pf).sum())
+    # best balanced error over every candidate threshold (flag if BER >= eta):
+    # honest wrongly flagged (FPR) vs FR correctly caught (recall).
+    cand = sorted(set(np.round(np.concatenate([H, F]) * m_bits_).astype(int)))
+    best = 1.0
+    for c in list(cand) + [(max(cand) + 1 if cand else 1)]:
+        eta = c / m_bits_
+        fpr = float(np.mean(H >= eta))
+        recall = float(np.mean(F >= eta))
+        best = min(best, 0.5 * (fpr + (1.0 - recall)))
+    return ovl, float(best)
+
+
+def ea_fair(a):
+    """GROUP EA -- distribution-aware non-IID fair comparison.
+
+    The pro-server variant of the non-IID story (PROJECT_WRAPUP 6.6 / RESULTS_INDEX
+    Group E). Under `wm_trigger_assign=distribution` the server hands every client a
+    trigger class it *holds a lot of*, so honest clients are NO LONGER data-starved on
+    their own class and embed cleanly. The question this plot answers, per class:
+
+        does removing honest starvation open a separating threshold, or does the
+        reduced free-rider simply embed cleanly too and still sit on top of the honest
+        client assigned the SAME trigger class?
+
+    It matches every free-rider in the ATTACK family (EA2) to the honest client in the
+    HONEST family (EA1) that was assigned the *same* trigger class -- the fair,
+    apples-to-apples twin -- and shows (top) both BER curves over rounds and (bottom)
+    the converged per-client BER clouds with the threshold-independent separability
+    numbers (OVL, best balanced-error). FR at/under the honest twin => inseparable even
+    without starvation, which is the EA hypothesis.
+
+        python plots.py ea_fair --in 'results/*/result.json' \
+            --family EA2_reduced_niid_distrib_c36 \
+            --honest_family EA1_honest_niid_distrib_c100
+    """
+    CYCLE = getattr(ps, "CYCLE", [OK["blue"], OK["vermillion"], OK["green"],
+                                  OK["orange"], OK["purple"], OK["skyblue"]])
+    fr_fam = a.family or (a.families[0] if a.families else None)
+    if not fr_fam:
+        raise SystemExit("pass --family <EA2 reduced-FR family> "
+                         "(and --honest_family <EA1 honest family>)")
+    runs_all = load(a.inp)
+    fr_runs = pick(runs_all, fr_fam)
+    if not fr_runs:
+        raise SystemExit(f"no runs for FR family {fr_fam}")
+    # honest family: explicit --honest_family in --in, else --honest_in glob, else
+    # any honest run sharing the pool.
+    hon_runs = pick(runs_all, a.honest_family) if a.honest_family else []
+    if not hon_runs and getattr(a, "honest_in", None):
+        hon_runs = load(a.honest_in)
+        if a.honest_family:
+            hon_runs = [r for r in hon_runs if fam(r) == a.honest_family]
+    if not hon_runs:
+        hon_runs = [r for r in runs_all
+                    if not any(p.get("is_free_rider")
+                               for h in r.get("history", [])
+                               for p in (h.get("wm_per_client") or []))]
+    m = m_bits(fr_runs)
+    tail = getattr(a, "tail", None) or TAIL
+    eta_l = a.eta_loose if getattr(a, "eta_loose", None) is not None else ETA_LOOSE_DEFAULT
+    eta_t = a.eta_tight if getattr(a, "eta_tight", None) is not None else ETA_TIGHT_DEFAULT
+
+    assign_fr = (fr_runs[0].get("summary") or {}).get("wm_trigger_assign", "?")
+    assign_hon = (hon_runs[0].get("summary") or {}).get("wm_trigger_assign", "?") if hon_runs else "?"
+
+    # FR cid -> its assigned trigger class (from the server-side rows)
+    fr_class = {}
+    for r in fr_runs:
+        for h in r.get("history", []):
+            for p in (h.get("wm_per_client") or []):
+                if p.get("is_free_rider") and p.get("trigger_class") is not None:
+                    fr_class[int(p["cid"])] = int(p["trigger_class"])
+    if not fr_class:
+        raise SystemExit(f"{fr_fam} has no free-riders in its history rows")
+
+    def _fr_ber_by_round(cid):
+        out = defaultdict(list)
+        for r in fr_runs:
+            for h in r.get("history", []):
+                for p in (h.get("wm_per_client") or []):
+                    if p.get("is_free_rider") and int(p.get("cid", -1)) == cid \
+                            and p.get("ber") is not None:
+                        out[h["round"]].append(float(p["ber"]))
+        return out
+
+    base = a.out or "ea_fair"
+    base = base[:-4] if str(base).endswith(".png") else str(base)
+    md_rows = []
+
+    for cid in sorted(fr_class):
+        tc = fr_class[cid]
+        fr_by = _fr_ber_by_round(cid)
+        twin_by = _honest_ber_by_round(hon_runs, tclass_filter=tc)   # SAME assigned class
+        if not twin_by:
+            print(f"  (warn: no honest twin on class {tc} in the honest family -- "
+                  f"is EA1 assigning class {tc} to some honest client?)")
+
+        fig, (axT, axB) = plt.subplots(
+            2, 1, figsize=(11, 8), gridspec_kw={"height_ratios": [2.2, 1]})
+
+        # ---- top: BER over rounds, FR vs same-class honest twin ----
+        fx = sorted(fr_by)
+        axT.plot(fx, [np.mean(fr_by[rd]) for rd in fx], color=ps.C_FR, lw=2.4,
+                 marker="o", ms=3, zorder=4,
+                 label=f"reduced free-rider (EA2) \u00b7 cid{cid} \u00b7 class {tc}")
+        if twin_by:
+            tx = sorted(twin_by)
+            axT.plot(tx, [np.mean(twin_by[rd]) for rd in tx], color=CYCLE[0], lw=2.2,
+                     ls=(0, (4, 2)), zorder=3,
+                     label=f"honest twin (EA1) assigned class {tc} \u2014 fair baseline")
+            tlo = [np.percentile(twin_by[rd], 10) if len(twin_by[rd]) > 1 else twin_by[rd][0] for rd in tx]
+            thi = [np.percentile(twin_by[rd], 90) if len(twin_by[rd]) > 1 else twin_by[rd][0] for rd in tx]
+            axT.fill_between(tx, tlo, thi, color=CYCLE[0], alpha=.12, lw=0)
+        axT.axhline(eta_l, color=ps.C_HONEST, ls="--", lw=1.6,
+                    label=f"\u03b7 loose {eta_l:.3f} (operating line)")
+        axT.axhline(eta_t, color="black", ls=":", lw=1.2,
+                    label=f"\u03b7 tight {eta_t:.3f} (degenerate)")
+        axT.set_ylabel("bit-error-rate")
+        axT.set_ylim(-0.03, max(0.62, eta_l + 0.06))
+        axT.grid(alpha=.3); axT.legend(fontsize=8.5, loc="upper right", framealpha=.95)
+
+        # ---- bottom: converged per-client BER clouds + separability ----
+        fr_tail, twin_tail = [], []
+        for r in fr_runs:
+            for h in r.get("history", [])[-tail:]:
+                for p in (h.get("wm_per_client") or []):
+                    if p.get("is_free_rider") and int(p.get("cid", -1)) == cid \
+                            and p.get("ber") is not None:
+                        fr_tail.append(float(p["ber"]))
+        for r in hon_runs:
+            for h in r.get("history", [])[-tail:]:
+                for p in (h.get("wm_per_client") or []):
+                    if (not p.get("is_free_rider")) and p.get("ber") is not None \
+                            and int(p.get("trigger_class", -1)) == tc:
+                        twin_tail.append(float(p["ber"]))
+        ovl, balerr = _ovl_and_balerr(twin_tail, fr_tail, m)
+        fr_mu = float(np.mean(fr_tail)) if fr_tail else float("nan")
+        tw_mu = float(np.mean(twin_tail)) if twin_tail else float("nan")
+
+        rng = np.random.default_rng(0)
+        jit = lambda n: (rng.random(n) - 0.5) * 0.5
+        if twin_tail:
+            axB.scatter(np.zeros(len(twin_tail)) + jit(len(twin_tail)), twin_tail,
+                        s=30, color=CYCLE[0], alpha=.5, edgecolor="none",
+                        label=f"honest twin (class {tc})  mean {tw_mu:.3f}")
+            axB.plot([-0.35, 0.35], [tw_mu, tw_mu], color=CYCLE[0], lw=2.5)
+        if fr_tail:
+            axB.scatter(np.ones(len(fr_tail)) + jit(len(fr_tail)), fr_tail,
+                        s=30, color=ps.C_FR, alpha=.5, edgecolor="none",
+                        label=f"reduced FR (class {tc})  mean {fr_mu:.3f}")
+            axB.plot([0.65, 1.35], [fr_mu, fr_mu], color=ps.C_FR, lw=2.5)
+        axB.axhline(eta_l, color=ps.C_HONEST, ls="--", lw=1.4)
+        axB.set_xticks([0, 1]); axB.set_xticklabels(["honest twin\n(EA1)", "reduced FR\n(EA2)"])
+        axB.set_ylabel("converged BER\n(per client-round, tail)")
+        cleaner = ("FR cleaner \u2192 inseparable" if fr_mu <= tw_mu else "FR dirtier")
+        verdict = ("inseparable (coin flip)" if (not np.isnan(balerr) and balerr >= 0.45)
+                   else f"best balanced-error {balerr:.2f}")
+        axB.set_title(f"converged separability  \u00b7  OVL {ovl:.2f}  \u00b7  "
+                      f"best balanced-error {balerr:.2f}  ({verdict})  \u00b7  {cleaner}",
+                      fontsize=9.5)
+        axB.grid(alpha=.3); axB.legend(fontsize=8, loc="upper right")
+
+        evade = ("UNDER \u03b7_loose (evades)" if (not np.isnan(fr_mu) and fr_mu < eta_l)
+                 else "OVER \u03b7_loose")
+        fig.suptitle(
+            f"EA fair comparison \u00b7 {fr_fam.split('_rep')[0]} vs "
+            f"{(a.honest_family or 'honest').split('_rep')[0]}  \u00b7  class {tc}\n"
+            f"assignment: FR [{assign_fr}] / honest [{assign_hon}]  \u00b7  "
+            f"FR tail-BER {fr_mu:.3f} vs honest-twin {tw_mu:.3f}  \u2192  {evade}",
+            fontsize=11, y=1.0)
+        fig.tight_layout()
+        out = f"{base}_{fr_fam}_cls{tc}.png"
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        ps.finish(fig, out)
+        md_rows.append((cid, tc, tw_mu, fr_mu, ovl, balerr, evade))
+
+    md = f"{base}_{fr_fam}.md"
+    L = [f"# Group EA \u2014 distribution-aware fair comparison ({fr_fam})", "",
+         f"FR family **{fr_fam}** [{assign_fr}] vs honest family "
+         f"**{a.honest_family or '(auto)'}** [{assign_hon}]. Each free-rider is matched to "
+         "the honest client assigned the **same** trigger class (the fair twin). Under "
+         "distribution assignment the honest twin is NOT starved, so if the reduced FR still "
+         "sits at/under it, removing starvation did **not** open a separating threshold \u2014 "
+         "the overlap moved, it didn't open (the EA hypothesis).", "",
+         "| FR cid | class | honest-twin BER | FR BER | OVL | best balanced-error | verdict |",
+         "|---|---|---|---|---|---|---|"]
+    for cid, tc, tw, fr_, ovl, be, ev in md_rows:
+        L.append(f"| {cid} | {tc} | {tw:.3f} | {fr_:.3f} | {ovl:.2f} | {be:.2f} | {ev} |")
+    open(md, "w").write("\n".join(L))
+    print("wrote", md)
+
+
 CMDS = {
+    "class_acc": class_acc,                # NEW: per-client trigger-class vs non-trigger vs global test-acc (all-honest)
+    "ea_fair": ea_fair,                    # NEW: Group EA distribution-aware fair FR-vs-same-class-honest comparison
+    "gpu_inflation": gpu_inflation,        # NEW: single-tenant vs shared-GPU saved-% validation (ratio inflation-invariant)
     "operating_point": operating_point,    # NEW: recall @ fixed honest FPR across attacks (the money plot)
     "tap_perfr": tap_perfr,                # NEW: one FIGURE per free-rider (per class) -- taps/coasts, server BER vs self-probe, + same-class honest twin
     "gpu_savings": gpu_savings,            # NEW: cumulative gpu_ms per round, FR vs honest, compute saved

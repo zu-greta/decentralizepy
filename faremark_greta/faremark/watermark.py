@@ -142,12 +142,7 @@ def make_key(num_bits: int, group_size: int, seed: int,
     z_k = sum_j f(p_j) M_{k,j} shapeable to either sign.
 
     balanced=False (DEFAULT, matches config.wm_balanced_keys=False): paper-exact
-    pseudo-random +/-1 entries (the paper's M is drawn at random, Fig. 5). Safe only
-    when l is large enough that a random row is almost surely mixed-sign.
-
-    FIXED: this default used to be True while config.wm_balanced_keys defaulted to
-    False, so any caller that forgot to pass `balanced` silently got the opposite of
-    the configured behaviour.
+    pseudo-random +/-1 entries (the paper's M is drawn at random, Fig. 5). 
 
     Choosing m so the paper's own numbers are reachable (ceiling = 1 - 0.5*2^(1-l)):
         CIFAR-100 m=10 -> l=10 -> ceiling 99.90%  (paper 99.71%)  OK, use this

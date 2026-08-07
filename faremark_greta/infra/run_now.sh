@@ -38,12 +38,11 @@ has(){ [[ "$WANT" == *"$1"* ]]; }
 
 # ---------------------------------------------------------------------------
 # GROUP A -- proven baseline (cifar100, 10 clients). 
-#   A1 honest x6   A2 reduced easy   A3 reduced hard   A4 sameclass (own key)
-#   AK sameclass SAME KEY  <-- the controlled effort-only isolation
+#   A1 honest x6   A2 reduced easy   A3 reduced hard   
+# NOTE: (A4/AK = same-key free-rider removed - use differnet runs for no conflicts)
 # Note: config 14 defaults num_free_riders=2, but FREE_RIDER_IDS pins the exact
-# cids, so free_rider_ids WINS (resolve_free_riders) -> A4/AK have one free-rider.
+# cids, so free_rider_ids WINS (resolve_free_riders) 
 # ---------------------------------------------------------------------------
-# NOTE: group A run already done - just need to plot
 if has A; then
   echo "   (group A done already)"
 #   for s in 0 1 2 3 4 5; do
@@ -61,22 +60,6 @@ if has A; then
 #     env ATTACK=reduced FREE_RIDER_IDS=3,6 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
 #         AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
 #         FAMILY="A3_reduced_c100_c36" NOTE="A3 reduced +5 hard classes 3,6" \
-#         ./submit_experiment.sh 14 "$s"
-#   done
-#   for s in 0 1 2; do
-#     env ATTACK=reduced FREE_RIDER_IDS=0 TRIGGER_CLASS_MAP="0:6" AUTOP_COMMON_PER_CLASS=5 \
-#         AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
-#         FAMILY="A4_sameclass_c100_c6" NOTE="A4 FR shares class 6 with honest (own key)" \
-#         ./submit_experiment.sh 14 "$s"
-#   done
-#   # ---- AK: SAME trigger class AND SAME key/message -----------------------
-#   # trigger_class_map 0:6  -> FR cid0 sits on class 6 (with honest cid6)
-#   # wm_key_twins    0:6    -> FR cid0 derives its key M and message B from cid6
-#   for s in 0 1 2; do
-#     env ATTACK=reduced FREE_RIDER_IDS=0 TRIGGER_CLASS_MAP="0:6" WM_KEY_TWINS="0:6" \
-#         AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-#         WM_ETA_FIXED=0.064 ROUNDS=50 \
-#         FAMILY="AK_sameclass_samekey_c6" NOTE="AK FR shares class 6 AND key/msg with honest cid6" \
 #         ./submit_experiment.sh 14 "$s"
 #   done
 fi
@@ -118,35 +101,36 @@ fi
 #   E1 honest a=0.5   E2 reduced a=0.5   E3 reduced ALPHA SWEEP
 # ---------------------------------------------------------------------------
 if has E; then
-  SEEDS_E="${SEEDS_E:-0 1 2}"     # set SEEDS_E=0 for a 1-seed quick pass
-  for s in $SEEDS_E; do
-    env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 ROUNDS=50 \
-        FAMILY="E1_honest_niid_c100" NOTE="E1 non-iid honest a=0.5" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  for s in $SEEDS_E; do
-    env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
-        AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-        WM_ETA_FIXED=0.161 ROUNDS=50 \
-        FAMILY="E2_reduced_niid_c36" NOTE="E2 non-iid reduced hard a=0.5" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  # E3 -- severity sweep. a=0.5 already covered by E1/E2, so with {0.1, 1.0} skew levels (0.1 / 0.5 / 1.0)
-  for A in 0.1 1.0; do
-    ATAG="a$(printf '%s' "$A" | tr -d '.')"
-    for s in $SEEDS_E; do
-      env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=$A ROUNDS=50 \
-          FAMILY="E3_honest_niid_c100_${ATAG}" NOTE="E3 non-iid honest alpha=$A" \
-          ./submit_experiment.sh 14 "$s"
-    done
-    for s in $SEEDS_E; do
-      env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
-          AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
-          WM_ETA_FIXED=0.161 ROUNDS=50 \
-          FAMILY="E3_reduced_niid_c36_${ATAG}" NOTE="E3 non-iid reduced hard alpha=$A" \
-          ./submit_experiment.sh 14 "$s"
-    done
-  done
+  echo "   (group E done already)"
+  # SEEDS_E="${SEEDS_E:-0 1 2}"     # set SEEDS_E=0 for a 1-seed quick pass
+  # for s in $SEEDS_E; do
+  #   env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 ROUNDS=50 \
+  #       FAMILY="E1_honest_niid_c100" NOTE="E1 non-iid honest a=0.5" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in $SEEDS_E; do
+  #   env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=0.5 \
+  #       AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+  #       WM_ETA_FIXED=0.161 ROUNDS=50 \
+  #       FAMILY="E2_reduced_niid_c36" NOTE="E2 non-iid reduced hard a=0.5" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # # E3 -- severity sweep. a=0.5 already covered by E1/E2, so with {0.1, 1.0} skew levels (0.1 / 0.5 / 1.0)
+  # for A in 0.1 1.0; do
+  #   ATAG="a$(printf '%s' "$A" | tr -d '.')"
+  #   for s in $SEEDS_E; do
+  #     env ATTACK=none NUM_FREE_RIDERS=0 PARTITION=dirichlet DIRICHLET_ALPHA=$A ROUNDS=50 \
+  #         FAMILY="E3_honest_niid_c100_${ATAG}" NOTE="E3 non-iid honest alpha=$A" \
+  #         ./submit_experiment.sh 14 "$s"
+  #   done
+  #   for s in $SEEDS_E; do
+  #     env ATTACK=reduced FREE_RIDER_IDS=3,6 PARTITION=dirichlet DIRICHLET_ALPHA=$A \
+  #         AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+  #         WM_ETA_FIXED=0.161 ROUNDS=50 \
+  #         FAMILY="E3_reduced_niid_c36_${ATAG}" NOTE="E3 non-iid reduced hard alpha=$A" \
+  #         ./submit_experiment.sh 14 "$s"
+  #   done
+  # done
 fi
 
 # ---------------------------------------------------------------------------
@@ -157,33 +141,34 @@ fi
 #   only built when PAPER_OK=1 
 # ---------------------------------------------------------------------------
 if has F; then
-  for s in 0 1 2; do
-    env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=200 ROUNDS=100 \
-        FAMILY="F1_honest_nc200" NOTE="F1 200 clients honest, 100 rounds" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  for s in 0 1 2; do
-    env ATTACK=reduced NUM_CLIENTS=200 FREE_RIDER_IDS=106,107 AUTOP_COMMON_PER_CLASS=5 \
-        AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.384 ROUNDS=100 \
-        FAMILY="F2_reduced_nc200_c67" NOTE="F2 200cl reduced, shared classes 6,7" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  if [ "$PAPER_OK" = "1" ]; then
-    for s in 0 1 2; do
-      env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=50 \
-          WM_TRIGGER_MODE=client_train WM_NUM_TRIGGERS=50 ROUNDS=50 \
-          FAMILY="F3_tableIX_c10_nc50" NOTE="F3 Table IX cifar10 50cl client_train (paper)" \
-          ./submit_experiment.sh 11 "$s"
-    done
-    for s in 0 1 2; do
-      env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=50 \
-          WM_TRIGGER_MODE=class WM_NUM_TRIGGERS=50 ROUNDS=50 \
-          FAMILY="F3_tableIX_c10_nc50_heldout" NOTE="F3 Table IX held-out twin (generalisation)" \
-          ./submit_experiment.sh 11 "$s"
-    done
-  else
-    echo "   (F3/Table IX skipped -- set PAPER_OK=1 to build the paper-repro rows)"
-  fi
+  echo "   (group F to do later -- 200 clients, 100 rounds, needs more time)"
+  # for s in 0 1 2; do
+  #   env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=200 ROUNDS=100 \
+  #       FAMILY="F1_honest_nc200" NOTE="F1 200 clients honest, 100 rounds" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # for s in 0 1 2; do
+  #   env ATTACK=reduced NUM_CLIENTS=200 FREE_RIDER_IDS=106,107 AUTOP_COMMON_PER_CLASS=5 \
+  #       AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.384 ROUNDS=100 \
+  #       FAMILY="F2_reduced_nc200_c67" NOTE="F2 200cl reduced, shared classes 6,7" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
+  # if [ "$PAPER_OK" = "1" ]; then
+  #   for s in 0 1 2; do
+  #     env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=50 \
+  #         WM_TRIGGER_MODE=client_train WM_NUM_TRIGGERS=50 ROUNDS=50 \
+  #         FAMILY="F3_tableIX_c10_nc50" NOTE="F3 Table IX cifar10 50cl client_train (paper)" \
+  #         ./submit_experiment.sh 11 "$s"
+  #   done
+  #   for s in 0 1 2; do
+  #     env ATTACK=none NUM_FREE_RIDERS=0 NUM_CLIENTS=50 \
+  #         WM_TRIGGER_MODE=class WM_NUM_TRIGGERS=50 ROUNDS=50 \
+  #         FAMILY="F3_tableIX_c10_nc50_heldout" NOTE="F3 Table IX held-out twin (generalisation)" \
+  #         ./submit_experiment.sh 11 "$s"
+  #   done
+  # else
+  #   echo "   (F3/Table IX skipped -- set PAPER_OK=1 to build the paper-repro rows)"
+  # fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -224,6 +209,7 @@ fi
 # SEEDS_I trims the seed count for these exploratory sweeps (bump to "0 1 2").
 # ---------------------------------------------------------------------------
 if has I; then
+  echo "   (group I adaptive-tap sweeps -- done see group JK)"
   SEEDS_I="${SEEDS_I:-0}"
   # =====================================================================
   # FIX (root cause of the flat-0.6 plots): the OLD base set TAP_DATA_CPC=0
@@ -240,69 +226,69 @@ if has I; then
   #   * TAP_PROBE_HOLDOUT=16 + the _prepare MIN_TRAIN_TRIG=8 cap => the tap
   #     trains on ~34 triggers (grep the trace: n_trigger_train ~34, NOT ~1)
   # =====================================================================
-  base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
-        WM_ETA_FIXED=0.264 TAP_WHEN=threshold TAP_MARGIN=0.02 TAP_DATA_CPC=5 TAP_SCOPE=full \
-        TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend TAP_MAX_COAST=4 TAP_PROBE_HOLDOUT=16"
+  # base="ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 ROUNDS=50 \
+  #       WM_ETA_FIXED=0.264 TAP_WHEN=threshold TAP_MARGIN=0.02 TAP_DATA_CPC=5 TAP_SCOPE=full \
+  #       TAP_ETA_SOURCE=oracle TAP_COAST_MODE=resend TAP_MAX_COAST=4 TAP_PROBE_HOLDOUT=16"
 
-  # --- 0. SMOKE / GATE: always-tap at cpc=5 MUST reproduce Group D (mean ~0.13, NOT 0.6). ---
-  #     If this one is flat at 0.6, the tap EMBED path is still broken -- stop and inspect
-  #     the trace (n_trigger_train, ber_after) before trusting any sweep below.
-  for s in $SEEDS_I; do
-    env $base TAP_WHEN=always \
-        FAMILY="I0_smoke_always_cpc5_c36" NOTE="I0 GATE: always-tap cpc5 must == D reduced (~0.13)" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # # --- 0. SMOKE / GATE: always-tap at cpc=5 MUST reproduce Group D (mean ~0.13, NOT 0.6). ---
+  # #     If this one is flat at 0.6, the tap EMBED path is still broken -- stop and inspect
+  # #     the trace (n_trigger_train, ber_after) before trusting any sweep below.
+  # for s in $SEEDS_I; do
+  #   env $base TAP_WHEN=always \
+  #       FAMILY="I0_smoke_always_cpc5_c36" NOTE="I0 GATE: always-tap cpc5 must == D reduced (~0.13)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
 
-  # --- 1. DATA PER TAP (the effort dial): 0=Table V control (caught), 1=plateau edge, 5=plateau ---
-  for D in 0 1 5; do
-    for s in $SEEDS_I; do
-      env $base TAP_DATA_CPC=$D \
-          FAMILY="I_data_n${D}_c36" NOTE="I data_cpc=$D (0 = Table V positive control)" \
-          ./submit_experiment.sh 14 "$s"
-    done
-  done
+  # # --- 1. DATA PER TAP (the effort dial): 0=Table V control (caught), 1=plateau edge, 5=plateau ---
+  # for D in 0 1 5; do
+  #   for s in $SEEDS_I; do
+  #     env $base TAP_DATA_CPC=$D \
+  #         FAMILY="I_data_n${D}_c36" NOTE="I data_cpc=$D (0 = Table V positive control)" \
+  #         ./submit_experiment.sh 14 "$s"
+  #   done
+  # done
 
-  # --- 2. WHEN / duty-cycle: threshold (adaptive, cheapest) vs every_k(P=3) ---
-  for W in threshold every_k; do
-    for s in $SEEDS_I; do
-      env $base TAP_WHEN=$W TAP_PERIOD=3 \
-          FAMILY="I_when_${W}_c36" NOTE="I when=$W" ./submit_experiment.sh 14 "$s"
-    done
-  done
+  # # --- 2. WHEN / duty-cycle: threshold (adaptive, cheapest) vs every_k(P=3) ---
+  # for W in threshold every_k; do
+  #   for s in $SEEDS_I; do
+  #     env $base TAP_WHEN=$W TAP_PERIOD=3 \
+  #         FAMILY="I_when_${W}_c36" NOTE="I when=$W" ./submit_experiment.sh 14 "$s"
+  #   done
+  # done
 
-  # --- 3. ETA SOURCE (realism): oracle (given the true eta) vs self (FR estimates it) ---
-  for ES in oracle self; do
-    for s in $SEEDS_I; do
-      env $base TAP_ETA_SOURCE=$ES TAP_ETA_K=3.0 \
-          FAMILY="I_eta_${ES}_c36" NOTE="I eta_source=$ES" ./submit_experiment.sh 14 "$s"
-    done
-  done
+  # # --- 3. ETA SOURCE (realism): oracle (given the true eta) vs self (FR estimates it) ---
+  # for ES in oracle self; do
+  #   for s in $SEEDS_I; do
+  #     env $base TAP_ETA_SOURCE=$ES TAP_ETA_K=3.0 \
+  #         FAMILY="I_eta_${ES}_c36" NOTE="I eta_source=$ES" ./submit_experiment.sh 14 "$s"
+  #   done
+  # done
 
-  # --- 5. KEEP-THE-MARK-ALIVE BETWEEN TAPS (FedIPR/FedTracker persistence -> low duty cycle) ---
-  #     coast_mode=decay resends the FR's OWN last-tapped weights (mark fades slower than
-  #     resending the global). This is the paper-grounded lever for coasting longer per tap.
-  for CM in resend decay; do
-    for s in $SEEDS_I; do
-      env $base TAP_COAST_MODE=$CM \
-          FAMILY="I_coast_${CM}_c36" NOTE="I coast_mode=$CM (decay = slower mark fade)" \
-          ./submit_experiment.sh 14 "$s"
-    done
-  done
-  # --- 6. HOW LAZY CAN IT BE: force a re-tap only every 8 coasts (probe mark persistence) ---
-  #     If the mark survives 8 coasts under eta, the duty cycle -> tiny = the cheap-stealth result.
-  for s in $SEEDS_I; do
-    env $base TAP_MAX_COAST=8 \
-        FAMILY="I_maxcoast_m8_c36" NOTE="I max_coast=8 (persistence / lowest duty cycle)" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # # --- 5. KEEP-THE-MARK-ALIVE BETWEEN TAPS (FedIPR/FedTracker persistence -> low duty cycle) ---
+  # #     coast_mode=decay resends the FR's OWN last-tapped weights (mark fades slower than
+  # #     resending the global). This is the paper-grounded lever for coasting longer per tap.
+  # for CM in resend decay; do
+  #   for s in $SEEDS_I; do
+  #     env $base TAP_COAST_MODE=$CM \
+  #         FAMILY="I_coast_${CM}_c36" NOTE="I coast_mode=$CM (decay = slower mark fade)" \
+  #         ./submit_experiment.sh 14 "$s"
+  #   done
+  # done
+  # # --- 6. HOW LAZY CAN IT BE: force a re-tap only every 8 coasts (probe mark persistence) ---
+  # #     If the mark survives 8 coasts under eta, the duty cycle -> tiny = the cheap-stealth result.
+  # for s in $SEEDS_I; do
+  #   env $base TAP_MAX_COAST=8 \
+  #       FAMILY="I_maxcoast_m8_c36" NOTE="I max_coast=8 (persistence / lowest duty cycle)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
 
-  # --- 4. TIGHT-eta variant (operating point): shows the hard-class floor at eta=0.064 ---
-  #     class 3 evades (~0.037 < 0.064), class 6 cannot (~0.22 > 0.064) = the split the thesis predicts.
-  for s in $SEEDS_I; do
-    env $base WM_ETA_FIXED=0.064 \
-        FAMILY="I_tight_eta0064_c36" NOTE="I tight eta=0.064 (hard-class floor demo)" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # # --- 4. TIGHT-eta variant (operating point): shows the hard-class floor at eta=0.064 ---
+  # #     class 3 evades (~0.037 < 0.064), class 6 cannot (~0.22 > 0.064) = the split the thesis predicts.
+  # for s in $SEEDS_I; do
+  #   env $base WM_ETA_FIXED=0.064 \
+  #       FAMILY="I_tight_eta0064_c36" NOTE="I tight eta=0.064 (hard-class floor demo)" \
+  #       ./submit_experiment.sh 14 "$s"
+  # done
 fi
 
 # ---------------------------------------------------------------------------
@@ -400,7 +386,7 @@ if has J; then
 fi
 
 # ---------------------------------------------------------------------------
-# GROUP NOW -- TONIGHT'S 3-SEED RUN: the confirmed submarine (J2) + the tuned one (J5).
+# GROUP NOW -- 3-SEED RUN: the confirmed submarine (J2) + the tuned one (J5).
 #   BATCH=NOW ./runbook.sh manifest && BATCH=NOW ./runbook.sh submit
 #   3 seeds = repeats 0,1,2 = seeds 1000/1001/1002 (config.py: seed = base_seed + repeat).
 #   'NOW' shares no letter with any group token (A C D E F H I J V), and has() is a SUBSTRING

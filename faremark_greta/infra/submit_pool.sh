@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# submit_pool.sh -- run the whole experiment matrix on a FIXED number of pods.
+# submit_pool.sh -- run the whole experiment matrix on a fixed number of pods.
 #
 # Instead of "1 runai job per run" (153 pods), this submits exactly PODS jobs.
 # Each pod carries its own slice of the manifest and replays it with WORKERS
@@ -19,15 +19,6 @@
 # Build the manifest first, from your existing leg definitions:
 #   rm -f jobs.tsv
 #   DRYRUN=1 ./run_everything.sh submit
-#
-# WHY THIS IS SAFE TO LEAVE UNATTENDED
-#   * RUN_TAG is deterministic, so a pod skips any run whose result.json exists.
-#     Resubmit the pool after a preemption and it resumes instead of restarting.
-#   * exit 2 (accuracy outside the config band) is treated as success -- it is
-#     normal for every attack run and result.json is already written.
-#   * A run that dies for any other reason is logged and the pod moves on; it
-#     never takes the pod down.
-#   * Datasets are downloaded once per pod under a lock before any worker starts.
 # =============================================================================
 set -uo pipefail
 
@@ -55,8 +46,7 @@ SCRIPT="${SCRIPT:-scripts/run_experiment.py}"
 
 # --- self-check: no single quote may appear inside the pod block -----------
 # The pod command is bash -c <single-quoted>. A stray single quote closes it and
-# the outer shell then expands $tag/$out itself, dying under set -u. Bitten twice,
-# so verify before touching the cluster. Sentinels below delimit the block.
+# the outer shell then expands $tag/$out itself, dying under set -u. 
 _B=$(grep -n "POD_BLOCK_BEGIN" "$0" | tail -1 | cut -d: -f1)
 _E=$(grep -n "POD_BLOCK_END"   "$0" | tail -1 | cut -d: -f1)
 if [ -n "${_B:-}" ] && [ -n "${_E:-}" ] && [ "$_E" -gt "$_B" ]; then
@@ -120,7 +110,7 @@ fi
 
 echo "=== pool $POOL_TAG: $TOTAL runs -> $PODS pod(s), shared queue ==="
 
-# Every pod gets the FULL manifest and claims rows atomically from a shared
+# Every pod gets the full manifest and claims rows atomically from a shared
 # directory on the PVC. With mismatched GPUs this matters: a static split would
 # leave the fast pod idle while the slow one finished its half.
 FULL_B64=$(base64 -w0 < "$JOBS_FILE")

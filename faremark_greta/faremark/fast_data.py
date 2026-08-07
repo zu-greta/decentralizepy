@@ -162,15 +162,9 @@ class FastLoader:
 
 
 def wrap_build_data(data, name, batch_size, seed, device):
-    """Swap the CPU DataLoaders on a built `data` object for GPU-resident FastLoaders,
-    WITHOUT editing datasets.py. Reconstructs each client's shard from the existing
+    """Swap the CPU DataLoaders on a built `data` object for GPU-resident FastLoaders
+    Reconstructs each client's shard from the existing
     DataLoader(Subset(train, idx)) structure and rebuilds one shared GPUImageStore.
-
-    SAFE BY DESIGN: wrapped in try/except -- if the loader structure is not the expected
-    Subset(torchvision_dataset, indices) pattern, it logs and returns `data` UNCHANGED,
-    so a run can never crash from this. Only replaces loaders when it can prove it built
-    equivalent ones. Distributionally equivalent to the CPU path (RandomCrop pad=4 +
-    HFlip + normalise); NOT bit-identical (aug RNG differs) -- do not mix within a family.
     """
     try:
         from torch.utils.data import Subset
@@ -209,13 +203,6 @@ def wrap_build_data(data, name, batch_size, seed, device):
         print(f"  [fast_data] wrap SKIPPED ({type(e).__name__}: {e}); keeping CPU loaders")
         return data
 
-
-# ---------------------------------------------------------------------------
-# Sanity check: distributions match the torchvision path even though the
-# individual samples do not. Run this once before trusting the swap.
-#
-#   python -m faremark.fast_data /path/to/data
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
     from torchvision import datasets as tvd, transforms as T

@@ -154,10 +154,6 @@ def make_verifier(registry, trigger_bank, verify_model, device,
 
     `eta_floor` stays a tiny degenerate guard (keeps a >0 threshold if eta_fixed
     is somehow 0). calib_on_all is kept only for the circularity demo.
-
-    NOTE: the old LIVE threshold calculations (paper_faithful cumulative mu+3sigma,
-    and the sliding-window variant) are commented out below -- kept for reference
-    but no longer used. Set eta_fixed=0 to fall back to them if ever needed.
     """
     fr_set = set(free_rider_indices)
     benign_history = []          # per-round BER means (only used by the commented-out live calc)

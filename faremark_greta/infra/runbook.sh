@@ -27,25 +27,20 @@ BATCH="${BATCH:-EFHIV}"          # UN-RUN / to-fix families: E(E1,E2,E3-fixed) F
                                 #     run WITH E in parallel via BATCH=EEA.
                                 # To run the two NEW groups this task adds, together with E:
                                 #     BATCH=EEAK ./runbook.sh manifest && BATCH=EEAK ./runbook.sh submit
-                                # The pool SKIPS any family whose result.json EXISTS -- so the buggy
-                                # E3 a01/a03/a10 will NOT be re-run unless you first delete their dirs:
-                                #   rm -rf $RES/E3_*_niid_*_a0{1,3}_rep* $RES/E3_*_niid_*_a10_rep*
-                                # (a01==a03 byte-identical last time; drop a03, re-run a01/a10 clean.)
+                                # The pool SKIPS any family whose result.json exists 
 PAPER_OK="${PAPER_OK:-1}"         # 1 = also build the probe-gated paper rows (F3/Table IX)
 FAST_DATA="${FAST_DATA:-1}"       # 1 = GPU-resident loaders (kills DataLoader fork storms)
 DETERMINISM="${DETERMINISM:-0}"   # 0 = cuDNN autotuner on (~1.3-2x; stat. identical over seeds)
-PODS="${PODS:-2}"; WORKERS="${WORKERS:-6}"   # batch=16 resnet18 barely uses an A100, so the run is
-                                # GPU-STARVED, not GPU-bound: throughput comes from packing MORE
-                                # concurrent runs per pod, not from a bigger batch (which is frozen
-                                # for comparability). With FAST_DATA on, 6-8 workers/A100 is usually
-                                # the sweet spot; watch `nvidia-smi dmon -s u` and raise until util
-                                # stops climbing. (Was 3 -- that under-fills the card.)
+PODS="${PODS:-2}"; WORKERS="${WORKERS:-6}"   # batch=16 resnet18 barely uses an A100 - 6-8 workers per pod
 MPS="${MPS:-1}"                 # 1 = start CUDA MPS on each pod so the many small processes share
                                 # the SM scheduler instead of context-switching (big win at batch 16)
 RES="${RES:-/mnt/nfs/home/zu/results}"   # cluster results (submit) OR local dir (plot); override for local
 OUT="${OUT:-$RES/figs}"           # output folder should be RES/figs by default
 ALL="$RES/*/result.json"
 HON=A1_honest_c100                # the honest calibration family for c100/10cl
+HONCLASS="${HONCLASS:-A1_honest_c100}"   # all-honest family for the per-client class-accuracy
+                                  # check (class_acc). Default reuses A1; the `classacc`
+                                  # subcommand makes a dedicated single-seed A0 run.
 
 PL="python ../scripts/plots.py"
 DET="python ../scripts/detection.py"
@@ -86,7 +81,7 @@ phase_submit(){
 }
 
 phase_monitor(){
-  # 3. Progress + the ONE integrity check that matters: did the AK twin apply?
+  # 3. Progress
   echo ">>> MONITOR"
   run "runai list jobs"
   echo "--- quick digest of whatever has landed ---"
@@ -143,161 +138,204 @@ phase_calibrate(){
 phase_plot(){
   mkdir -p "$OUT"
   echo ">>> PLOT -> $OUT"
+  # =========================================================================
+  # THESIS-RELEVANT PLOT SET:
+  #   A  -- baseline HONEST-ONLY (per-class floors + why every eta fails)
+  #   D  -- basic reduced free-riders (the +N price-of-invisibility spectrum)
+  #   E  -- STARVED non-IID (round-robin: honest floored by empty trigger class)
+  #   EA -- FAIR non-IID (distribution assignment: FR still matches same-class honest)
+  #   K  -- the WORKING dynamic submarine (per-free-rider panels; the 2 FRs split)
+  #   GPU-- effort/compute comparison for D/E/EA/K + the sharing-inflation check
+  # =========================================================================
 
-  # --- A/D/E/F: the per-group standard figures (thresholds + timeline + sep) ---
-  #     (C dropped -- sin-smoothing run failed, see R14; re-add 'C' once it's fixed)
-  run "RES='$RES' OUT='$OUT' ./plot_groups.sh A D E F"
+  # ===================== GROUP A -- honest baseline ONLY ====================
+  # plot_groups.sh A does honest calibration + the reduced-attack pair/sep; honest baselines
+  run "RES='$RES' OUT='$OUT' ./plot_groups.sh A"
+  run "$PL honest_lines   --in '$ALL' --family $HON --tail 20 --out $OUT/A1_class_floors.png"   # per-class honest BER floors (the ceiling FRs hide under)
+  run "$PL class_probe    --in '$ALL' --family $HON --out $OUT"                                  # WHY floors exist: entropy/dominance/trig-acc vs BER
+  run "$PL class_difficulty --in '$ALL' --family $HON --out $OUT/A1_class_difficulty"            # per-class test-acc vs per-class BER correlation
+  run "$PL eta_stability  --in '$ALL' --family $HON --out $OUT/A1_eta_stability"                 # seed variance of the calibrated eta
+  run "$ATH --in '$ALL' --family $HON --tail 20 --out $OUT/A1_thresholds"                        # every candidate eta + the .md table (none separates)
 
-  # --- Class difficulty (the mechanism): floors, entropy/dominance vs accuracy ---
-  run "$PL honest_lines   --in '$ALL' --family $HON --tail 20 --out $OUT/A1_class_floors.png"
-  run "$PL class_probe    --in '$ALL' --family $HON --out $OUT"
-  run "$PL eta_stability  --in '$ALL' --family $HON --out $OUT/A1_eta_stability"
-  run "$ATH --in '$ALL' --family $HON --tail 20 --out $OUT/A1_thresholds"
+  # --- per-client trigger-class accuracy check (all-honest run). One panel per
+  #     client: its trigger-class test-acc vs the mean non-trigger-class acc vs global.
+  run "$PL class_acc --in '$ALL' --family $HONCLASS --out $OUT/A0_class_acc"
 
-  # --- ISOLATED same-class pairs (no shared-class conflict): honest A1 vs FR alone ---
-  #     A4/AK put honest+FR on class 6 in ONE model (interference). Use A3's cid6 as
-  #     the clean "FR alone on 6" and A1's cid6 as "honest alone on 6".
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 6 --out $OUT/iso_c6"
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 3 --out $OUT/iso_c3"
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 1 --out $OUT/iso_c1"
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 7 --out $OUT/iso_c7"
-  # key-lottery counterpoints at the HARD class 6: A3's draw put FR ABOVE honest, but other
-  # draws put it BELOW. A4 (own key) FR-c6~0.067 < honest 0.114 = cleaner; AK (same key) = the
-  # controlled twin (only effort differs). Note A4/AK share class 6 in-model (not fully isolated).
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A4_sameclass_c100_c6 --class 6 --out $OUT/iso_c6_A4_cleaner"
-  run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family AK_sameclass_samekey_c6 --class 6 --out $OUT/iso_c6_AK_samekey"
+  # ===================== GROUP D -- basic reduced free-riders ================
+  # plot_groups.sh D draws the D1 +N spectrum (price-of-invisibility) + sep.json.
+  run "RES='$RES' OUT='$OUT' ./plot_groups.sh D"
+  # same-class BER pair: reduced FR vs honest on the SAME class (medium 3, hard 6).
+  SCP="python ../scripts/plot_sameclass_pair.py"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 3 --out $OUT/iso_A3_c3"
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 6 --out $OUT/iso_A3_c6"
 
-  # --- E3 non-IID alpha sweep: reduced-vs-honest timeline per alpha (a03 dropped -- was a01's twin) ---
+  # ===================== GROUP E -- STARVED non-IID =========================
+  # plot_groups.sh E: honest non-IID floors + reduced-vs-honest timeline/sep.
+  run "RES='$RES' OUT='$OUT' ./plot_groups.sh E"
+  # alpha severity sweep (starvation gets worse as alpha shrinks).
   for at in a01 a10; do
     run "$PL timeline --in '$ALL' --family E3_reduced_niid_c36_${at} \
          --honest_in '$ALL' --honest_family E3_honest_niid_c100_${at} --out $OUT/E3_${at}_timeline"
   done
+  # starvation itself: honest BER vs #trigger images held (round-robin).
+  run "$PL trigger_fairness --in '$ALL' --family E1_honest_niid_c100 --tail 20 --out $OUT/trigger_fairness_E1"
+  # same-class BER pair, non-IID starved (honest E1 vs reduced E2 on class 6).
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
 
-  # --- H baselines: crude attacks the scheme was designed to catch (sanity) ---
-  for fam in H3_prevmodel_c10 H4_gaussian_c10; do
-    run "$DET separability --honest-in '$ALL' --honest-family H1_honest_c10 \
-         --attack-in '$ALL' --attack-family $fam --tail 20 --per-class --emit $OUT/H_sep_${fam}.json"
+  # ===================== GROUP EA -- FAIR non-IID ===========================
+  # The distribution-aware fair comparison: each reduced FR vs the honest client
+  # assigned the SAME trigger class. If the FR still matches the (now un-starved)
+  # honest twin, removing starvation did NOT open a separating threshold.
+  for pair in "EA2_reduced_niid_distrib_c36 EA1_honest_niid_distrib_c100"; do
+    set -- $pair
+    run "$PL ea_fair --in '$ALL' --family $1 --honest_family $2 --out $OUT/ea_fair_$1"
   done
+  # round-robin (starved) vs distribution (fair) overlaid: does assignment remove starvation?
+  run "$PL trigger_fairness --in '$ALL' --tail 20 \
+       --families E1_honest_niid_c100 EA1_honest_niid_distrib_c100 --out $OUT/trigger_fairness_niid"
+  # same-class BER pair under distribution assignment (honest EA1 vs reduced EA2, class 6).
+  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
+  # what the non-IID skew looks like 
+  run "$PL dirichlet_dist --in '$ALL' --out $OUT/dirichlet_dist"
 
-  # --- I adaptive-tap: timeline per family (two-eta lines drawn automatically) ---
-  #     I families (SEEDS_I) + the new GROUP J graft suite (persistence / sawtooth / coast A-B).
-  for fam in I0_smoke_always_cpc5_c36 \
-             I_data_n0_c36 I_data_n1_c36 I_data_n5_c36 \
-             I_when_threshold_c36 I_when_every_k_c36 \
-             I_eta_oracle_c36 I_eta_self_c36 \
-             I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 \
-             I_tight_eta0064_c36 \
-             J0_gate_alwaystap_c36 \
-             J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36 \
-             J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
-             J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
-             J4_scope_graft_block_c36 J4_scope_graft_block2_c36; do
-    run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
-         --out $OUT/tap_${fam}"
-  done
-
-  # --- PER-FREE-RIDER split (NEW): one FIGURE per free-rider + same-class honest twin. ---
-  #     The meeting's plot: each FR on its own axis, taps/coasts, server BER vs self-probe,
-  #     with the honest GLOBAL mean AND the same-class honest twin (from $HON) on BOTH.
-  #     Auto-generated for every submarine family (J2/J5 + the dynamic K-suite).
-  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J4_scope_graft_block2_c36 \
-             K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
-             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36; do
+  # ===================== GROUP K -- the submarine ===================
+  # PER-FREE-RIDER split: ONE FIGURE PER FREE-RIDER (cid3 and cid6 on SEPARATE
+  # panels) -- they do not tap together, so never collapse them. Each panel carries
+  # the honest GLOBAL mean AND the same-class honest twin (from $HON) for the
+  # "does it blend in on its own class" read. 
+  for fam in K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
+             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
     run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_perfr_${fam}"
   done
-
-  # --- K-SUITE timelines + dynamics (the dynamic-submarine 1-seed tests) ---
-  for fam in K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
-             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36; do
-    run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
-         --out $OUT/tap_${fam}"
-    run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
-  done
-
-  # --- ACCURACY (NEW): global test acc, attack vs honest, + FR trigger-class acc. ---
-  #     The 'Fig B' panels -- free-riders barely dent global accuracy while their own
-  #     trigger class is the sacrificed cost. Auto-generated for the key attack families.
-  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36 \
-             A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
-             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 EA2b_reduced_niid_distrib_pin_c36; do
+  # accuracy: the FR barely dents global test-acc while its own trigger class pays.
+  for fam in K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
+             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
     run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/accuracy_${fam}"
   done
-  # non-IID accuracy uses the non-IID honest reference
-  run "$PL accuracy --in '$ALL' --family E2_reduced_niid_c36 \
-       --honest_in '$ALL' --honest_family E1_honest_niid_c100 --out $OUT/accuracy_E2_niid"
 
-  # --- GPU-CYCLES SAVED (NEW): cumulative gpu_ms per round, each FR vs honest mean, ---
-  #     + the running fraction-of-honest curve. Every free-rider family (with & without
-  #     free-riders logs gpu_ms per round now, so the honest baseline is real).
-  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             K0_control_J2_c36 K1_selfeta_c36 K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36 \
-             A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
-             E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 EA2b_reduced_niid_distrib_pin_c36; do
+  # ===================== GPU CYCLES -- effort comparison ====================
+  # cumulative gpu_ms / samples per round, each FR vs the honest mean, for the
+  # kept attack families (D, E, EA, K).
+  for fam in D1_reduced_c100_c36_n5 E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 \
+             K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 \
+             K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
     run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
   done
+  # sharing-inflation check: single-tenant (WORKERS=1) vs shared saved-% ratio.
+  run "$PL gpu_inflation --in '$ALL' --family K4_alldyn_block2_c36 --out $OUT/gpu_inflation_K4_alldyn_block2_c36"
 
-  # --- NON-IID TRIGGER FAIRNESS (NEW): BER vs #trigger images held, round-robin vs ---
-  #     distribution assignment overlaid. Shows whether starvation drives BER and
-  #     whether distribution assignment removes it. Needs the wm_trigger_holdings field
-  #     (runner patched) -- honest non-IID families carry it.
-  run "$PL trigger_fairness --in '$ALL' --tail 20 \
-       --families E1_honest_niid_c100 EA1_honest_niid_distrib_c100 \
-       --out $OUT/trigger_fairness_niid"
-  # per-alpha honest (round-robin only) as a fallback if EA hasn't run yet
-  run "$PL trigger_fairness --in '$ALL' --family E1_honest_niid_c100 --tail 20 \
-       --out $OUT/trigger_fairness_E1"
+  # #########################################################################
+  # ###  COMMENTED OUT -- not part of the current thesis-relevant set.    ###
+  # ###  Uncomment a block to restore.)                                   ###
+  # #########################################################################
+  #
+  # # --- plot_groups F (capacity, >clients-than-classes) ---
+  # run "RES='$RES' OUT='$OUT' ./plot_groups.sh F"
+  #
+  # # --- ISOLATED same-class pairs via $PAIR (A4/AK key-lottery + A2 easy classes) ---
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 6 --out $OUT/iso_c6"
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 3 --out $OUT/iso_c3"
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 1 --out $OUT/iso_c1"
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 7 --out $OUT/iso_c7"
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family A4_sameclass_c100_c6 --class 6 --out $OUT/iso_c6_A4_cleaner"
+  # run "$PAIR --honest_in '$RES/A1_honest_c100_rep*/result.json' --fr_in '$ALL' --family AK_sameclass_samekey_c6 --class 6 --out $OUT/iso_c6_AK_samekey"
+  # run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 1 --out $OUT/iso_A2_c1"
+  # run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 7 --out $OUT/iso_A2_c7"
+  # run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2b_reduced_niid_distrib_pin_c36 --class 6 --out $OUT/iso_EA2b_c6"
+  #
+  # # --- H crude-baseline separability (positive controls) ---
+  # for fam in H3_prevmodel_c10 H4_gaussian_c10; do
+  #   run "$DET separability --honest-in '$ALL' --honest-family H1_honest_c10 \
+  #        --attack-in '$ALL' --attack-family $fam --tail 20 --per-class --emit $OUT/H_sep_${fam}.json"
+  # done
+  #
+  # # --- I/J exploratory timelines (superseded by K) ---
+  # for fam in I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36 \
+  #            I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36 \
+  #            I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36 \
+  #            J0_gate_alwaystap_c36 J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 \
+  #            J1_persist_graft_p4_c36 J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
+  #            J2_saw_graft_head_c36 J5_submarine_head_c36 J3_coast_resend_p3_c36 \
+  #            J3_coast_decay_p3_c36 J4_scope_graft_block_c36 J4_scope_graft_block2_c36; do
+  #   run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --out $OUT/tap_${fam}"
+  # done
+  # # J-suite per-FR + K0-K3 ablations (K0=J2 control, K1 self-eta, K2 margin, K3 warmup)
+  # for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J4_scope_graft_block2_c36 \
+  #            K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36; do
+  #   run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --out $OUT/tap_perfr_${fam}"
+  # done
+  # # K-suite timelines (redundant with tap_perfr) + tap_dynamics (collapses the 2 FRs -> not wanted)
+  # for fam in K0_control_J2_c36 K1_selfeta_c36 K2_derivedmargin_c36 K3_dynwarmup_c36 \
+  #            K4_alldyn_block2_c36 K5_selfeta_derivedmargin_head_c36 K6_selfeta_tailfix_head_c36 K6_full_submarine_head_c36; do
+  #   run "$PL timeline --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --out $OUT/tap_${fam}"
+  #   run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
+  # done
+  # # accuracy for the non-K families (secondary)
+  # for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 K0_control_J2_c36 K1_selfeta_c36 \
+  #            A3_reduced_c100_c36 D1_reduced_c100_c36_n5 E2_reduced_niid_c36 \
+  #            EA2_reduced_niid_distrib_c36 EA2b_reduced_niid_distrib_pin_c36; do
+  #   run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --out $OUT/accuracy_${fam}"
+  # done
+  # run "$PL accuracy --in '$ALL' --family E2_reduced_niid_c36 --honest_in '$ALL' --honest_family E1_honest_niid_c100 --out $OUT/accuracy_E2_niid"
+  # # gpu_savings for the non-kept families
+  # for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 K0_control_J2_c36 K1_selfeta_c36 \
+  #            A3_reduced_c100_c36 EA2b_reduced_niid_distrib_pin_c36; do
+  #   run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
+  # done
+  # # gpu_inflation for the other candidate winners
+  # for fam in K6_full_submarine_head_c36 J2_saw_graft_head_c36; do
+  #   run "$PL gpu_inflation --in '$ALL' --family $fam --out $OUT/gpu_inflation_${fam}"
+  # done
+  #
+  # # --- operating_point: recall @ fixed honest FPR (needs H5/V2/A4/AK families) ---
+  # #     THE headline negative-result summary -- re-enable once H5 (+V2) have run.
+  # run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20 \
+  #      --families A2_reduced_c100_c17 A3_reduced_c100_c36 A4_sameclass_c100_c6 \
+  #                AK_sameclass_samekey_c6 D1_reduced_c100_c36_n5 V2_tableV_attack_c36_tnm1 \
+  #                H5_prevmodel_c100 --out $OUT/operating_point"
+  #
+  # # --- tap_dynamics per-family + frontier (I/J fade/recovery exploration) ---
+  # for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J1_persist_graft_p6_c36 \
+  #            J1_persist_graft_p12_c36 J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
+  #            J4_scope_graft_block_c36 J4_scope_graft_block2_c36 I_when_threshold_c36 I_coast_resend_c36; do
+  #   run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
+  # done
+  #
+  # # --- V2 Table V positive control (trigger-sample overfit -> caught) ---
+  # for tn in 10 100 500 m1; do
+  #   run "$DET separability --honest-in '$ALL' --honest-family $HON \
+  #        --attack-in '$ALL' --attack-family V2_tableV_attack_c36_tn${tn} \
+  #        --tail 20 --per-class --emit $OUT/V2_sep_tn${tn}.json"
+  # done
 
-  # --- DIRICHLET reference heatmap (NEW): what the non-IID skew looks like per alpha. ---
-  #     No result files needed (re-draws the datasets.py partition rule). --in is a placeholder.
-  run "$PL dirichlet_dist --in '$ALL' --out $OUT/dirichlet_dist"
+  echo "   done -> $OUT  (thesis-relevant set: A honest / D reduced / E starved-niid / EA fair-niid / K submarine / GPU)"
+}
 
-  # --- SAME-CLASS BER pair (iso_c*): the clean A4/AK replacement. Honest client from A1
-  #     and the reduced FR from A2/A3, plotted as individual per-round BER lines on the
-  #     SAME trigger class -- shows the FR mark is at least as clean as honest and the
-  #     frozen eta flags the wrong one. (BER only; the iso_ACC accuracy version is
-  #     `plots.py accuracy`.)
-  SCP="python ../scripts/plot_sameclass_pair.py"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 6 --out $OUT/iso_A3_c6"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A3_reduced_c100_c36 --class 3 --out $OUT/iso_A3_c3"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 1 --out $OUT/iso_A2_c1"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family A2_reduced_c100_c17 --class 7 --out $OUT/iso_A2_c7"
-  # non-IID same-class pair (honest E1 vs reduced E2), + distribution variant (EA1 vs EA2)
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2b_reduced_niid_distrib_pin_c36 --class 6 --out $OUT/iso_EA2b_c6"
-
-
-
-
-  # --- plot: recall at a fixed honest FPR across every attack (one deployable eta) ---
-  #     Crude c100 baseline H5 is the positive control (should light up); insiders stay ~0.
-  run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20        --families A2_reduced_c100_c17 A3_reduced_c100_c36 A4_sameclass_c100_c6                   AK_sameclass_samekey_c6 D1_reduced_c100_c36_n5 V2_tableV_attack_c36_tnm1                   H5_prevmodel_c100        --out $OUT/operating_point"
-
-  # --- TAP DYNAMICS: FADE (rounds_between_taps) + RECOVERY (ber_drop_per_tap). ---
-  #     Per-family trace for the runs where fade/recovery is the whole point, then the frontier.
-  for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 \
-             J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 \
-             J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 \
-             J4_scope_graft_block_c36 J4_scope_graft_block2_c36 \
-             I_when_threshold_c36 I_coast_resend_c36; do
-    run "$PL tap_dynamics --in '$ALL' --family $fam --out $OUT/tap_dyn_${fam}"
-  done
-  run "$PL tap_dynamics --in '$ALL' --out $OUT/tap_frontier        --families I0_smoke_always_cpc5_c36 I_data_n0_c36 I_data_n1_c36 I_data_n5_c36                   I_when_threshold_c36 I_when_every_k_c36 I_eta_oracle_c36 I_eta_self_c36                   I_coast_resend_c36 I_coast_decay_c36 I_maxcoast_m8_c36 I_tight_eta0064_c36                   J0_gate_alwaystap_c36 J1_persist_graft_p2_c36 J1_persist_graft_p3_c36 J1_persist_graft_p4_c36                   J1_persist_graft_p6_c36 J1_persist_graft_p12_c36 J2_saw_graft_head_c36 J5_submarine_head_c36                   J3_coast_resend_p3_c36 J3_coast_decay_p3_c36 J4_scope_graft_block_c36 J4_scope_graft_block2_c36"
-
-  # --- V2 Table V attack: FR BER vs #trigger-training-samples (overfit -> caught) ---
-  #     TN values match run_now (10, 100, 500, and m1 = full trigger-class anchor).
-  for tn in 10 100 500 m1; do
-    run "$DET separability --honest-in '$ALL' --honest-family $HON \
-         --attack-in '$ALL' --attack-family V2_tableV_attack_c36_tn${tn} \
-         --tail 20 --per-class --emit $OUT/V2_sep_tn${tn}.json"
-  done
-  echo "   done. Headline numbers live in every *_sep.json:"
-  echo "     overlap_coefficient          1.0 = honest & FR BER identical"
-  echo "     best_threshold_balanced_error 0.5 = no threshold beats a coin"
+phase_classacc(){
+  # Single-seed ALL-HONEST run + the per-client class-accuracy check.
+  # Purpose: rule out "this client's watermark BER is high only because its trigger
+  # class is intrinsically hard to classify". For each honest client it plots, on its
+  # OWN panel: (a) test-acc on its trigger class, (b) mean test-acc on the other
+  # (non-trigger) classes, (c) the global test-acc -- so a hard trigger-class draw is
+  # visible as a low (a) bar regardless of the watermark.
+  #
+  #   ./runbook.sh classacc            # submit the single-seed honest run, then plot
+  #   PLOT_ONLY=1 ./runbook.sh classacc  # skip the run, just (re)plot A0/$HONCLASS
+  local FAM="A0_classacc_honest_c100"
+  mkdir -p "$OUT"
+  if [ -z "${PLOT_ONLY:-}" ]; then
+    echo ">>> CLASSACC: single-seed all-honest run ($FAM, seed 0)"
+    run "env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
+         FAMILY='$FAM' NOTE='A0 single-seed all-honest, per-client class-acc check' \
+         ./submit_experiment.sh 14 0"
+    echo "   (when it lands in \$RES, re-run with PLOT_ONLY=1 to plot, or just: ./runbook.sh classacc)"
+  fi
+  echo ">>> CLASSACC PLOT -> $OUT"
+  # plot the dedicated A0 run if present, else fall back to $HONCLASS (=A1 by default).
+  run "$PL class_acc --in '$ALL' --family $FAM     --out $OUT/A0_class_acc"
+  run "$PL class_acc --in '$ALL' --family $HONCLASS --out $OUT/A1_class_acc"
 }
 
 phase_grade(){
@@ -323,6 +361,7 @@ case "${1:-help}" in
   # fetch)     phase_fetch ;;
   calibrate) phase_calibrate ;;
   plot)      phase_plot ;;
+  classacc)  phase_classacc ;;
   grade)     phase_grade ;;
   all-submit) phase_probe; phase_manifest; phase_submit ;;   # convenience: 0->1->2
   all-plot)   phase_calibrate; phase_plot; phase_grade ;;    # convenience: 5->6->7 (after fetch)
@@ -340,10 +379,13 @@ runbook.sh -- run phases in this order (wait for the cluster between 2 and 4):
   LOCALLY (set RES=~/local/results):
     REMOTE=user@host:/mnt/nfs/home/zu/results RES=~/local/results ./runbook.sh fetch   4.
     RES=~/local/results ./runbook.sh calibrate   5.
-    RES=~/local/results ./runbook.sh plot        6.
+    RES=~/local/results ./runbook.sh plot        6.   (thesis-relevant set: A/D/E/EA/K/GPU)
     RES=~/local/results ./runbook.sh grade        7.
 
-  optional:   ./runbook.sh validate    fast_data A/B (old vs new floors agree within seed noise)
+  optional:   ./runbook.sh classacc   single-seed all-honest run + per-client trigger-class
+                                       accuracy check (rules out class-difficulty confounds).
+                                       PLOT_ONLY=1 to re-plot without re-running.
+              ./runbook.sh validate    fast_data A/B (old vs new floors agree within seed noise)
               ./runbook.sh speedcheck   confirm flags active + seconds/round before vs after
   shortcuts:  all-submit (0->1->2)   all-plot (5->6->7, after fetch)
   speed levers (on by default for this batch): FAST_DATA=1 (GPU loaders), DETERMINISM=0 (autotuner).
