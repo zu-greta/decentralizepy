@@ -177,7 +177,7 @@ fi
 #   H2 honest cifar100 == A1 (reference)  H4 gaussian-noise FR (crude, caught)
 # ---------------------------------------------------------------------------
 if has H; then
-  echo "   (group H done already)"
+  echo "   (H1-H4 done/cited via A1; H5 = previous-models FR on c100, the money-plot positive control, runs below)"
   # for s in 0 1 2; do
   #   env ATTACK=none NUM_FREE_RIDERS=0 ROUNDS=50 \
   #       FAMILY="H1_honest_c10" NOTE="H1 fidelity: all-honest watermark cifar10" \
@@ -195,12 +195,12 @@ if has H; then
   #       ./submit_experiment.sh 11 "$s"
   # done
   # # H5: crude previous-models FR on CIFAR-100 -- the same dataset positive control
-  # # for the operating-point plot (calibrated on A1_honest_c100). Should be caught.
-  # for s in 0 1 2; do
-  #   env ATTACK=previous_models FREE_RIDER_IDS=6 WM_ETA_FIXED=0.064 ROUNDS=50 \
-  #       FAMILY="H5_prevmodel_c100" NOTE="H5 crude FR previous-models on c100 (money-plot control)" \
-  #       ./submit_experiment.sh 14 "$s"
-  # done
+  # for the operating-point plot (calibrated on A1_honest_c100). Should be caught.
+  for s in 0 1 2; do
+    env ATTACK=previous_models NUM_FREE_RIDERS=2 FREE_RIDER_IDS=3,6 WM_ETA_FIXED=0.064 ROUNDS=50 \
+        FAMILY="H5_prevmodel_c100" NOTE="H5 crude FR previous-models on c100 (money-plot control), cids 3,6 to match K4/D1" \
+        ./submit_experiment.sh 14 "$s"
+  done
 fi
 
 # ---------------------------------------------------------------------------

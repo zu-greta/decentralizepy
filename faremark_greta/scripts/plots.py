@@ -960,22 +960,28 @@ def timeline(a):
         ax.axhline(eta_tight, color=BLACK, ls="--", lw=2.2,
                    label=f"η tight (frozen, used) = {eta_tight:.3f}")
 
-    # loose (pooled) eta -- the loosest sane deployable rule; drawn on EVERY timeline.
-    # Recompute pooled mu+3s over honest round-means from --honest_in when available.
+    # loose eta -- the loosest sane deployable rule; drawn on EVERY timeline.
+    # CONSISTENCY FIX: recompute mu+3s over honest PER-CLIENT BERs (the same rule
+    # tap_perfr and plot_sameclass_pair use), NOT over round-means. Before this,
+    # timeline drew mu+3s(round-means) (~0.075 IID / ~0.178 non-IID) while the
+    # tap/iso plots drew mu+3s(per-client) (0.264 IID) -- the SAME label "η loose"
+    # showed two different values across figures. Per-client is the fair-to-honest
+    # rule (matches ETA_LOOSE_DEFAULT) and scales correctly with the partition.
     eta_loose = getattr(a, "eta_loose", None)
     if eta_loose is None and getattr(a, "honest_in", None):
         try:
             href2 = [r for r in load(a.honest_in) if th.is_honest_run(r)
                      and (a.honest_family is None or fam(r) == a.honest_family)]
-            rms = converged_roundmeans(href2, tail=getattr(a, "tail", TAIL))
-            if len(rms):
-                eta_loose = mu3s(rms)
+            indiv = converged_perclient(href2, tail=getattr(a, "tail", TAIL),
+                                        free_rider=False)
+            if len(indiv):
+                eta_loose = mu3s(np.asarray(indiv))
         except Exception:
             eta_loose = None
     if eta_loose is None:
         eta_loose = ETA_LOOSE_DEFAULT
     ax.axhline(eta_loose, color="#3B6FB5", ls=(0, (5, 2)), lw=2.0,
-               label=f"η loose (pooled μ+3σ) = {eta_loose:.3f}")
+               label=f"η loose (per-client μ+3σ) = {eta_loose:.3f}")
 
     # --- OVERLAY: honest floor for the free-rider's OWN trigger classes ---------
     # Read the FR line against an honest client at the SAME class, not the honest

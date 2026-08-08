@@ -180,7 +180,9 @@ phase_plot(){
   # starvation itself: honest BER vs #trigger images held (round-robin).
   run "$PL trigger_fairness --in '$ALL' --family E1_honest_niid_c100 --tail 20 --out $OUT/trigger_fairness_E1"
   # same-class BER pair, non-IID starved (honest E1 vs reduced E2 on class 6).
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
+  # iso pair MUST use the non-IID honest twin (E1), NOT the IID A1 -- else it compares
+  # an IID honest client against a non-IID free-rider (mismatched partitions).
+  run "$SCP --honest_in '$RES/E1_honest_niid_c100_rep*/result.json' --fr_in '$ALL' --family E2_reduced_niid_c36 --class 6 --out $OUT/iso_E2_c6"
 
   # ===================== GROUP EA -- FAIR non-IID ===========================
   # The distribution-aware fair comparison: each reduced FR vs the honest client
@@ -194,7 +196,8 @@ phase_plot(){
   run "$PL trigger_fairness --in '$ALL' --tail 20 \
        --families E1_honest_niid_c100 EA1_honest_niid_distrib_c100 --out $OUT/trigger_fairness_niid"
   # same-class BER pair under distribution assignment (honest EA1 vs reduced EA2, class 6).
-  run "$SCP --honest_in '$ALL' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
+  # iso pair MUST use the non-IID distribution-aware honest twin (EA1), NOT the IID A1.
+  run "$SCP --honest_in '$RES/EA1_honest_niid_distrib_c100_rep*/result.json' --fr_in '$ALL' --family EA2_reduced_niid_distrib_c36 --class 6 --out $OUT/iso_EA2_c6"
   # what the non-IID skew looks like 
   run "$PL dirichlet_dist --in '$ALL' --out $OUT/dirichlet_dist"
 
@@ -286,12 +289,15 @@ phase_plot(){
   #   run "$PL gpu_inflation --in '$ALL' --family $fam --out $OUT/gpu_inflation_${fam}"
   # done
   #
-  # # --- operating_point: recall @ fixed honest FPR (needs H5/V2/A4/AK families) ---
-  # #     THE headline negative-result summary -- re-enable once H5 (+V2) have run.
-  # run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20 \
-  #      --families A2_reduced_c100_c17 A3_reduced_c100_c36 A4_sameclass_c100_c6 \
-  #                AK_sameclass_samekey_c6 D1_reduced_c100_c36_n5 V2_tableV_attack_c36_tnm1 \
-  #                H5_prevmodel_c100 --out $OUT/operating_point"
+  # --- operating_point: recall @ fixed honest FPR -- THE headline negative-result summary.
+  #     Insider attacks (reduced A2/A3/D1 + submarine K4) sit near 0 recall at the honest-FPR
+  #     where the crude positive control (H5) is caught at ~1.0. A4/AK removed; V2 not run.
+  run "$PL operating_point --in '$ALL' --honest_family $HON --tail 20 \
+       --families A2_reduced_c100_c17 A3_reduced_c100_c36 D1_reduced_c100_c36_n5 \
+                 K4_alldyn_block2_c36 H5_prevmodel_c100 --out $OUT/operating_point"
+  # positive-control separability (H5 crude FR should split cleanly from honest):
+  run "$DET separability --honest-in '$ALL' --honest-family $HON \
+       --attack-in '$ALL' --attack-family H5_prevmodel_c100 --tail 20 --per-class --emit $OUT/H5_sep.json"
   #
   # # --- tap_dynamics per-family + frontier (I/J fade/recovery exploration) ---
   # for fam in J2_saw_graft_head_c36 J5_submarine_head_c36 J1_persist_graft_p6_c36 \
