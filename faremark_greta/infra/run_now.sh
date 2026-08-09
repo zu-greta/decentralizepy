@@ -486,6 +486,18 @@ if has K; then
         ./submit_experiment.sh 14 "$s"
   done
 
+  # --- K5 ALL-DYNAMIC + full sawtooth (3 seeds)
+  for s in $SEEDS_K; do
+    env $kbase TAP_SCOPE=full TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.25 \
+        FAMILY="K5_alldyn_full_c36" \
+        NOTE="K5 all-dynamic + full sawtooth (self-eta, derived margin, dynamic warmup, non-polluting)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+
   # --- K5/K6 head configs: DISABLED. The re-uploaded tap_perfr plots show head taps ~100%
   #     on both classes (self-sufficient + evades, but saves NO compute -> not a free-rider
   #     in the effort sense). K4/block2 is the free-riding config we table. Re-enable only
