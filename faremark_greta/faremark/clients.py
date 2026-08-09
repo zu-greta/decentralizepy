@@ -356,6 +356,12 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             trigger_class = cid % num_classes
         # key balance config: balanced=True removes structurally-unembeddable same-sign rows 
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
+        # TEST - Compute group size based on whether we exclude the trigger class
+        if exclude_col is not None and exclude_col == "trigger":
+            n_used = num_classes - 1
+        else:
+            n_used = num_classes
+        l = max(1, n_used // m)   # ensure at least 1 -> TEST
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
