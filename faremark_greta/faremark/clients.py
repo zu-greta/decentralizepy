@@ -298,7 +298,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
     m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
     l = wm.grouping(num_classes, m)
-    exclude_col = None                             # full softmax (no trigger-class exclusion)
+    exclude_col = "trigger" #None                             # full softmax (no trigger-class exclusion)
 
     attack = getattr(cfg, "attack", "none")
     fr_idx = resolve_free_riders(cfg, len(client_loaders), seed)   # honours cfg.free_rider_ids

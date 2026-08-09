@@ -45,23 +45,23 @@ has(){ [[ "$WANT" == *"$1"* ]]; }
 # ---------------------------------------------------------------------------
 if has A; then
   echo "   (group A done already)"
-#   for s in 0 1 2 3 4 5; do
-#     env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
-#         FAMILY="A1_honest_c100" NOTE="A1 honest baseline (known-good config)" \
-#         ./submit_experiment.sh 14 "$s"
-#   done
-#   for s in 0 1 2; do
-#     env ATTACK=reduced FREE_RIDER_IDS=1,7 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
-#         AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
-#         FAMILY="A2_reduced_c100_c17" NOTE="A2 reduced +5 easy classes 1,7" \
-#         ./submit_experiment.sh 14 "$s"
-#   done
-#   for s in 0 1 2; do
-#     env ATTACK=reduced FREE_RIDER_IDS=3,6 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
-#         AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
-#         FAMILY="A3_reduced_c100_c36" NOTE="A3 reduced +5 hard classes 3,6" \
-#         ./submit_experiment.sh 14 "$s"
-#   done
+  for s in 0 1 2 3 4 5; do
+    env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
+        FAMILY="A1_honest_c100" NOTE="A1 honest baseline (known-good config)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+  for s in 0 1 2; do
+    env ATTACK=reduced FREE_RIDER_IDS=1,7 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
+        AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
+        FAMILY="A2_reduced_c100_c17" NOTE="A2 reduced +5 easy classes 1,7" \
+        ./submit_experiment.sh 14 "$s"
+  done
+  for s in 0 1 2; do
+    env ATTACK=reduced FREE_RIDER_IDS=3,6 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
+        AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
+        FAMILY="A3_reduced_c100_c36" NOTE="A3 reduced +5 hard classes 3,6" \
+        ./submit_experiment.sh 14 "$s"
+  done
 fi
 
 # ---------------------------------------------------------------------------
