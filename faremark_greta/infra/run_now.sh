@@ -45,23 +45,23 @@ has(){ [[ "$WANT" == *"$1"* ]]; }
 # ---------------------------------------------------------------------------
 if has A; then
   echo "   (group A done already)"
-  for s in 0 1 2 3 4 5; do
-    env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
-        FAMILY="A1_honest_c100" NOTE="A1 honest baseline (known-good config)" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  for s in 0 1 2; do
-    env ATTACK=reduced FREE_RIDER_IDS=1,7 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
-        AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
-        FAMILY="A2_reduced_c100_c17" NOTE="A2 reduced +5 easy classes 1,7" \
-        ./submit_experiment.sh 14 "$s"
-  done
-  for s in 0 1 2; do
-    env ATTACK=reduced FREE_RIDER_IDS=3,6 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
-        AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
-        FAMILY="A3_reduced_c100_c36" NOTE="A3 reduced +5 hard classes 3,6" \
-        ./submit_experiment.sh 14 "$s"
-  done
+#   for s in 0 1 2 3 4 5; do
+#     env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
+#         FAMILY="A1_honest_c100" NOTE="A1 honest baseline (known-good config)" \
+#         ./submit_experiment.sh 14 "$s"
+#   done
+#   for s in 0 1 2; do
+#     env ATTACK=reduced FREE_RIDER_IDS=1,7 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
+#         AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
+#         FAMILY="A2_reduced_c100_c17" NOTE="A2 reduced +5 easy classes 1,7" \
+#         ./submit_experiment.sh 14 "$s"
+#   done
+#   for s in 0 1 2; do
+#     env ATTACK=reduced FREE_RIDER_IDS=3,6 AUTOP_COMMON_PER_CLASS=5 AUTOP_HONEST_UNTIL=12 \
+#         AUTOP_CALIB_ROUNDS=4 WM_ETA_FIXED=0.064 ROUNDS=50 \
+#         FAMILY="A3_reduced_c100_c36" NOTE="A3 reduced +5 hard classes 3,6" \
+#         ./submit_experiment.sh 14 "$s"
+#   done
 fi
 
 # ---------------------------------------------------------------------------
@@ -486,17 +486,30 @@ if has K; then
         ./submit_experiment.sh 14 "$s"
   done
 
-  # --- K5 ALL-DYNAMIC + full sawtooth (3 seeds)
-  for s in $SEEDS_K; do
-    env $kbase TAP_SCOPE=full TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
-        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
-        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
-        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
-        TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.25 \
-        FAMILY="K5_alldyn_full_c36" \
-        NOTE="K5 all-dynamic + full sawtooth (self-eta, derived margin, dynamic warmup, non-polluting)" \
-        ./submit_experiment.sh 14 "$s"
-  done
+  # --- K4b HARD-CLASS DATA TEST (optional; enable with K4B=1). Same all-dynamic
+  #     self-eta submarine as K4, but taps on the FULL shard (TAP_DATA_CPC=-1)
+  #     instead of cpc=5. Purpose: the verified finding is that the hard class
+  #     (cls 6) floors at BER~0.20-0.30 for EVERY reduced/submarine variant
+  #     REGARDLESS of scope -- because reduced data (cpc=5, ~30% shard) cannot
+  #     embed cls 6 as cleanly as a full-data honest client (~0.09). This variant
+  #     tests whether full-data taps let cls6 reach the honest twin. Expectation:
+  #     cls6 BER drops toward the twin BUT the hard class then pays ~honest cost on
+  #     every tap (it already taps ~all rounds), so the compute saving on cls6
+  #     collapses -- i.e. cheap-vs-clean is a real trade-off on hard classes, and
+  #     the easy class (cls3) keeps its sawtooth. Quote K4 for the headline; quote
+  #     K4b only to make the data-limit point explicit.
+  if [ "${K4B:-0}" = "1" ]; then
+    for s in $SEEDS_K; do
+      env $kbase TAP_SCOPE=block2 TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+          TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+          TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+          TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 \
+          TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.25 TAP_DATA_CPC=-1 \
+          FAMILY="K4b_alldyn_block2_fulldata_c36" \
+          NOTE="K4b hard-class data test: same as K4 but full-shard taps (cpc=-1) -- does cls6 reach the honest twin at the cost of the coast saving?" \
+          ./submit_experiment.sh 14 "$s"
+    done
+  fi
 
   # --- K5/K6 head configs: DISABLED. The re-uploaded tap_perfr plots show head taps ~100%
   #     on both classes (self-sufficient + evades, but saves NO compute -> not a free-rider
@@ -521,6 +534,43 @@ if has K; then
   #       NOTE="K6 COMPLETE submarine: fully dynamic (self-eta+derived margin+dynamic warmup) + head + tail-fix (no pollution)" \
   #       ./submit_experiment.sh 14 "$s"
   # done
+fi
+
+# ---------------------------------------------------------------------------
+# GROUP X -- EXCLUDE-TRIGGER ABLATION (answers "why is honest trig_acc ~0?").
+#   Re-runs ONE honest baseline and ONE submarine with WM_EXCLUDE_TRIGGER=1, which
+#   drops each client's trigger-class column from the watermark projection. In the
+#   paper-faithful default (full softmax) the anti-dominance rule flattens the
+#   trigger-image softmax and demotes the trigger class -> honest trig_acc ~= 0.
+#   With the trigger column excluded, the mark rides the tail classes, the trigger
+#   class is no longer suppressed -> trig_acc should RISE and the BER floor should
+#   DROP. This is a DEVIATION from FareMark; it is an ablation to explain the
+#   diagnostic, NOT a headline config. Single seed each (fast) -- it only needs to
+#   show the direction of the effect on trig_acc and BER.
+#     BATCH=X ./runbook.sh manifest && BATCH=X ./runbook.sh submit
+#   ('X' shares no letter with A C D E F H I J K V NOW EA, so BATCH=X fires ONLY this.)
+# ---------------------------------------------------------------------------
+if has X; then
+  SEEDS_X="${SEEDS_X:-0}"                    # single seed: direction-of-effect only
+  for s in $SEEDS_X; do
+    env ATTACK=none NUM_FREE_RIDERS=0 DS=c100 NUM_CLIENTS=10 ROUNDS=50 \
+        WM_EXCLUDE_TRIGGER=1 \
+        FAMILY="X1_honest_excltrig_c100" \
+        NOTE="X1 honest baseline, trigger column EXCLUDED from projection (ablation: does honest trig_acc rise / BER drop vs A1?)" \
+        ./submit_experiment.sh 14 "$s"
+  done
+  for s in $SEEDS_X; do
+    env ATTACK=adaptive_tap FREE_RIDER_IDS=3,6 AUTOP_HONEST_UNTIL=12 AUTOP_CALIB_ROUNDS=4 \
+        AUTOP_ORACLE_ETA=0.264 WM_ETA_FIXED=0.064 TAP_DATA_CPC=5 ROUNDS=50 FAST_DATA=1 \
+        WM_EXCLUDE_TRIGGER=1 \
+        TAP_SCOPE=block2 TAP_ETA_SOURCE=self TAP_ETA_K=3.0 \
+        TAP_MARGIN_MODE=derived TAP_MARGIN_K=1.0 \
+        TAP_WARMUP_MODE=dynamic TAP_CONV_EPS=0.03 TAP_CONV_PATIENCE=2 \
+        TAP_HONEST_MIN=6 TAP_WARMUP_CAP=15 TAP_MAX_COAST=6 TAP_GRAFT_DECAY=0.25 \
+        FAMILY="X2_submarine_excltrig_c36" \
+        NOTE="X2 submarine (=K4) but trigger column EXCLUDED from projection (ablation vs K4)" \
+        ./submit_experiment.sh 14 "$s"
+  done
 fi
 
 # ---------------------------------------------------------------------------

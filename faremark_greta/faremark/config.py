@@ -83,6 +83,21 @@ class ExpConfig:
                                             #   "roundrobin" = cid % num_classes (blind; the paper default)
                                             #   "distribution" = server assigns each client a class it holds a lot of
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
+    wm_exclude_trigger: bool = False        # ABLATION knob (env WM_EXCLUDE_TRIGGER=1).
+                                            #   False (DEFAULT, paper-faithful): the watermark
+                                            #     projection uses the FULL softmax incl. the
+                                            #     trigger class. FareMark's anti-dominance rule
+                                            #     (Eq. 6/10, "p_max<0.5") then flattens the
+                                            #     trigger-image softmax, which demotes the trigger
+                                            #     class out of argmax -> honest trig_acc ~= 0.
+                                            #   True: drop each client's trigger-class column from
+                                            #     the projection. The mark is carried by the tail
+                                            #     classes only, so the trigger class need not be
+                                            #     suppressed -> honest trig_acc RISES, and the BER
+                                            #     floor usually drops. Grouping auto-shrinks to fit
+                                            #     n-1 columns (m*l <= num_classes-1). This is a
+                                            #     DEVIATION from the paper; use it only for the
+                                            #     trig_acc ablation, never for headline numbers.
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
     wm_beta: float = 0.6                    # memory coefficient (Eq. 14)

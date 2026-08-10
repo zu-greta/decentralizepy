@@ -981,7 +981,7 @@ def timeline(a):
     if eta_loose is None:
         eta_loose = ETA_LOOSE_DEFAULT
     ax.axhline(eta_loose, color="#3B6FB5", ls=(0, (5, 2)), lw=2.0,
-               label=f"η loose (per-client μ+3σ) = {eta_loose:.3f}")
+               label=f"η loose (ref) = {eta_loose:.3f}")
 
     # --- OVERLAY: honest floor for the free-rider's OWN trigger classes ---------
     # Read the FR line against an honest client at the SAME class, not the honest
@@ -1031,7 +1031,7 @@ def timeline(a):
     _cfg = r_ref.get("config") or {}
     _cm = _cfg.get("tap_coast_mode") if (_cfg.get("attack") == "adaptive_tap") else None
     note = (f"Black dashed = η tight (frozen, used) = {eta_tight:.3f}{_deg}. "
-            f"Blue dashed = η loose (pooled μ+3σ) = {eta_loose:.3f}."
+            f"Blue dashed = η loose (reference) = {eta_loose:.3f}."
             + (f"  Coast mode = {_cm}." if _cm else "")
             + "\nA free-rider whose BER stays below a line is not flagged by it. "
             "Warmup (yellow) = forced-honest; green = calibration window; grey dashed = free-riding starts.")

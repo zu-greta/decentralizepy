@@ -222,9 +222,10 @@ def project_logits(probs: torch.Tensor, key: torch.Tensor,
     if exclude is not None:
         keep = [c for c in range(probs.shape[1]) if c != exclude]
         probs = probs[:, keep]
-    m = key.shape[0]                     # number of bits
-    C_rem = probs.shape[1]               # classes left after exclusion
-    l = C_rem // m                       # new group size
+    m, l = key.shape
+    # m = key.shape[0]                     # number of bits
+    # C_rem = probs.shape[1]               # classes left after exclusion
+    # l = C_rem // m                       # new group size
     used = m * l
     p = probs[:, :used].reshape(probs.shape[0], m, l)   # [B, m, l]
     fp = smooth(p, kind, alpha)                          # [B, m, l]

@@ -47,6 +47,7 @@ DET="python ../scripts/detection.py"
 ATH="python ../scripts/plot_all_thresholds.py"
 PC="python ../scripts/paper_check.py"
 PAIR="python ../scripts/plot_sameclass_pair.py"
+PHR="python ../scripts/plot_honest_per_round.py"   # per-ROUND honest BER + trig-acc (zero-acc check)
 run(){ echo "== $*"; eval "$*" || echo "   (skipped -- family may not exist yet)"; }
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,21 @@ phase_plot(){
   #     client: its trigger-class test-acc vs the mean non-trigger-class acc vs global.
   run "$PL class_acc --in '$ALL' --family $HONCLASS --out $OUT/A0_class_acc"
 
+  # --- per-ROUND honest BER + trigger-class accuracy (the "is the zero accuracy
+  #     still there / is it suppression or starvation" time-series; complements the
+  #     class_acc bar chart). Drawn for the IID honest (A1), the non-IID starved
+  #     honest (E1), and the non-IID distribution honest (EA1). Prints the
+  #     suppression-vs-starvation split per family.
+  run "$PHR --in '$ALL' --family $HON --eta_tight 0.064 --eta_loose 0.264 --out $OUT/A1_honest_per_round"
+  run "$PHR --in '$ALL' --family E1_honest_niid_c100  --eta_tight 0.161 --eta_loose 0.264 --out $OUT/E1_honest_per_round"
+  run "$PHR --in '$ALL' --family EA1_honest_niid_distrib_c100 --eta_tight 0.161 --eta_loose 0.264 --out $OUT/EA1_honest_per_round"
+
+  # --- reduced-attack timelines with FROZEN reference etas (fixes the stale
+  #     'eta_loose=0.075' that older timelines drew; every figure now uses the same
+  #     0.064 tight / 0.264 loose reference lines). A2 = easy classes, A3 = hard.
+  run "$PL timeline --in '$ALL' --family A2_reduced_c100_c17 --honest_in '$ALL' --honest_family $HON --eta_tight 0.064 --eta_loose 0.264 --out $OUT/A2_easy_timeline"
+  run "$PL timeline --in '$ALL' --family A3_reduced_c100_c36 --honest_in '$ALL' --honest_family $HON --eta_tight 0.064 --eta_loose 0.264 --out $OUT/A3_hard_timeline"
+
   # ===================== GROUP D -- basic reduced free-riders ================
   # plot_groups.sh D draws the D1 +N spectrum (price-of-invisibility) + sep.json.
   run "RES='$RES' OUT='$OUT' ./plot_groups.sh D"
@@ -206,21 +222,38 @@ phase_plot(){
   # panels) -- they do not tap together, so never collapse them. Each panel carries
   # the honest GLOBAL mean AND the same-class honest twin (from $HON) for the
   # "does it blend in on its own class" read. 
-  for fam in K4_alldyn_block2_c36; do
+  for fam in K4_alldyn_block2_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
+    run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
+         --out $OUT/tap_perfr_${fam}"
+  done
+  for fam in K5_alldyn_full_c36 ${K5B:+K5b_alldyn_full_fulldata_c36}; do
     run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_perfr_${fam}"
   done
   # accuracy: the FR barely dents global test-acc while its own trigger class pays.
-  for fam in K4_alldyn_block2_c36; do
+  for fam in K4_alldyn_block2_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
     run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/accuracy_${fam}"
   done
+  for fam in K5_alldyn_full_c36 ${K5B:+K5b_alldyn_full_fulldata_c36}; do
+    run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
+         --out $OUT/accuracy_${fam}"
+  done
+  # ISOLATED same-class twin: submarine FR vs the honest client on the SAME class
+  # (from A1). This is the "does it match the honest twin" money-read for the
+  # submarine. cid3 -> class 3 (easy: matches/beats twin, sawtooth);
+  # cid6 -> class 6 (hard: cleaner than reduced but stays ABOVE the twin -- the
+  # data-limited hard-class finding).
+  run "$PAIR --honest_in '$RES/${HON}_rep*/result.json' --fr_in '$RES/K4_alldyn_block2_c36_rep*/result.json' --class 3 --eta_tight 0.064 --eta_loose 0.264 --out $OUT/iso_K4_c3"
+  run "$PAIR --honest_in '$RES/${HON}_rep*/result.json' --fr_in '$RES/K4_alldyn_block2_c36_rep*/result.json' --class 6 --eta_tight 0.064 --eta_loose 0.264 --out $OUT/iso_K4_c6"
+  run "$PAIR --honest_in '$RES/${HON}_rep*/result.json' --fr_in '$RES/K5_alldyn_full_c36_rep*/result.json' --class 3 --eta_tight 0.064 --eta_loose 0.264 --out $OUT/iso_K5_c3"
+  run "$PAIR --honest_in '$RES/${HON}_rep*/result.json' --fr_in '$RES/K5_alldyn_full_c36_rep*/result.json' --class 6 --eta_tight 0.064 --eta_loose 0.264 --out $OUT/iso_K5_c6"
 
   # ===================== GPU CYCLES -- effort comparison ====================
   # cumulative gpu_ms / samples per round, each FR vs the honest mean, for the
   # kept attack families (D, E, EA, K).
   for fam in D1_reduced_c100_c36_n5 E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 \
-             K4_alldyn_block2_c36; do
+             K4_alldyn_block2_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
     run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
   done
   # sharing-inflation check: single-tenant (WORKERS=1) vs shared saved-% ratio.

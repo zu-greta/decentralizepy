@@ -297,8 +297,14 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     # random (unbalanced) keys, full softmax (no trigger-class exclusion), m = n//10
     PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
     m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
-    l = wm.grouping(num_classes, m)
-    exclude_col = "trigger" #None                             # full softmax (no trigger-class exclusion)
+    # exclude_col controls whether the trigger-class column is dropped from the
+    # watermark projection. DEFAULT None = full softmax = paper-faithful 
+    if bool(getattr(cfg, "wm_exclude_trigger", False)):
+        exclude_col = "trigger"                    # per-client -> its own trigger_class
+        l = wm.grouping(num_classes - 1, m)        # ablation: fit projection into n-1 columns
+    else:
+        exclude_col = None                         # full softmax (no trigger-class exclusion)
+        l = wm.grouping(num_classes, m)
 
     attack = getattr(cfg, "attack", "none")
     fr_idx = resolve_free_riders(cfg, len(client_loaders), seed)   # honours cfg.free_rider_ids
@@ -356,16 +362,10 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             trigger_class = cid % num_classes
         # key balance config: balanced=True removes structurally-unembeddable same-sign rows 
         bal = bool(getattr(cfg, "wm_balanced_keys", False))
-        # TEST - Compute group size based on whether we exclude the trigger class
-        if exclude_col is not None and exclude_col == "trigger":
-            n_used = num_classes - 1
-        else:
-            n_used = num_classes
-        l = max(1, n_used // m)   # ensure at least 1 -> TEST
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
-        reg_exclude = None                     # full softmax
+        reg_exclude = exclude_col              # None = full softmax (paper); "trigger" = ablation
         registry.register(cid, trigger_class, key, bits,
                           kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude) # register the client's watermark parameters in the registry
         # record how many trigger-class images this client actually holds (fairness signal)
