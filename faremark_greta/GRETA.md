@@ -186,7 +186,7 @@ repeated prisoner dilemna
     - calculation: mean over the clients BERs in a round and then mean over those for multiple rounds + 3 standard deviation over the last 20 rounds. 10 seeds and averaged eta over these 10: 0.06397 for CIFAR-100.
     - concern: seeds vary quite a bit: 0.01704 all the way to 0.11526
     - concern: the threshold is quite low -> FPR not sure how the paper gets such a low FPR. avg? did not look at individual clients?
-    - ![CIFAR100-10clients-10seeds](results/threshold_calibrate/figs/eta_stability_ber_honest_iid.png) 
+    - ![CIFAR100-10clients-10seeds](results/threshold_calibrate/figs_1/eta_stability_ber_honest_iid.png) 
     - TODO: add the threshold for CIFAR-10 ? less bits to embed ?
 - class difficulty
     - watermark is embedded in the shape of the tail of softmax output - the more confident (not class accuracy but rather low entropy and peaky softmax), the less shape and harder for watermark to embed -> the whole point of smoothing was to have less flat shapes but it doesnt solve the entire issue
@@ -219,10 +219,10 @@ repeated prisoner dilemna
 - better watermark embedding with less data ?
     - question: theoretically possible that with less data, concentrated around trigger class + some common samples, the watermark can be embedded better than with more data? the accuracy is lower after training but the BER is lower and the watermark is embedded better?
         - just trigger class overfits - table V in the paper
-        - but with +5 random per common its enough to balance the overfitting and BER is actually better than full shard -> ![CIFAR100-10clients-3seeds-2fr-easy](results/sub_17/figs/timeline_reduced_iid_c17.png) and ![CIFAR100-10clients-3seeds-2fr-hard](results/sub_17/figs/timeline_reduced_iid_c36.png) compared to the all honest BER -> ![CIFAR100-10clients-10seeds-all-honest](results/sub_17/figs/honest_class_lines.png) or use the 3 seeds version for better comparison with my attack runs: ![CIFAR100-10clients-3seeds-all-honest](results/sub_17/figs/honest_class_lines_3seeds.png)
+        - but with +5 random per common its enough to balance the overfitting and BER is actually better than full shard -> ![CIFAR100-10clients-3seeds-2fr-easy](results/sub_17/figs_1/timeline_reduced_iid_c17.png) and ![CIFAR100-10clients-3seeds-2fr-hard](results/sub_17/figs_1/timeline_reduced_iid_c36.png) compared to the all honest BER -> ![CIFAR100-10clients-10seeds-all-honest](results/sub_17/figs_1/honest_class_lines.png) or use the 3 seeds version for better comparison with my attack runs: ![CIFAR100-10clients-3seeds-all-honest](results/sub_17/figs_1/honest_class_lines_3seeds.png)
             - the flatness of the free-rider BER: training ebery round but with less data - more concentrated. full hsard watermark is ~1% of gradient signal so mark is maintained weaker so wiggle 0-0.1. fr re-embeds with ~9% trigger gradient every round much stronger so drives BER to the floor of the class and holds it
     - more free-riders falls under threshold with less good global accuracy 
-        - 9 free riders, 1 honest client: global accuracy drops (58% compared to ~72%) but BER all pass under the threshold. the per client accuracy is the trigger accuracy (not test accuracy here) and that is better when less data is used (less data is better for watermarking, not global accuracy) -> ![CIFAR100-10clients-3seeds-9freeriders-1honest](results/sub_17/figs/timeline_reduced_iid_majority.png)
+        - 9 free riders, 1 honest client: global accuracy drops (58% compared to ~72%) but BER all pass under the threshold. the per client accuracy is the trigger accuracy (not test accuracy here) and that is better when less data is used (less data is better for watermarking, not global accuracy) -> ![CIFAR100-10clients-3seeds-9freeriders-1honest](results/sub_17/figs_1/timeline_reduced_iid_majority.png)
 - TODO: run tests with tapping and oracle only to see if possible to free ride by tapping and coasting - first while knowing the threshold then try ot figure out how to predict the threshold
 
 - Notes:
@@ -303,16 +303,16 @@ repeated prisoner dilemna
 - RESULTS 
     - THRESHOLDS:
         - plan of thresholds (+ take suggestions) (see [table](#july28-thresholds-table) below)
-        - currently using the tight calibrated threshold from last week at 0.06397 for CIFAR-100: [eta_stability_ber_A1_honest_c100.png](results/groupA/figs/A1_eta_stability/eta_stability_ber_A1_honest_c100.png)
+        - currently using the tight calibrated threshold from last week at 0.06397 for CIFAR-100: [eta_stability_ber_A1_honest_c100.png](results/groupA/figs_1/A1_eta_stability/eta_stability_ber_A1_honest_c100.png)
         - **NOTE**: thresholds need to be calculated and plotted once the code and calculations have been checked. for now, implementation is there but not verified. the thresholds are calculated based on the honest runs (already done) - this will be done ASAP and plotted. for now, using the tight calibrated threshold from last week at 0.06397 for CIFAR-100. 
         - *TODO*: calculate and plot thresholds + think of more possible cases
     - CLASS DIFFICULTY:  
-        - [A1_class_floors.png](results/groupA/figs/A1_class_floors.png) - all honest clients, 6 seeds, 10 clients, CIFAR-100, ResNet-18, IID. shows class difficulty as discussed last week
+        - [A1_class_floors.png](results/groupA/figs_1/A1_class_floors.png) - all honest clients, 6 seeds, 10 clients, CIFAR-100, ResNet-18, IID. shows class difficulty as discussed last week
         - *TODO*: class difficulty for all classes not just the first 10 from CIFAR-100
     - ATTACK RUNS:
-        - [A2_easy_timeline.png](results/groupA/figs/A2_easy_timeline.png) easy classes reduced attacker (same as last week results) 
-        - [A3_hard_timeline.png](results/groupA/figs/A3_hard_timeline.png) hard classes reduced attacker (same as last week results)
-        - [A4_sameclass_timeline.png](results/groupA/figs/A4_sameclass_timeline.png) assigned the single free-rider to the same trigger class as an honest client (class 6). better view with just the honest client at class 6 compared with the free-rider at class 6 [A4_pair.png](results/groupA/figs/A4_pair.png)
+        - [A2_easy_timeline.png](results/groupA/figs_1/A2_easy_timeline.png) easy classes reduced attacker (same as last week results) 
+        - [A3_hard_timeline.png](results/groupA/figs_1/A3_hard_timeline.png) hard classes reduced attacker (same as last week results)
+        - [A4_sameclass_timeline.png](results/groupA/figs_1/A4_sameclass_timeline.png) assigned the single free-rider to the same trigger class as an honest client (class 6). better view with just the honest client at class 6 compared with the free-rider at class 6 [A4_pair.png](results/groupA/figs_1/A4_pair.png)
         - *TODO*: same experiment as above with the same trigger class but with the same key too just to check if that reinforces the hypothesis 
         - **NOTE**: planned [experiments](#july28-planned-experiments) below
 
@@ -445,24 +445,24 @@ TODO:
 #### August 4
 RESULTS
 - REDUCED ATTACK (group D)
-    - [D1_spectrum.png](results/groups/figs/D1_spectrum.png)
+    - [D1_spectrum.png](results/groups/figs_1/D1_spectrum.png)
     - Trigger-sample-only overfits and does not embed a generalising watermark (paper Table V); every cpc ≥ 1 embeds fine and evades.
     - **Setup:** 10 clients, 3 seeds, CIFAR-100, ResNet-18, IID, reduced free-riders on classes 3 & 6,
     sweeping the common-sample budget: trigger-only (cpc 0), then +1, +2, +5, +10, +25, +50 per common
     class. Batch stays 16 -> fewer SGD steps per epoch on the shrunken set (5 local epochs)
     - **Isolated same-class plots** (honest vs free-rider read on the same trigger class, from separate
     runs so there's no watermark conflict):
-        - [iso_c1.png](results/groups/figs/iso_c1.png), [iso_c7.png](results/groups/figs/iso_c7.png) — easy
+        - [iso_c1.png](results/groups/figs_1/iso_c1.png), [iso_c7.png](results/groups/figs_1/iso_c7.png) — easy
         classes 1 & 7: the free-rider's mark drops to 0.00 and stays there (cleaner than honest).
-        - [iso_c3.png](results/groups/figs/iso_c3.png) — medium class 3: FR ≈ 0.037 vs honest ≈ 0.057 — tangled
-        - [iso_c6.png](results/groups/figs/iso_c6.png) — hard class 6: FR (≈ 0.22) sits *above* honest
-        (≈ 0.114). FR looks noisier but seems to be key lottery (a different key draw flips it): [iso_c6_A4_cleaner.png](results/groups/figs/iso_c6_A4_cleaner.png) — same class 6, different key draw (A4), FR (≈ 0.067) now below honest (≈ 0.114). always around the same area though
-        - [iso_acc_c6.png](results/figs/iso_acc_c6.png), [iso_acc_c7.png](results/figs/iso_acc_c7.png) — BER =/ trigger-class accuracy. The FR has the lower BER and the higher trigger-class accuracy while honest sits at ~0 accuracy; both hit ~72 % global test acc. Not a contradiction — BER reads the tail shape, not argmax 
+        - [iso_c3.png](results/groups/figs_1/iso_c3.png) — medium class 3: FR ≈ 0.037 vs honest ≈ 0.057 — tangled
+        - [iso_c6.png](results/groups/figs_1/iso_c6.png) — hard class 6: FR (≈ 0.22) sits *above* honest
+        (≈ 0.114). FR looks noisier but seems to be key lottery (a different key draw flips it): [iso_c6_A4_cleaner.png](results/groups/figs_1/iso_c6_A4_cleaner.png) — same class 6, different key draw (A4), FR (≈ 0.067) now below honest (≈ 0.114). always around the same area though
+        - [iso_acc_c6.png](results/figs_1/iso_acc_c6.png), [iso_acc_c7.png](results/figs_1/iso_acc_c7.png) — BER =/ trigger-class accuracy. The FR has the lower BER and the higher trigger-class accuracy while honest sits at ~0 accuracy; both hit ~72 % global test acc. Not a contradiction — BER reads the tail shape, not argmax 
     - **FR compute cost savings (reduced, cpc=5):** the reduced attack trains every free-ride round on the reduced set, so its effort ~ its data fraction ~ 31 % of an honest client (~ 173 SGD steps/round vs honest 1565), steady (no warmup, no coast). 
 - NON-IID (group E) - 1 seed
-    - [E1_class_floors.png](results/groups/figs/E1_class_floors.png) all honest clients, 1 seed, 10 clients, CIFAR-100, ResNet-18, non-IID with Dirichlet α=0.5
-    - [E2_niid_timeline.png](results/groups/figs/E2_niid_timeline.png) for the same settings but with 2 free-riders on classes 3 and 6. 
-    - the sweeps with different alpha values: [E3_a01_timeline.png](results/groups/figs/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs/E3_a10_timeline.png). not that good for one seed. the one with 3 seeds: [E3_a01_timeline_3seeds.png](results/groups/figs_2/E3_a01_timeline.png), [E3_a10_timeline_3seeds.png](results/groups/figs_2/E3_a10_timeline.png). 
+    - [E1_class_floors.png](results/groups/figs_1/E1_class_floors.png) all honest clients, 1 seed, 10 clients, CIFAR-100, ResNet-18, non-IID with Dirichlet α=0.5
+    - [E2_niid_timeline.png](results/groups/figs_1/E2_niid_timeline.png) for the same settings but with 2 free-riders on classes 3 and 6. 
+    - the sweeps with different alpha values: [E3_a01_timeline.png](results/groups/figs_1/E3_a01_timeline.png), [E3_a10_timeline.png](results/groups/figs_1/E3_a10_timeline.png). not that good for one seed. the one with 3 seeds: [E3_a01_timeline_3seeds.png](results/groups/figs_2/E3_a01_timeline.png), [E3_a10_timeline_3seeds.png](results/groups/figs_2/E3_a10_timeline.png). 
     - with 3 seeds: [E1_class_floors_3seeds.png](results/groups/figs_2/E1_class_floors.png) all honest clients, 3 seeds, 10 clients, CIFAR-100, ResNet-18, non-IID with Dirichlet α=0.5. [E2_niid_timeline_3seeds.png](results/groups/figs_2/E2_niid_timeline.png) for the same settings but with 2 free-riders on classes 3 and 6.
 - NON-IID (group E) - 3 seeds
     - **Honest floors** [E1_class_floors.png](results/groups/figs_2/E1_class_floors.png): 10 honest clients,
@@ -492,7 +492,7 @@ RESULTS
     `target = η − margin`. Knobs: `coast_mode`, `scope`, `data_cpc`, `margin`, `max_coast`, `probe_holdout`,
     `when`, `eta_source`
     - **which config works best: `J2_saw_graft_head_c36`** (graft coast, `scope=head`, cpc=5,
-    margin 0.03, max_coast 12, holdout 16). (3 seeds): [tap_perfr_J2.png](results/groups_2/figs/tap_perfr_J2.png) — one panel per free-rider, per class:
+    margin 0.03, max_coast 12, holdout 16). (3 seeds): [tap_perfr_J2.png](results/groups_2/figs_1/tap_perfr_J2.png) — one panel per free-rider, per class:
         - cid3 (class 3): tap-fraction 10 %, server tail-BER 0.13 (η_loose 0.264). Genuine cheap
         submarine — coasts ~90 %, attack-phase compute ≈ 1.5 % of an honest client.
         - cid6 (class 6): tap-fraction 43 %, server tail-BER 0.22. But it saves little compute:
@@ -500,7 +500,7 @@ RESULTS
         to. On the hard class the submarine ≡ the reduced attack in cost (fixable with a bigger probe).
         - Note: FR given the threshold right now
     - **The clean sawtooth demo: `J4_scope_graft_block2_c36`** (same as J2 but `scope=block2` = 20 params/tap).
-    [tap_J4_scope_graft_block2_c36.png](results/groups_1/figs/tap_J4_scope_graft_block2_c36.png): each tap
+    [tap_J4_scope_graft_block2_c36.png](results/groups_1/figs_1/tap_J4_scope_graft_block2_c36.png): each tap
     re-embeds to BER **0.0**, so it's the crisp 0.0<->0.3 sawtooth — but it costs ~2× (tap-fraction 34 % vs
     10 %, 36 % GPU vs 30 %). Prettier and slightly lower BER; **J2 is stealthier.**
     - QUESTIONS:
@@ -528,11 +528,25 @@ TODO:
 
 - finish up th eproject wrapup document for next week meeting. paper storyline presentation and result summary
 
+
+- prompt - cleanup plotting
+- go thru codebase and cleanup code + plotting + documentation and results
+- figure out final free-rider configs and final experiments to run + run
+- only keep relevant results and plots + cleanup codebase
+- collect results - plot -> check everyhting is still on track
+- final results and analysis document for meeting
+- prep for paper - storyline and results summary
+
+- cleanup plots and add every relevant one to the storyline. merge the project wrapup with storyline and result index
+- summary of what to do next
+- other ideas to explore: collution, reputation, more clients than classes etc. also related papers to read
+
 August 11
 - TODO general context - present every result so far, all the setup and findings -> to be layed out for a paper
 - TODO summary of results for the attack, polished and ready for paper
+- TODO cleanup codebase and results - keep only relevant results and plots for the paper
 
-
+- TODO at the end: clenaup all the codebase and results and documentation for the next person to pick up
 
 ---
 

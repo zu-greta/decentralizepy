@@ -157,6 +157,7 @@ phase_plot(){
   run "$PL class_difficulty --in '$ALL' --family $HON --out $OUT/A1_class_difficulty"            # per-class test-acc vs per-class BER correlation
   run "$PL eta_stability  --in '$ALL' --family $HON --out $OUT/A1_eta_stability"                 # seed variance of the calibrated eta
   run "$ATH --in '$ALL' --family $HON --tail 20 --out $OUT/A1_thresholds"                        # every candidate eta + the .md table (none separates)
+  run "$ATH --in '$ALL' --family E1_honest_niid_c100 --tail 20 --out $OUT/E1_thresholds"          # non-IID: shows the tight rule needs ~24% honest FPR to be non-degenerate
 
   # --- per-client trigger-class accuracy check (all-honest run). One panel per
   #     client: its trigger-class test-acc vs the mean non-trigger-class acc vs global.
@@ -168,8 +169,8 @@ phase_plot(){
   #     honest (E1), and the non-IID distribution honest (EA1). Prints the
   #     suppression-vs-starvation split per family.
   run "$PHR --in '$ALL' --family $HON --eta_tight 0.064 --eta_loose 0.264 --out $OUT/A1_honest_per_round"
-  run "$PHR --in '$ALL' --family E1_honest_niid_c100  --eta_tight 0.161 --eta_loose 0.264 --out $OUT/E1_honest_per_round"
-  run "$PHR --in '$ALL' --family EA1_honest_niid_distrib_c100 --eta_tight 0.161 --eta_loose 0.264 --out $OUT/EA1_honest_per_round"
+  run "$PHR --in '$ALL' --family E1_honest_niid_c100  --eta_tight 0.161 --eta_loose 0.576 --out $OUT/E1_honest_per_round"
+  run "$PHR --in '$ALL' --family EA1_honest_niid_distrib_c100 --eta_tight 0.161 --eta_loose 0.576 --out $OUT/EA1_honest_per_round"
 
   # --- reduced-attack timelines with FROZEN reference etas (fixes the stale
   #     'eta_loose=0.075' that older timelines drew; every figure now uses the same
@@ -226,16 +227,8 @@ phase_plot(){
     run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/tap_perfr_${fam}"
   done
-  for fam in K5_alldyn_full_c36 ${K5B:+K5b_alldyn_full_fulldata_c36}; do
-    run "$PL tap_perfr --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
-         --out $OUT/tap_perfr_${fam}"
-  done
   # accuracy: the FR barely dents global test-acc while its own trigger class pays.
-  for fam in K4_alldyn_block2_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
-    run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
-         --out $OUT/accuracy_${fam}"
-  done
-  for fam in K5_alldyn_full_c36 ${K5B:+K5b_alldyn_full_fulldata_c36}; do
+  for fam in K4_alldyn_block2_c36 K5_alldyn_full_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
     run "$PL accuracy --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON \
          --out $OUT/accuracy_${fam}"
   done
@@ -253,7 +246,7 @@ phase_plot(){
   # cumulative gpu_ms / samples per round, each FR vs the honest mean, for the
   # kept attack families (D, E, EA, K).
   for fam in D1_reduced_c100_c36_n5 E2_reduced_niid_c36 EA2_reduced_niid_distrib_c36 \
-             K4_alldyn_block2_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
+             K4_alldyn_block2_c36 K5_alldyn_full_c36 K5_alldyn_full_c36 ${K4B:+K4b_alldyn_block2_fulldata_c36}; do
     run "$PL gpu_savings --in '$ALL' --family $fam --out $OUT/gpu_savings_${fam}"
   done
   # sharing-inflation check: single-tenant (WORKERS=1) vs shared saved-% ratio.
