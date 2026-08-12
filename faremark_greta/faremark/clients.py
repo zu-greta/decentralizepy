@@ -4,19 +4,13 @@ SECTION 1  HONEST      Client, _to_cpu_state
 SECTION 2  WATERMARK   WatermarkClient (Eq.11-12 + Eq.14 memory)
                         build_watermarked_clients      
 SECTION 3  ATTACKERS   _SimpleFRMixin, make_reduced_attack,
-                        make_adaptive_tap_attack (the adaptive "submarine")
+                        make_adaptive_tap_attack (submarine)
 
-inheritance chain:
-    Client                          honest FedAvg: load global -> local SGD -> return
-      +-- WatermarkClient           ... + L_wm on trigger-class samples + Eq.14 memory update
-        +-- ReducedFreeRider        ... but trains on a reduced shard after round W
-        +-- AdaptiveTapFreeRider    ... the submarine: estimates eta, warms up
-                                        (fixed or dynamic), then coasts/taps to hold
-                                        its mark. graft coast -> the sawtooth.
 
-imports:
-  * watermark.py        Eq.1-16 Imported for embedding and wm_verify.py for extraction
-  * compute_meter.py    effort used by clients 
+Client                          honest FedAvg: load global -> local SGD -> return
+    +-- WatermarkClient         ... + L_wm on trigger-class samples + Eq.14 memory update
+    +-- ReducedFreeRider        ... but trains on a reduced shard after round W
+    +-- AdaptiveTapFreeRider    ... the submarine: estimates eta, warmup rounds, coast/tap
 """
 
 from __future__ import annotations
@@ -35,8 +29,7 @@ from .compute_meter import ComputeMeter
 # ============================================================================
 # SECTION 1 -- HONEST CLIENT  
 # ============================================================================
-# Honest behaviour: load the current global weights, run local SGD on the local shard, return the weights. 
-# Plain FedAvg. `produce_update` is the overriden function
+# Honest behaviour: load the current global weights, run local SGD on the local shard, return the weights
 
 # helper to detach and move a state dict to CPU for aggregation
 def _to_cpu_state(model) -> dict: 
@@ -58,10 +51,10 @@ class Client:
         self.criterion = nn.CrossEntropyLoss()
         self.num_samples = len(train_loader.dataset)
 
-    # ---- the seam ----------------------------------------------------------
+    # ---- method to override ------------------------------------------------
     def produce_update(self, global_state: dict, prev_global_state: dict | None,
                        round_idx: int):
-        """Return (cpu_state_dict, num_samples) for this round.
+        """Return (cpu_state_dict, num_samples) for the round
 
         Honest behaviour: load the global model, run local SGD, return weights.
         """
@@ -89,7 +82,7 @@ class Client:
 # ============================================================================
 
 class WatermarkClient(Client):
-    """Honest client that also embeds its private watermark."""
+    """Honest Client + Watermark embedding"""
 
     def __init__(self, *args, trigger_class: int, key: torch.Tensor,
                  target_bits: torch.Tensor, wm_lambda: float = 5.0,
@@ -109,7 +102,7 @@ class WatermarkClient(Client):
         self.memory: dict | None = None
         self.meter = ComputeMeter()
 
-    # ---- the seam ----------------------------------------------------------
+    # ---- method to override ------------------------------------------------
     def produce_update(self, global_state: dict, prev_global_state, round_idx):
         self.model.load_state_dict(global_state) # start from the global model
         self.meter.start_round(round_idx) # start timing the round
@@ -121,13 +114,7 @@ class WatermarkClient(Client):
 
     # ---- L = L_cl + lambda * L_wm  (Eq. 11-12) -----------------------------
     def _local_train_wm(self, round_idx=None):
-        """Trains L = L_cl + lambda*L_wm and logs the two loss terms plus the
-        trigger-class training accuracy per round into self.wm_stats
-        -> class's BER floor: 
-            (a) high watermark loss (hard to embed) and/or 
-            (b) low trigger-class accuracy (fuzzy boundary)
-        client-side counterparts to the server-side softmax diagnostics 
-        logged in wm_verify (pmax/entropy/dominance)."""
+        """Trains L = L_cl + lambda*L_wm"""
         self.model.train()
         opt = torch.optim.SGD(self.model.parameters(), lr=self.lr,
                               momentum=self.momentum, weight_decay=self.weight_decay)
@@ -160,11 +147,7 @@ class WatermarkClient(Client):
                         trig_correct += int((pred == self.trigger_class).sum())
                         trig_total += int(tmask.sum())
                 loss.backward()
-                # Guard the embedding term (the only non-standard loss). Two layers:
-                # (1) skip a batch whose loss already went non-finite, so a single
-                #     exploded watermark gradient cannot poison the weights and turn
-                #     every subsequent softmax into nan (the R2 failure);
-                # (2) clip the global grad norm as a smooth cap on spikes.
+                # skip the batch if the loss is NaN or Inf 
                 if not torch.isfinite(loss):
                     opt.zero_grad(set_to_none=True)
                     continue
@@ -191,10 +174,9 @@ class WatermarkClient(Client):
 
     # ---- memory-enhanced update (Eq. 14) -----------------------------------
     def _memory_update(self, global_state: dict, w_sgd: dict) -> dict:
-        """W_new = beta*(memory + delta) + (1-beta)*global, delta = W_sgd - global.
-        Keeps the client's watermarked trajectory alive through aggregation"""
+        """W_new = beta*(memory + delta) + (1-beta)*global, delta = W_sgd - global"""
         beta = self.wm_beta
-        # initialize memory on the first round (clone to avoid in-place updates)
+        # initialize memory on the first round 
         if self.memory is None:
             self.memory = {k: v.clone() for k, v in global_state.items()}
         w_new = {}
@@ -211,11 +193,7 @@ class WatermarkClient(Client):
 
 
 def _client_class_counts(client_loaders, num_classes):
-    """Per-client class histogram [N_clients][num_classes], read cheaply from the
-    Subset's underlying targets (no data iteration). Falls back to a single loader
-    pass if targets aren't exposed. The server legitimately knows these counts in FL
-    accounting terms (shard sizes / class mix), so using them to assign trigger
-    classes is within the server's power."""
+    """Per-client class histogram [N_clients][num_classes] - for fair assignment in non-iid tests"""
     counts = [[0] * num_classes for _ in range(len(client_loaders))]
     for cid, loader in enumerate(client_loaders):
         ds = getattr(loader, "dataset", None)
@@ -242,19 +220,8 @@ def _client_class_counts(client_loaders, num_classes):
 
 
 def _assign_triggers_by_distribution(client_loaders, num_classes, reserve=None):
-    """Server-side, distribution-aware trigger assignment (fairness fix for non-IID).
-
-    Instead of the blind round-robin `cid % n`, give each client a trigger class it
-    actually holds a lot of, so it is NOT data-starved on the very class it must
-    watermark (the Group-E starvation mechanism). Greedy max-weight matching on the
-    per-client class-count matrix: repeatedly take the (client, class) pair with the
-    highest count among still-unassigned clients/classes. Guarantees a UNIQUE class
-    per client (needed for detection) while maximising the trigger images each client
-    holds. `reserve` = {cid: class} forced assignments (e.g. pinned free-riders) that
-    are honoured first. Returns {cid: trigger_class}.
-
-    Only sensible when num_clients <= num_classes (one class per client). For
-    oversubscription fall back to round-robin at the call site.
+    """Server-side, distribution-aware trigger assignment (fairness fix for non-IID)
+    Assigning each client a trigger class it actually holds a lot of - not round robin
     """
     counts = _client_class_counts(client_loaders, num_classes)
     N = len(client_loaders)
@@ -291,14 +258,12 @@ def _assign_triggers_by_distribution(client_loaders, num_classes, reserve=None):
 def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                               num_classes, registry):
     """Factory: Each client gets a unique trigger class + secret key + bits.
-    Honest slots embed; free-rider slots are the submarine attack (watermark-capable) or
-    a baseline. Returns (clients, free_rider_indices)."""
+    Returns (clients, free_rider_indices)."""
 
     # random (unbalanced) keys, full softmax (no trigger-class exclusion), m = n//10
     PF_GROUP = 10                                  # TODO hardcoded: bits-per-class divisor (m = num_classes // 10)
     m = cfg.wm_bits or max(2, num_classes // PF_GROUP)
-    # exclude_col controls whether the trigger-class column is dropped from the
-    # watermark projection. DEFAULT None = full softmax = paper-faithful 
+    # exclude_col controls whether the trigger-class column is dropped from the watermark projection. DEFAULT None = full softmax (faremark paper)
     if bool(getattr(cfg, "wm_exclude_trigger", False)):
         exclude_col = "trigger"                    # per-client -> its own trigger_class
         l = wm.grouping(num_classes - 1, m)        # ablation: fit projection into n-1 columns
@@ -311,8 +276,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
     if attack in (None, "none", ""):
         fr_idx = set()
 
-    # optional trigger-class overrides: "0:6,1:6" -> {0: 6, 1: 6}. Lets a free-rider
-    # share a trigger class with an honest client (same-class non-separability control).
+    # optional trigger-class overrides: "0:6,1:6" -> {0: 6, 1: 6} FR and honest on same trigger class
     tmap = {}
     raw_map = (getattr(cfg, "trigger_class_map", "") or "").strip()
     if raw_map:
@@ -324,12 +288,8 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
             tmap[int(a)] = int(b) % num_classes
 
     # ---- trigger-class assignment policy -----------------------------------
-    #   roundrobin (default): cid % n  -- blind, ignores what the client holds.
-    #   distribution: the server assigns each client a class it holds a lot of
-    #     (greedy max-count matching), so a non-IID client is not starved on its
-    #     own trigger class (the Group-E fairness fix). Explicit trigger_class_map
-    #     entries are honoured as forced assignments. Only used when
-    #     num_clients <= num_classes; otherwise round-robin (sharing is required).
+    #   roundrobin (default): cid % n  (random)
+    #   distribution: server assigns each client a class it holds a lot of (greedy max-count matching) for non-iid tests
     assign_mode = str(getattr(cfg, "wm_trigger_assign", "roundrobin"))
     dist_assign = {}
     if assign_mode == "distribution" and len(client_loaders) <= num_classes:
@@ -343,9 +303,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                           "num_clients <= num_classes; falling back to round-robin.")
         registry.trigger_assign = "roundrobin"
 
-    # Per-client class histogram (server-known) -> record how many trigger-class
-    # images each client actually holds, so BER-vs-trigger-samples plots (the non-IID
-    # fairness check) can read it straight from result.json.
+    # record how many trigger-class images each client actually holds
     _counts = _client_class_counts(client_loaders, num_classes)
     registry.trigger_holdings = {}      # cid -> #images of its trigger class in its shard
     registry.shard_sizes = {}           # cid -> total shard size
@@ -365,7 +323,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
         key = wm.make_key(m, l, seed=seed + 1000 * cid + 1, balanced=bal)
         unembed.append(wm.unembeddable_fraction(key)) # compute the fraction of same-sign rows (structurally unembeddable)
         bits = wm.make_bits(m, seed=seed + 1000 * cid + 1) # random target bits for the watermark
-        reg_exclude = exclude_col              # None = full softmax (paper); "trigger" = ablation
+        reg_exclude = exclude_col              # None = full softmax; "trigger" = extra tests
         registry.register(cid, trigger_class, key, bits,
                           kind=cfg.wm_f, alpha=cfg.wm_alpha, exclude=reg_exclude) # register the client's watermark parameters in the registry
         # record how many trigger-class images this client actually holds (fairness signal)
@@ -384,9 +342,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                 wm_lambda=cfg.wm_lambda, wm_kind=cfg.wm_f, wm_alpha=cfg.wm_alpha,
                 wm_beta=cfg.wm_beta, label_smoothing=cfg.wm_label_smoothing,
                 exclude=exclude_col)
-            # The adaptive submarine is attack="adaptive_tap" (AdaptiveTapFreeRider),
-            # dispatched below. attack="submarine"/"autopilot" are accepted as aliases
-            # for it for back-compat.
+            # FR with reduced shard
             if attack == "reduced":
                 cls = make_reduced_attack(WatermarkClient)
                 clients.append(cls(
@@ -412,7 +368,7 @@ def build_watermarked_clients(cfg, client_loaders, model, device, seed,
                     max_coast=getattr(cfg, "tap_max_coast", 999),
                     data_cpc=getattr(cfg, "tap_data_cpc", 5),
                     scope=getattr(cfg, "tap_scope", "full"),
-                    coast_mode=getattr(cfg, "tap_coast_mode", "resend"),
+                    coast_mode=getattr(cfg, "tap_coast_mode", "graft"),
                     graft_decay=getattr(cfg, "tap_graft_decay", 0.0),
                     probe_holdout=getattr(cfg, "tap_probe_holdout", 16),
                     trigger_train_n=int(getattr(cfg, "autop_trigger_train_n", -1)),
@@ -468,13 +424,10 @@ from torch.utils.data import DataLoader, TensorDataset
 # Fabricate weights from the global history and never train:
 #   PreviousModelsFreeRider (Eq. 17)  W_free = 2*W_t - W_{t-1}
 #   GaussianNoiseFreeRider  (Eq. 18)  W_free = W_t + N(0, sigma^2)
-# They embed no watermark, so their BER sits at ~0.5 and FareMark catches them
 
 # ---- weight-fabrication helpers ----------------
 def _is_norm_buffer(key: str) -> bool:
-    """BatchNorm running stats. Extrapolating these can push running_var negative
-    -> NaN -> model collapse. A real free-rider would keep valid stats, so copy
-    them from the current global instead of extrapolating/perturbing."""
+    """BatchNorm running stats"""
     return ("running_mean" in key) or ("running_var" in key)
 
 
@@ -594,20 +547,18 @@ def build_clients(cfg, client_loaders, model, device, seed):
 # ----------------------------------------------------------------------------
 # 3b. REDUCED DATA ATTACKERS
 # ----------------------------------------------------------------------------
-# Honest clients that train for real but on a reduced shard - embeds a watermark
+# Honest clients that train for real but on a reduced shard 
 
 # --------------------------------------------------------------------------- #
 #  shared helpers (data prep + self-probe)                                     #
 # --------------------------------------------------------------------------- #
 class _SimpleFRMixin:
     """Host is a WatermarkClient. Adds a reduced (trigger + N/common) loader and
-    a self-BER probe on held-out trigger images. Nothing here touches training."""
+    a self-BER probe on held-out trigger images"""
 
     def _prepare(self, common_per_class: int, n_probe_holdout: int = 0,
                  n_common_classes: int = -1, trigger_train_n: int = -1):
-        """Build the reduced loader once. Optionally hold out a few trigger
-        images (never trained on) so the probe measures generalisation, matching
-        how the server tests on a separate trigger bank."""
+        """Build the reduced loader once. Optionally hold out a few trigger to measure generalisation"""
         if getattr(self, "_prepared", False):
             return
         self._prepared = True
@@ -624,8 +575,6 @@ class _SimpleFRMixin:
 
         allt = torch.cat(trig) if trig else torch.empty(0) # trigger images
         # Hold out a slice of trigger images for the self-probe
-        # Cap at half; and if the client has too few triggers skip the holdout
-        # entirely -- _probe_x=None disables the probe, and threshold-tapping then falls back to always-tap 
         n_trig = len(allt)
         MIN_TRAIN_TRIG = 8                     # keep at least this many triggers to embed on
         if n_probe_holdout and n_trig >= 2 * MIN_TRAIN_TRIG:
@@ -656,9 +605,7 @@ class _SimpleFRMixin:
                 xs.append(cx[take]); ys.append(cy[take]) # add to the reduced loader
         X, Y = torch.cat(xs), torch.cat(ys) # reduced dataset
         self._reduced_n = len(X) # number of samples in the reduced loader
-        self._reduced_loader = DataLoader(TensorDataset(X, Y),
-                                          batch_size=min(bs, max(1, len(X))),
-                                          shuffle=True) 
+        self._reduced_loader = DataLoader(TensorDataset(X, Y), batch_size=min(bs, max(1, len(X))), shuffle=True) 
 
     @torch.no_grad()
     def _probe_ber(self, state) -> float | None:
@@ -673,7 +620,7 @@ class _SimpleFRMixin:
                                self.wm_kind, self.wm_alpha, exclude=self.exclude)
         return wm.bit_error_rate(bits, self.target_bits)
 
-    # window bookkeeping shared by both -------------------------------------
+    # window bookkeeping shared -------------------------------------
     def _phase_action(self, round_idx: int) -> str:
         """honest | calib (last K warmup rounds) | freeride."""
         W, K = self.honest_rounds, self.calib_rounds # W = honest warmup rounds, K = calibration rounds
@@ -738,18 +685,14 @@ def make_reduced_attack(base_cls):
 
 # ------------------------------------------------------------------------------ #
 #  Adaptive Tap Attack: the submarine (attack="adaptive_tap")                    #  
-#  honest, then train (full or reduced) when nearing (estimated) threshold       #
+#  honest, then train (reduced) when nearing (estimated) threshold               #
 #    - threshold estimation ...... tap_eta_source ("oracle" | "self"), tap_eta_k
 #    - when to tap ............... tap_when ("threshold" | "always" | "every_k"),
 #                                  tap_period, tap_max_coast, tap_margin
 #    - how much data on a tap .... tap_data_cpc (-1 full | 0 trigger-only | N)
-#    - how much MODEL on a tap ... tap_scope ("full" | "block2" | "block" | "head")
-#    - free-riding between taps .. tap_coast_mode ("resend" global -> mark decays
-#                                  fully in 1 round | "decay" own last-tapped
-#                                  weights -> mark frozen flat, but a replay |
-#                                  "graft" global body + frozen mark head -> mark
-#                                  decays gradually = the sawtooth, submission still
-#                                  tracks the global. Pair graft with scope="head".)
+#    - how much MODEL on a tap ... tap_scope ("full" | "block2" )
+#    - free-riding between taps .. tap_coast_mode ( "graft" global body + 
+#                                  frozen mark head -> mark decays gradually
 # ------------------------------------------------------------------------------ #
 def make_adaptive_tap_attack(base_cls):
 
@@ -765,10 +708,10 @@ def make_adaptive_tap_attack(base_cls):
                      eta_k: float = 3.0, margin: float = 0.02,
                      when: str = "threshold", period: int = 1, max_coast: int = 999,
                      data_cpc: int = 5, scope: str = "full",
-                     coast_mode: str = "resend", probe_holdout: int = 16,
+                     coast_mode: str = "graft", probe_holdout: int = 16,
                      graft_decay: float = 0.0,
                      trigger_train_n: int = -1,
-                     # ---- DYNAMIC knobs (all default to the previous FIXED behaviour) ----
+                     # ---- DYNAMIC knobs (all default to fixed behaviour) ----
                      margin_mode: str = "fixed", margin_k: float = 1.0,
                      warmup_mode: str = "fixed", conv_eps: float = 0.03,
                      conv_patience: int = 2, honest_min: int = 6,
@@ -789,10 +732,10 @@ def make_adaptive_tap_attack(base_cls):
             self.graft_decay = float(graft_decay)
             self.probe_holdout = int(probe_holdout)
             self.trigger_train_n = int(trigger_train_n)
-            # ---- DYNAMIC config (opt-in; "fixed" reproduces the prior behaviour) ----
+            # ---- DYNAMIC config ----
             #  margin_mode="derived": target = eta_hat - margin_k * sigma(calib probe BER),
             #      so the safety gap scales with how noisy the FR's own eta estimate is
-            #  warmup_mode="dynamic": defect when the FR's OWN probe BER has converged
+            #  warmup_mode="dynamic": defect when the FR's own probe BER has converged
             #      (flat within conv_eps for conv_patience+1 rounds), bounded to
             #      [honest_min, warmup_cap]; the K calib rounds then run after convergence
             self.margin_mode = str(margin_mode)
@@ -844,11 +787,10 @@ def make_adaptive_tap_attack(base_cls):
 
         def _phase_action(self, round_idx: int) -> str:
             """honest | calib | freeride.
-            fixed   : the original schedule -- warmup [1, W-1], calib [W-K, W-1],
+            fixed   : scheduled warmup [1, W-1], calib [W-K, W-1],
                       freeride >= W (W=honest_rounds, K=calib_rounds). 
-            dynamic : defect after the probe converges. Watch the probe flatten
-                      (>= honest_min rounds, at most warmup_cap), then run K calib
-                      rounds, then free-ride. 
+            dynamic : defect after the probe converges (>= honest_min rounds, at most warmup_cap), 
+                      then run K calib rounds, then free-ride. 
             """
             if self.warmup_mode != "dynamic":
                 return super()._phase_action(round_idx)
@@ -886,10 +828,8 @@ def make_adaptive_tap_attack(base_cls):
             """target = eta - margin.
 
             fixed   : margin is the hand-tuned constant `self.margin`.
-            derived : margin = margin_k * sigma(own calib-window probe BER), so the
-                      safety gap widens exactly when the FR's own eta estimate is
-                      noisy (STATUS_AND_PLAN 10.4 #2). Falls back to the fixed margin
-                      if the calib window is empty (no probe -> starved trigger class).
+            derived : margin = margin_k * sigma(own calib-window probe BER), safety gap 
+                      widens when the FR's own eta estimate is noisy
             """
             if self.margin_mode == "derived" and len(self._calib_bers) > 1:
                 import statistics as _st
@@ -900,7 +840,7 @@ def make_adaptive_tap_attack(base_cls):
             self._margin_used = m
             return max(0.0, eta - m)
 
-        # ---- one tap (scope-limited, reduced- or full-shard) -----------------
+        # ---- one tap (scope-limited, reduced shard) -----------------
         def _do_tap(self, global_state, prev_global_state, round_idx, eta, target):
             self.loader = (self._reduced_loader if (self.data_cpc >= 0
                            and getattr(self, "_reduced_loader", None) is not None)
@@ -932,24 +872,19 @@ def make_adaptive_tap_attack(base_cls):
                                "defect_round": self._defect_round})
             return submit, n
 
-        # ---- graft support (coast_mode="graft") ------------------------------
+        # ---- graft (coast_mode="graft") ------------------------------
         def _graft_keys(self):
-            """State-dict keys of the watermark-carrying output layer to keep
-            frozen during a graft coast. Uses the tap scope's kept params"""
+            """State-dict keys of watermarked output layer to keep frozen during graft coast"""
             keep = self._SCOPE_KEEP.get(self.scope) or 2
             named = list(self.model.named_parameters())
             return [name for name, _ in named[len(named) - int(keep):]]
 
         def _coast_candidate(self, global_state):
-            """The model the FR would submit if it coasts this round, per coast_mode:
-              resend -> the received global (mark fully decays to ~0.5 in 1 round)
-              decay  -> the FR's own last-tapped weights verbatim (mark frozen flat,
-                        but a replay: identical submissions round over round)
-              graft  -> global body + FR's frozen last-tapped mark head. The body
-                        tracks the global while the frozen head's projected bits 
-                        degrade gradually as the drifting features flow through them 
+            """The model the FR submits if it coasts:
+              decay  -> FR's own last-tapped weights (mark frozen flat (replay, same every round)
+              graft  -> global body + FR's frozen last-tapped mark head. Body tracks global, frozen head
             The threshold probes this before deciding tap/coast"""
-            if self.coast_mode == "resend" or self._last_submit is None:
+            if self._last_submit is None:
                 return global_state
             if self.coast_mode == "decay":
                 return self._last_submit
@@ -986,14 +921,14 @@ def make_adaptive_tap_attack(base_cls):
         # ---- main ------------------------------------------------------------
         def produce_update(self, global_state, prev_global_state, round_idx):
             phase = self._phase_action(round_idx)
-            # Always request the probe holdout so ber_before/ber_after are recorded
+            # request probe holdout to record ber_before/ber_after
             holdout = self.probe_holdout
 
             # warmup + calibration window: pure honest client on the full shard
             if phase != "freeride":
                 submit, n = super().produce_update(global_state, prev_global_state, round_idx)
-                # dynamic warmup needs a probe every warmup round to detect convergence;
-                # fixed warmup only needs it during the calib window
+                # dynamic warmup - probe to detect convergence
+                # fixed warmup - probe during the calib window
                 if self.warmup_mode == "dynamic" or phase == "calib":
                     self._prepare(max(0, self.data_cpc), n_probe_holdout=holdout,
                                   trigger_train_n=self.trigger_train_n)
@@ -1014,14 +949,11 @@ def make_adaptive_tap_attack(base_cls):
                 self._eta_frozen = self._resolve_eta()
                 self._target_frozen = self._resolve_target(self._eta_frozen)
                 if self._defect_round is None:
-                    self._defect_round = round_idx      # record where we actually defected
+                    self._defect_round = round_idx      # record where defect happens
             eta = self._eta_frozen
             target = self._target_frozen
 
-            # Probe the model the FR would submit if it coasts this round (per coast_mode),
-            # not the raw received global. Under resend the candidate is the global (mark
-            # ~0.5 -> correctly taps); under decay/graft the candidate holds the mark, so
-            # threshold coasts while BER < target instead of degenerating to always-tap.
+            # Probe the model the FR would submit if it coasts this round 
             ber_now = self._probe_ber(self._coast_candidate(global_state))
             self._ber_before = None if ber_now is None else round(ber_now, 4)
 
@@ -1046,12 +978,11 @@ def make_adaptive_tap_attack(base_cls):
 # =============================================================================
 # NOTE ON THE "SUBMARINE"
 # =============================================================================
-# The adaptive submarine is `AdaptiveTapFreeRider` above (attack="adaptive_tap").
-# It subsumes what an earlier, separate `SubmarineFreeRider` prototype was meant to
-# do -- estimate its own eta, warm up until convergence, then coast/tap to hold its
-# mark -- via the tap_* knobs:
+# The adaptive submarine is `AdaptiveTapFreeRider` (attack="adaptive_tap").
+# It estimate its own eta, warm up until convergence, then coast/tap to hold its mark
+# -- via the tap_* knobs:
 #   * self-estimated eta ....... eta_source="self", eta_k
 #   * dynamic warmup ........... warmup_mode="dynamic", conv_eps, conv_patience,
 #                                honest_min, warmup_cap
 #   * uncertainty-scaled margin  margin_mode="derived", margin_k
-#   * coast without a replay ... coast_mode="graft" (+ scope) -> the gradual-fade sawtooth
+#   * coast without a replay ... coast_mode="graft" (+ scope) 

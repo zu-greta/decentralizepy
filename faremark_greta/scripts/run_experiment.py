@@ -77,35 +77,13 @@ def parse_args():
     p.add_argument("--noise_sigma", type=float, default=None)
     p.add_argument("--noise_decay", type=float, default=None)
     # ---- autopilot / submarine overrides ----
-    # 16 --autop_* flags are COMMENTED OUT below with the submarine attacker.
-    # The 5 that remain are used by the live `reduced` / `adaptive_tap` attackers.
     p.add_argument("--autop_oracle_eta", type=float, default=None)
-#     p.add_argument("--autop_warmup_mode", type=str, default=None,
-#                    choices=["dynamic", "fixed"])
-#     p.add_argument("--autop_honest_min", type=int, default=None)
-#     p.add_argument("--autop_warmup_cap", type=int, default=None)
-#     p.add_argument("--autop_conv_eps", type=float, default=None)
-#     p.add_argument("--autop_conv_patience", type=int, default=None)
     p.add_argument("--autop_honest_until", type=int, default=None)
     p.add_argument("--autop_calib_rounds", type=int, default=None)
-#     p.add_argument("--autop_eta_k", type=float, default=None)
-#     p.add_argument("--autop_eta_mode", type=str, default=None,
-#                    choices=["tight", "loose", "cumulative"])
-#     p.add_argument("--autop_num_clients_est", type=int, default=None)
-#     p.add_argument("--autop_margin0", type=float, default=None)
-#     p.add_argument("--autop_safety", type=float, default=None)
-#     p.add_argument("--autop_max_coast", type=int, default=None)
-#     p.add_argument("--autop_floor", type=float, default=None)
     p.add_argument("--autop_common_per_class", type=int, default=None)
     p.add_argument("--autop_trigger_train_n", type=int, default=None)
     p.add_argument("--autop_n_common_classes", type=int, default=None,
                    help="K randomly-chosen common classes to draw from (-1/0 = all).")
-#     p.add_argument("--autop_scope", default=None, choices=["full", "block", "block2", "head"])
-#     p.add_argument("--autop_stay_min", action="store_true", default=None,
-#                    help="coast when safely under target, tap only when needed (default: tap every round)")
-#     p.add_argument("--autop_holdout_ratio", type=float, default=None)
-#     p.add_argument("--autop_honest_clone", action="store_true", default=None,
-#                    help="DIAGNOSTIC: embed via the exact honest path every round")
     # ---- watermarking overrides ----
     p.add_argument("--watermark", dest="watermark", action="store_true", default=None)
     p.add_argument("--no_watermark", dest="watermark", action="store_false")
@@ -146,7 +124,7 @@ def parse_args():
     p.add_argument("--tap_max_coast", type=int, default=None)
     p.add_argument("--tap_data_cpc", type=int, default=None)
     p.add_argument("--tap_scope", type=str, default=None, choices=["full", "block2", "block", "head"])
-    p.add_argument("--tap_coast_mode", type=str, default=None, choices=["resend", "decay", "graft"])
+    p.add_argument("--tap_coast_mode", type=str, default=None, choices=["decay", "graft"])
     p.add_argument("--tap_graft_decay", type=float, default=None)
     p.add_argument("--tap_probe_holdout", type=int, default=None)
     # dynamic adaptive-tap knobs (default to fixed behaviour)

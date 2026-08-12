@@ -20,8 +20,7 @@
 
 **Federated Learning (FL).** Training one shared neural network across many clients without any data trasnferring/sharing. During each communication round, the server sends the current global model to each client; each client trains it on its own private data (for a decided number of local epochs); the server then avergaes the return models (FedAvg used here) into a new global model. This process is repeated for R rounds (until convergence usually).
 
-**Client / shard.** One participant. Its shard is its private slice of the dataset. Here there
-are **10 clients**; CIFAR-100's 50,000 training images split 10 ways -> **5,000 images per client**.
+**Client / shard.** One participant. Its shard is its private slice of the dataset. Here there are **10 clients**; CIFAR-100's 50,000 training images split 10 ways -> **5,000 images per client**.
 
 **IID vs non-IID.**
 - **IID** ("independent, identically distributed"): every client's shard has roughly the same class mix (all 100 classes, ~50 images each). 
@@ -29,30 +28,22 @@ are **10 clients**; CIFAR-100's 50,000 training images split 10 ways -> **5,000 
 
 **Free-rider.** A client that only wants the final global model without paying the compute cost of training. It submits a fake or cheap update every round. The FareMark paper proposes a watermarking-based detector to catch free-riders. Our attack is a free-rider that tries to evade detection while spending minimal compute.
 
-**Watermark.** A hidden signal embedded in a model that a verifier can later read back to prove the
-model was trained by a particular party. FareMark's watermark lives in the model's outputs (the
-softmax), not its weights — hence "box-free" (the verifier only needs to query the model, not open
-it).
+**Watermark.** A hidden signal embedded in a model that a verifier can later read back to prove the model was trained by a particular party. FareMark's watermark lives in the model's outputs (the softmax), not its weights — hence "box-free" (the verifier only needs to query the model, not open it).
 
-**Softmax.** The final layer output of a classifier: a probability vector over the classes that sums
-to 1. For CIFAR-100 it is 100 numbers. The largest entry (**argmax**) is the model's predicted class.
+**Softmax.** The final layer output of a classifier: a probability vector over the classes that sums to 1. For CIFAR-100 it is 100 numbers. The largest entry (**argmax**) is the model's predicted class.
 
-**Trigger class.** Per FareMark's design, each client is assigned one class (e.g. client 3 -> class 3). The watermark is embedded only into the softmax the model produces on images of that client's trigger class. To
-read the watermark, the verifier runs held-out images of that class through the submitted model and
-inspects the softmax.
+**Trigger class.** Per FareMark's design, each client is assigned one class (e.g. client 3 -> class 3). The watermark is embedded only into the softmax the model produces on images of that client's trigger class. To read the watermark, the verifier runs held-out images of that class through the submitted model and inspects the softmax.
 
 **Bit / watermark bits.** The watermark is an **m-bit binary string** (here m = 10 bits), unique per client. Embedding = making the model's softmax encode those 10 bits; verifying = decoding 10 bits back out and comparing.
 
-**BER — Bit-Error-Rate.** The fraction of the m recovered bits that are *wrong*. `BER = (# wrong
-bits) / m`. Range 0…1.
+**BER — Bit-Error-Rate.** The fraction of the m recovered bits that are *wrong*. `BER = (# wrong bits) / m`. Range 0…1.
 - **BER ≈ 0** -> watermark present -> the client really trained => **honest**.
 - **BER ≈ 0.5** -> recovered bits are random -> no watermark => **free-rider**.
 FareMark flags a client as a free-rider when **BER ≥ η** (eta), a pre-calibrated threshold.
 
-**Watermark accuracy (the paper's metric).** FareMark does not report BER; it reports **watermark extraction/detection accuracy = the fraction of bits recovered correctly**. The two are the same
-quantity inverted:
+**Watermark accuracy (the paper's metric).** FareMark does not report BER; it reports **watermark extraction/detection accuracy = the fraction of bits recovered correctly**. The two are the same quantity inverted:
 > **watermark_accuracy = 1 − BER**, i.e. **accuracy(%) = (1 − BER) × 100**.
-So our "honest BER floor ≈ 0.05" is the paper's "watermark accuracy ≈ 95%". 
+So here the "honest BER floor ≈ 0.05" is the paper's "watermark accuracy ≈ 95%". 
 
 **η (eta) — the detection threshold.** FareMark sets it as **μ + 3σ** of the honest BER distribution ("mean plus three standard deviations"): the value below which ~99.7% of honest clients fall, so almost no honest client is wrongly flagged. NOTE: threshold numbers and how it was calculated in details is never reporte in the paper so our numbers are assumption based. We compute two reference values: **η_tight = 0.064** and **η_loose = 0.264** from 10 seed all honest rounds and we use these values as references.
 
@@ -65,9 +56,7 @@ A good detector wants low FPR and high recall simultaneously.
 - **Batch size**: images processed together in one gradient step (16 used)
 - **Learning rate (lr)**: step size of gradient descent (0.01 used with SGD)
 
-**ResNet-18 / CIFAR-100.** ResNet-18 is a standard 18-layer convolutional network. CIFAR-100 is a
-100-class image dataset (60,000 32×32 images; 50,000 train / 10,000 test). "c100" in family names
-refers to this CIFAR-100 setup.
+**ResNet-18 / CIFAR-100.** ResNet-18 is a standard 18-layer convolutional network. CIFAR-100 is a 100-class image dataset (60,000 32×32 images; 50,000 train / 10,000 test). "c100" in family names refers to this CIFAR-100 setup.
 
 **Compute-cost units (used to prove the attack is "cheap").** Numbers that show the amount of work done by a client:
 - **Sample.** One training image processed through one forward+backward pass. A client that trains on 5,000 images for 5 local epochs does 5,000 × 5 = **25,000 samples per round**. Samples are hardware-independent and contention-free: the same recipe always yields the same sample count, so it is the fair, reproducible measure of effort. 
@@ -85,34 +74,24 @@ refers to this CIFAR-100 setup.
 **Body / head (grafting).** ResNet-18 splits into a body (~11M-parameter convolutional feature extractor: image -> 512-number feature vector) and a head (the final `Linear(512->100)`, ~51K parameters: features -> class scores). **The watermark is read only from the softmax, so it lives entirely in the head.** The free-rider never retrains the expensive body (global model gives the features) — it only re-trains the head (where the watermark lives).
 
 **Seed.** The CLI seed is a repeat index; `seed_for(cfg, repeat) = base_seed + repeat` with `base_seed = 1000`, so 3 seeds = `1000/1001/1002`. One integer forks every random stream (model init, shards, Dirichlet skew, minibatch order, key, bits, verification images). 
-The CLI "seed" is the **repeat index**; `seed_for(cfg, repeat) = base_seed + repeat` with `base_seed =
-1000` (`config.py`), so `S = 1000 + repeat` — consecutive integers (3 seeds = 1000/1001/1002). Every
-stream below is a deterministic function of `S`, forked by a fixed offset so the streams stay
-independent. `--no_determinism` only flips cuDNN's autotuner (consumes no RNG), so all draws stay
-reproducible.
+The CLI "seed" is the **repeat index**; `seed_for(cfg, repeat) = base_seed + repeat` with `base_seed = 1000` (`config.py`), so `S = 1000 + repeat` — consecutive integers (3 seeds = 1000/1001/1002). Every stream below is a deterministic function of `S`, forked by a fixed offset so the streams stay independent. `--no_determinism` only flips cuDNN's autotuner (consumes no RNG), so all draws stay reproducible.
 
 | # | What it randomizes | What varies over seeds | IID? | Non-IID extra |
 |---|---|---|---|---|
 | 0 | **Master seed** `S=1000+repeat` | the one integer everything derives from | — | — |
-| 1 | **Global RNG seeding** | model init, augmentation, generator-less `torch.rand*` | ✓ | ✓ |
-| 2 | **IID shard assignment** | which samples land in each client (class balance stays uniform → floors barely move) | ✓ | — |
-| 3 | **Dirichlet label skew** | the whole non-IID skew — who gets what fraction of each class; decides starvation on a client's *own* trigger class | — | ✓ **(the big one)** |
-| 4 | **Per-client minibatch order** | SGD shuffle → optimisation trajectory / gradient noise | ✓ | ✓ |
-| 5 | **Watermark key M (the "key lottery")** | the secret ±1 projection; unlucky same-sign rows give a per-client floor from the key alone; flips honest-vs-FR ordering at a hard class | ✓ | ✓ |
-| 6 | **Watermark target bits B** | the secret message (balanced so a random guesser sits at BER 0.5) | ✓ | ✓ |
-| 7 | **Verification trigger images** | which held-out test images the server extracts from (generalisation, not memorisation) | ✓ | ✓ |
-| 8 | **Model weight init** | the optimisation starting point → a major per-class floor-variance driver | ✓ | ✓ |
-| 9 | **Reduced/adaptive common-image sampling** | which `+cpc` common images the FR trains on each free-ride round | ✓ | ✓ |
+| 1 | **Global RNG seeding** | model init, augmentation, generator-less `torch.rand*` | Y | Y |
+| 2 | **IID shard assignment** | which samples land in each client (class balance stays uniform -> floors barely move) | Y | — |
+| 3 | **Dirichlet label skew** | the whole non-IID skew — who gets what fraction of each class; decides starvation on a client's own trigger class | — | Y |
+| 4 | **Per-client minibatch order** | SGD shuffle -> optimisation trajectory / gradient noise | Y | Y |
+| 5 | **Watermark key M (the "key lottery")** | the secret ±1 projection; unlucky same-sign rows give a per-client floor from the key alone; flips honest-vs-FR ordering at a hard class | Y | Y |
+| 6 | **Watermark target bits B** | the secret message (balanced so a random guesser sits at BER 0.5) | Y | Y |
+| 7 | **Verification trigger images** | which held-out test images the server extracts from (generalisation, not memorisation) | Y | Y |
+| 8 | **Model weight init** | the optimisation starting point -> a major per-class floor-variance driver | Y | Y |
+| 9 | **Reduced/adaptive common-image sampling** | which `+cpc` common images the FR trains on each free-ride round | Y | Y |
 
-**Frozen (so seeds are comparable):** trigger-class assignment `cid→class` (round-robin, unless
-`TRIGGER_CLASS_MAP` set) — in non-IID this is the crux: the class is *fixed* while the Dirichlet split
-(#3) is *seeded*, so the seed controls the starvation coupling; free-rider identity (`FREE_RIDER_IDS=3,6`);
-and the detection reference lines (0.064 / 0.264), calibrated offline and injected as constants.
+**Frozen (so seeds are comparable):** trigger-class assignment `cid->class` (round-robin, unless `TRIGGER_CLASS_MAP` set) — in non-IID this changes things in group E. 
 
-**Consequence:** the *mechanism* (easy embeds, hard floors, FR hides in the honest floor) is seed-robust,
-but the *exact per-class floors* are draw-dependent — especially the hard classes and the whole non-IID
-table. **3 seeds is the minimum for any per-class number; single-`rep` values are quoted only as
-illustrations and flagged as such.**
+**Consequence:** the mechanism (easy embeds, hard floors, FR hides in the honest floor) is seed-robust, but the exact per-class floors are draw-dependent — especially the hard classes and the whole non-IID table. 
 
 ---
 
@@ -157,7 +136,7 @@ Below are the checks to verify the current codebase is a faithful re-implementat
 | Embed weight λ | as in Eq. 11 | λ = 5 | Y |
 | Projection | full softmax split into m groups | full softmax (`exclude_col=None`) | Y |
 
-**Implementation choice to be tested:** the smoothing epsilon (`SMOOTH_EPS`) guards `0^α`. `1e-3` used throughout experiments so far; a cleaner value could be `1e-8` (on CIFAR-100 the tail probabilities are themselves ~1e-3 so this can be tested further. (NOTE: no value specified in the paper).
+**Implementation choice to be tested:** the smoothing epsilon (`SMOOTH_EPS`) guards `0^α`. `1e-3` used throughout experiments so far; a cleaner value could be `1e-8`. On CIFAR-100 the tail probabilities are themselves ~1e-3 so this can be tested further. (NOTE: no value specified in the paper).
 
 ### 2.2 Main-task accuracy (global model)
 
@@ -180,7 +159,7 @@ the paper's regime.
 | Honest, hardest class (multi-seed) | ~0.083 | ~91.7% |
 | η_tight (reference) | 0.064 | 93.6% |
 | η_loose (reference) | 0.264 | 73.6% |
-| Free-rider (crude, H5) | 0.60–0.80 | 20–40% |
+| Free-rider (baseline, H5) | 0.60–0.80 | 20–40% |
 | Random guess | 0.50 | 50% |
 
 **Conclusion: the re-implementation is faithful.** Global accuracy, honest-BER convergence, and free-rider separation all reproduce the paper; the only differences/assumptions are made to be more conservative, not less.
@@ -403,10 +382,9 @@ Current experimental results. Not all experiments have been run at multiple seed
 - Training: 50 rounds, 6 seeds (1000–1005). 
 - Results: from `A1_honest_c100_rep0result.json`: global test accuracy **73.24%**.
 
-**Per-class honest BER floors** — plot **[A1_class_floors.png](results/figs/A1_class_floors.png)**
-(honest BER per round for all 10 trigger classes, 6 seeds, each class's converged-tail floor in the
-legend). Plot **[A1_honest_per_round.png](results/figs/A1_honest_per_round.png)** adds the
-trigger-class-accuracy panel below the BER panel. 6-seed floors:
+**Per-class honest BER floors plot** - **[A1_class_floors.png](results/figs/A1_class_floors.png)** 
+(honest BER per round for all 10 trigger classes, 6 seeds, each class's converged-tail floor in the legend). 
+Plot **[A1_honest_per_round.png](results/figs/A1_honest_per_round.png)** adds the trigger-class-accuracy panel below the BER panel. 6-seed floors:
 
 | class | 8 | 9 | 1 | 0 | 2 | 5 | 3 | 7 | 4 | 6 |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -415,9 +393,9 @@ trigger-class-accuracy panel below the BER panel. 6-seed floors:
 
 **Span 0.001 -> 0.114 across classes** for the same honest scheme — purely from which class is the assigned trigger class.
 
-**The bottom panel (trigger-class accuracy -> 0)** is the same story from the classifier side: honest trigger-class accuracy collapses to ~0 by round ~13 and stays there, on the same rounds the mark embeds. This could be the FareMark paper's anti-dominance rule (Eq. 6/10) flattening the trigger-image softmax (measured honest tail: `pmax=0.27`, `entropy=2.92/4.61`, `dominance=0.049 ≪ 0.5`). It is measured on each client's submitted watermarked local model, a different model from the FedAvg global whose per-class test accuracy stays high.
+**The bottom panel (trigger-class accuracy -> 0)** is the same story from the classifier side: honest trigger-class accuracy collapses to ~0 by round ~13 and stays there, on the same rounds the mark embeds. This could be the FareMark paper's anti-dominance rule (Eq. 6/10) flattening the trigger-image softmax (measured honest tail: `pmax=0.27`, `entropy=2.92/4.61`, `dominance=0.049 << 0.5`). It is measured on each client's submitted watermarked local model, a different model from the FedAvg global whose per-class test accuracy stays high.
 
-**Global model effects** — **[A0_class_acc.png](results/figs/A0_class_acc.png)**: for each honest client, the FedAvg global model's test accuracy on that client's trigger class (orange) vs non-trigger classes (blue) vs global (grey, 73.3%). Every trigger class scores **49–92%** (normal) so the trigger-class suppression is a property of the individual watermarked local model, not the global model everyone downloads. The one short orange bar (cid3, 49%) is a hard-class draw, consistent with the class-difficulty story, not a watermark failure.
+**Global model effects** — **[A0_class_acc.png](results/figs/A0_class_acc.png)**: for each honest client, the FedAvg global model's test accuracy on that client's trigger class (orange) vs non-trigger classes (blue) vs global (grey, 73.3%). Every trigger class scores 49–92% (normal) so the trigger-class suppression is a property of the individual watermarked local model, not the global model everyone downloads. The one short orange bar (cid3, 49%) is a hard-class draw, consistent with the class-difficulty story, not a watermark failure.
 
 ---
 
@@ -445,7 +423,7 @@ trigger-class-accuracy panel below the BER panel. 6-seed floors:
 **The data budget plot** — **[D1_spectrum.png](results/figs/D1_spectrum.png)** (top: free-rider BER over rounds per budget; bottom: converged BER vs budget with error bars):
 1. **Trigger-only (cpc=0) overfits and is caught** — BER ≈ 0.44, above η lines. The positive control: the mark fits the trigger images but fails to generalise to the server's held-out verification images. Reproduces FareMark's Table V.
 2. **Adding just +1 image/class (~24% effort) collapses BER to a flat plateau (~0.11–0.13)** that every larger budget also sits on.
-3. **The plateau sits below η_loose (0.264)** and inside the honest-floor band of those classes -> **inseparable from honest.**
+3. The plateau sits below η_loose (0.264) and inside the honest-floor band of those classes -> inseparable from honest.
 
 The per-round view of the reduced attacker confirms this split by class difficulty:
 **[A2_easy_timeline.png](results/figs/A2_easy_timeline.png)** (easy classes 1,7 — the reduced FR drops
@@ -454,6 +432,7 @@ to **~0.00 and stays**, cleaner than honest, on ~31% of the data) and
 ~0.11–0.13, dragged up by cls6; per-cid the hard class sits ~0.20–0.30 while cls3 ~0).
 
 The isolated honest-vs-reduced pairs show the same per class, from separate runs (no in-model conflict): **[iso_A3_c3.png](results/figs/iso_A3_c3.png)** — the reduced FR on class 3 sits at **~0.03**, below the honest client, tangled inside the honest band; **[iso_A3_c6.png](results/figs/iso_A3_c6.png)** — on hard class 6 the FR (~0.20–0.23) and honest (~0.25 at this larger seed pool) overlap heavily, both hugging η_loose 0.264.
+NOTE: TODO regen the isolated figs here
 
 **Per-class at +5/class (≡ Group A3):** class 3 -> FR **0.037** vs honest **0.057** (FR lower BER than honest,inseparable); class 6 -> FR **0.220** vs honest **0.114** (catchable **only at ~40% honest FPR** — the
 only η that flags this FR also flags ~40% of honest cls6 clients, since honest cls6 is noisy).
@@ -486,11 +465,9 @@ trains every round, so it can go no lower.
 - **Easy class (cid3):** the mark re-embeds cleanly on a tap and coasts under target, so K4 taps only 27% and tail-BER 0.04 beats the honest twin.
 - **Hard class (cid6):** it can barely coast (taps 63–100%) and plateaus at ~0.20 — under η_loose but above the honest twin (0.12). 
 
-**J4 run from last week** — **[tap_J4_scope_graft_block2_c36.png](results/figs/tap_J4_scope_graft_block2_c36.png)**. J4 is the *oracle-η version* of K4: identical block2 + graft mechanism, but the free-rider is given the true threshold (η = 0.264, target 0.234) instead of estimating it. With that comfortable target the tap <-> coast teeth are cleaner — cid3 taps 34%, cid6 83%, the mean BER sawtooths cleanly between ~0.10 and ~0.30
-under η_loose, on 32% of honest data. 
+**J4 run from last week** — **[tap_J4_scope_graft_block2_c36.png](results/figs/tap_J4_scope_graft_block2_c36.png)**. J4 is the *oracle-η version* of K4: identical block2 + graft mechanism, but the free-rider is given the true threshold (η = 0.264, target 0.234) instead of estimating it. With that comfortable target the tap <-> coast teeth are cleaner — cid3 taps 34%, cid6 83%, the mean BER sawtooths cleanly between ~0.10 and ~0.30 under η_loose, on 32% of honest data. 
 
-**Full vs block2.** On the hard class **K5-full 0.20 ≈ K4-block2 0.21** — full scope hits the same floor, so **the hard-class limit is data-limited, not scope-limited** (reduced data cannot embed cls6 below ~0.20). On the easy class full is marginally cleaner (0.03 vs 0.04) but **taps 95% vs 27%** -> coasts far less -> a much weaker sawtooth. The same picture appears in the isolated pairs **[iso_K5_c3](results/figs/iso_K5_c3.png)** /
-**[iso_K5_c6](results/figs/iso_K5_c6.png)**.
+**Full vs block2.** On the hard class **K5-full 0.20 ≈ K4-block2 0.21** — full scope hits the same floor, so **the hard-class limit is data-limited, not scope-limited** (reduced data cannot embed cls6 below ~0.20). On the easy class full is marginally cleaner (0.03 vs 0.04) but **taps 95% vs 27%** -> coasts far less -> a much weaker sawtooth. The same picture appears in the isolated pairs **[iso_K5_c3](results/figs/iso_K5_c3.png)** / **[iso_K5_c6](results/figs/iso_K5_c6.png)**.
 
 **Compute saved** — **[gpu_savings_K4_alldyn_block2_c36.png](results/figs/gpu_savings_K4_alldyn_block2_c36.png)** and **[gpu_savings_K5_alldyn_full_c36.png](results/figs/gpu_savings_K5_alldyn_full_c36.png)**. Cumulative-samples ratio settles at **cid3 ≈ 0.26 (saves ~74%)** and **cid6 ≈ 0.30 (saves ~70%)**;
 `rep0` exact figures are cid3 272,970/1,250,000 = **saves 78%**, cid6 440,440/1,250,000 = **saves 65%**.
@@ -502,7 +479,7 @@ K5-full saves cid3 **75%** / cid6 **72%**.
 
 **Why the sawtooth is asymmetric (graft theory).** A coast submits the fresh global **body** with the free-rider's last-tapped **head** grafted on (decayed 25%/round). Only feature drift then moves the mark: a bit flips when its projection `z_k` crosses zero. **Easy class:** projections sit far from zero -> slow fade -> few taps. **Hard class:** projections sit near zero -> fast fade -> constant taps. So the compute saving lives almost entirely on easy/medium classes - depends on what the server assigns.
 
-**Reduced vs submarine on the hard class.** Single-seed `rep`s gave reduced cid6 ≈ 0.30 (A3/D1) vs submarine ≈ 0.20, which looks like the submarine is cleaner. But the multi-seed plots put **all** hard-class free-riders at **~0.20** (K4 0.21, K5 0.20) and the reduced mean line (A3, 3 seeds) converges to ~0.13 (averaged over easy cid3 ~0 and hard cid6). The 0.20-vs-0.30 gap is within the hard-class seed noise (honest cls6 alone spans 0.02–0.24). 
+**Reduced vs submarine on the hard class.** Single-seed `rep`s gave reduced cid6 ≈ 0.30 (A3/D1) vs submarine ≈ 0.20, which looks like the submarine is cleaner. But the multi-seed plots put all hard-class free-riders at **~0.20** (K4 0.21, K5 0.20) and the reduced mean line (A3, 3 seeds) converges to ~0.13 (averaged over easy cid3 ~0 and hard cid6). The 0.20-vs-0.30 gap is within the hard-class seed noise (honest cls6 alone spans 0.02–0.24). 
 
 ---
 
@@ -532,7 +509,8 @@ reduced (E2) on class 6 sit on top of each other (~0.18) across all 50 rounds.
 **[gpu_savings_EA2_reduced_niid_distrib_c36.png](results/figs/gpu_savings_EA2_reduced_niid_distrib_c36.png)**
 show the non-IID reduced free-rider also settles at **~0.30 of honest samples (saves ~70%)**.
 
-**EA — distribution-aware assignment.** Giving each client a class it holds a lot of lowers the honest floor (honest clients now embed cleanly), but the reduced/submarine free-rider — training on a concentrated trigger-heavy also embeds cleanly, so the two still coincide. (Per-round honest baseline: **[EA1_honest_per_round.png](results/figs/EA1_honest_per_round.png)**.) *Note:* **[iso_EA2_c6.png](results/figs/iso_EA2_c6.png)** TODO regenerate the plots for EA2.
+**EA — distribution-aware assignment.** Giving each client a class it holds a lot of lowers the honest floor (honest clients now embed cleanly), but the reduced/submarine free-rider — training on a concentrated trigger-heavy also embeds cleanly, so the two still coincide. (Per-round honest baseline: **[EA1_honest_per_round.png](results/figs/EA1_honest_per_round.png)**.) *Note:* **[iso_EA2_c6.png](results/figs/iso_EA2_c6.png)** 
+NOTE: TODO regenerate the plots for EA2.
 
 ---
 

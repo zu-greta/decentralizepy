@@ -14,9 +14,7 @@ _NORM = {
 
 class GPUImageStore:
     """The whole dataset as one uint8 tensor on the GPU, plus its labels.
-
-    Built once per run and shared by reference across every client loader, so
-    N clients cost one copy of the data, not N.
+    Built once per run and shared by reference across every client loader
     """
 
     def __init__(self, images_u8: torch.Tensor, labels: torch.Tensor,
@@ -28,15 +26,12 @@ class GPUImageStore:
         c = self.images.shape[1]
         self.mean = torch.tensor(mean, device=device).view(1, c, 1, 1)
         self.std = torch.tensor(std, device=device).view(1, c, 1, 1)
-        # value a zero-padded pixel takes AFTER normalisation -- matches
-        # torchvision's pad-then-normalise ordering
+        # value a zero-padded pixel takes after normalisation 
         self._fill = (-self.mean / self.std).view(1, c, 1, 1)
 
     @classmethod
     def from_torchvision(cls, ds, name: str, device, pad: int = 4):
-        """Pull the raw uint8 array straight out of a torchvision dataset.
-
-        Deliberately bypasses ds.transform -- we re-implement it on GPU.
+        """Pull the raw uint8 array straight out of a torchvision dataset
         """
         name = name.lower()
         mean, std = _NORM[name]
@@ -79,10 +74,7 @@ class _IndexView:
 
 
 class FastLoader:
-    """Iterable of (x, y) batches, already on the GPU, already augmented.
-
-    Drop-in for a DataLoader over a Subset, for the operations this codebase
-    actually uses: iteration, len(), and .dataset for the shard size.
+    """Iterable of (x, y) batches, already on the GPU, already augmented
     """
 
     def __init__(self, store: GPUImageStore, indices, batch_size: int,
@@ -98,10 +90,7 @@ class FastLoader:
 
     # -- construction helpers -------------------------------------------------
     def subset(self, indices, seed: int | None = None) -> "FastLoader":
-        """New loader over a subset of the SAME store (no data copied).
-
-        This is what the reduced/tap attackers should call instead of building
-        a fresh CPU DataLoader.
+        """New loader over a subset of the same store (no data copied)
         """
         return FastLoader(self.store, indices, self.batch_size, self.train,
                           seed=self._gen.initial_seed() if seed is None else seed,
@@ -115,11 +104,7 @@ class FastLoader:
 
     # -- the actual work ------------------------------------------------------
     def _prepare_epoch(self):
-        """Normalise (and augment) the whole shard in one shot.
-
-        Batch-at-a-time augmentation would launch a dozen kernels per 16-image
-        batch, which at this batch size is pure overhead. Doing the entire epoch
-        at once amortises it: for a 5000-image shard the transient is ~61 MB.
+        """Normalise the whole shard in one shot
         """
         s = self.store
         idx = self.indices
@@ -163,8 +148,6 @@ class FastLoader:
 
 def wrap_build_data(data, name, batch_size, seed, device):
     """Swap the CPU DataLoaders on a built `data` object for GPU-resident FastLoaders
-    Reconstructs each client's shard from the existing
-    DataLoader(Subset(train, idx)) structure and rebuilds one shared GPUImageStore.
     """
     try:
         from torch.utils.data import Subset

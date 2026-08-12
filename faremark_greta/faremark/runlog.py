@@ -1,15 +1,5 @@
-"""runlog -- all human-readable run.log formatting 
-
-DESIGN RULES
-------------
-1. run.log is a log file to read live and see if run is healthy or not. 
-   Anything an analysis script needs lives in result.json. run.log exists so a human
-2. Fixed-width columns with one header, so `grep`/`awk`/`column -t` all work:
-       awk '$1=="R"' run.log | awk '{print $2, $4}'      # round, honest BER
-3. Every block is delimited by a `== NAME ==` line so `sed -n '/== SETUP/,/== ROUNDS/p'`
-   pulls a section out.
-4. Non-default config only. The full ExpConfig snapshot is in result.json["config"];
-   repeating all 60 fields in the log hides the 3 that were actually set.
+"""runlog -- run.log formatting 
+run.log: read live results
 """
 from __future__ import annotations
 
@@ -62,11 +52,7 @@ def banner(log, *, config_idx, cfg, repeat, seed, device, gpu_name=None,
 
 # ---------------------------------------------------------------------- setup
 def config_block(log, cfg, cfg_cls):
-    """Print ONLY the fields that differ from the ExpConfig defaults.
-
-    Replaces the old `logger.info(json.dumps(cfg.to_dict()))` one-liner. The full
-    snapshot is still written to result.json["config"], so nothing is lost -- this
-    just stops 60 defaults from burying the 3 knobs the run actually changed.
+    """Print only the fields that differ from the ExpConfig defaults.
     """
     defaults = {f.name: f.default for f in _dc_fields(cfg_cls)}
     diffs, required = [], []
@@ -75,9 +61,7 @@ def config_block(log, cfg, cfg_cls):
         dflt = defaults.get(f.name)
         if f.name == "name":
             continue
-        # model/dataset/num_clients have no dataclass default (they are required
-        # positional fields), so there is nothing to diff against -- list them
-        # separately rather than printing a _MISSING_TYPE repr.
+        # model/dataset/num_clients have no dataclass default 
         if _is_missing(dflt):
             required.append((f.name, cur))
         elif cur != dflt:
@@ -95,11 +79,7 @@ def config_block(log, cfg, cfg_cls):
 
 def data_block(log, *, dataset, num_classes, num_clients, shard_sizes,
                partition, alpha, batch_size, test_n):
-    """What the data actually looks like after partitioning.
-
-    a non-IID shard can hold 0 images of a client's own trigger class, 
-    which floors that client's BER at ~0.5 for reasons that have nothing to do with the watermark. 
-    min/max shard size and the empty-trigger-class warning are printed up front.
+    """What the data actually looks like after partitioning
     """
     log.info("")
     log.info("== SETUP: data ==")
@@ -121,12 +101,7 @@ def watermark_block(log, *, m, l, num_classes, unembeddable_frac, n_triggers,
                     trigger_mode, n_banks, n_clients, balanced_keys,
                     wm_lambda, wm_beta, wm_alpha, wm_f, eta_fixed,
                     clients_per_class=None):
-    """Watermark geometry + the two structural warnings that explain BER floors.
-
-    the 'structural BER ceiling' line. With random (unbalanced) keys a fraction
-    of key rows come out all-same-sign and can never be embedded, so honest BER can
-    not go below 0.5*unembeddable_frac no matter how long you train. Printing the
-    implied ceiling here means a 75%-instead-of-96% watermark accuracy at round 0
+    """Watermark geometry 
     """
     log.info("")
     log.info("== SETUP: watermark ==")
@@ -159,7 +134,7 @@ def watermark_block(log, *, m, l, num_classes, unembeddable_frac, n_triggers,
 
 
 def free_rider_block(log, *, attack, indices, trigger_class_of=None, knobs=None):
-    """Who free-rides, on which trigger class, with which knobs."""
+    """Free-riders, on which trigger class, with which knobs."""
     log.info("")
     log.info("== SETUP: free-riders ==")
     if not indices:
@@ -253,10 +228,6 @@ def report(log, *, final_acc, best_acc, expected, passed, elapsed_sec,
     lo, hi = expected
     log.info(_kv("final / best test acc", f"{final_acc:.2f}% / {best_acc:.2f}%"))
     log.info(_kv("expected band", f"{lo}-{hi}%   -> {'PASS' if passed else 'FAIL'}"))
-    if not passed:
-        log.info("  NOTE  attack runs legitimately land below the band "
-                 "(free-riders drag accuracy down). Exit code 2 is EXPECTED there; "
-                 "result.json is written before the exit.")
 
     if wm_summary:
         log.info(f"  -- watermark (mean over last {wm_summary.get('wm_detect_window', tail)} rounds) --")

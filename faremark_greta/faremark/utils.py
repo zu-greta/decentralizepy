@@ -11,14 +11,13 @@ import torch
 
 
 def set_seed(seed: int, deterministic: bool = True) -> None:
-    """Seed every RNG we touch so a (config, repeat) pair is reproducible.
+    """Seed every RNG - (config, repeat) pair is reproducible
 
     deterministic=True  -> cuDNN forced deterministic, autotuner OFF (bit-reproducible
                            runs; the paper-fidelity default).
     deterministic=False -> cuDNN autotuner ON, deterministic OFF. ~1.3-2x faster on
-                           convs. Results are STATISTICALLY identical (mean/std over
-                           seeds unchanged); only exact bit-reproducibility of a single
-                           seed is lost. Safe for sweeps. Set via --no_determinism.
+                           convs. Results are statistically identical 
+    Set via --no_determinism
     """
     random.seed(seed)
     np.random.seed(seed)

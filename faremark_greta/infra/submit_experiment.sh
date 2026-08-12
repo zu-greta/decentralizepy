@@ -44,12 +44,7 @@ PY_EXTRA=""
 [ -n "${BATCH_SIZE:-}" ]      && PY_EXTRA="$PY_EXTRA --batch_size ${BATCH_SIZE}"
 [ -n "${LR:-}" ]              && PY_EXTRA="$PY_EXTRA --lr ${LR}"
 [ -n "${PARTITION:-}" ]        && PY_EXTRA="$PY_EXTRA --partition ${PARTITION}"
-# NUM_WORKERS: DataLoader workers. Default in run_experiment.py is 2, and because
-# persistent_workers is unset, 2 processes are forked and killed on EVERY iterator
-# -- i.e. num_clients x local_epochs x rounds times per run. At 200 clients that is
-# 50,000 fork/teardown cycles. At 32x32 with batch 16 the loading work is trivial and
-# the forking is not, so NUM_WORKERS=0 is usually FASTER. Always set it explicitly
-# for runs with many clients.
+# NUM_WORKERS: DataLoader workers. Default in run_experiment.py is 2
 [ -n "${NUM_WORKERS:-}" ]     && PY_EXTRA="$PY_EXTRA --num_workers ${NUM_WORKERS}"
 # speed levers (opt-in; unset => current behaviour). Set for a whole batch at manifest time.
 [ "${FAST_DATA:-0}" = "1" ]    && PY_EXTRA="$PY_EXTRA --fast_data"

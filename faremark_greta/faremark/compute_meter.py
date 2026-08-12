@@ -11,12 +11,9 @@ This module gives every training client a meter that accumulates, per round and 
   * flops                   : estimated fwd+bwd FLOPs = samples * fps * FWD_BWD_MULT
   * trained                 : bool - if client trained this round (or coasted / free-rode)
 
-Cluster note: on the RunAI A100 the meaningful cost unit is GPU-seconds, so
-`gpu_ms` is measured with CUDA events (accurate for the GPU stream), not just
-Python wall time. `samples`/`passes`/`flops` are device-independent and
-deterministic, so they are what you should put on the x-axis of an
-effort-vs-detection plot when comparing across machines. Use `gpu_ms` when you
-specifically want "what did this cost on the cluster".
+Cluster note: on the RunAI A100 the meaningful cost unit is GPU-seconds, so `gpu_ms` is measured with CUDA events 
+(accurate for the GPU stream), not just Python wall time. 
+`samples`/`passes`/`flops` are device-independent and deterministic.
 CUDA-event timing is used only when torch+CUDA are present, otherwise it falls back to perf_counter.
 """
 from __future__ import annotations
@@ -41,16 +38,7 @@ def _zero_bucket() -> dict:
 
 
 class ComputeMeter:
-    """Accumulate training work for one client across rounds.
-
-    Typical use inside a client's produce_update:
-
-        self.meter.start_round(round_idx)
-        ... training loop, calling self.meter.record_batch(n) per batch ...
-        self.meter.end_round(trained=True)      # or trained=False for a coast
-
-    A no-training free-rider still calls start/end with trained=False so its
-    (near-zero) fabrication cost is recorded and comparable.
+    """Accumulate training work for one client across rounds
     """
 
     FWD_BWD_MULT = 3.0            # backward ~= 2x forward => fwd+bwd ~= 3x forward FLOPs
@@ -114,12 +102,7 @@ class ComputeMeter:
         self._cur = None
 
     # ---- readout -----------------------------------------------------------
-    # Per-round fields kept in result.json. The full 8-field bucket is retained
-    # in memory (self.per_round) and in `total`; only the SERIALIZED per-round
-    # record is slimmed, because it is the largest object in result.json:
-    # N_clients x N_rounds x 8 fields (200 clients x 50 rounds = 80k entries).
-    # samples (the effort x-axis), gpu_ms (cluster cost), trained
-    # (the coast-vs-tap signal the timeline plot needs).
+    # Per-round fields kept in result.json. 
     _PER_ROUND_KEEP = ("samples", "gpu_ms", "trained")
 
     def summary(self, attack_name: str = "honest", is_free_rider: bool = False,
@@ -144,11 +127,6 @@ class ComputeMeter:
 
 def estimate_flops_per_sample_fwd(model, input_shape, device="cpu") -> float | None:
     """Best-effort forward-FLOPs-per-sample estimate for one (model, input).
-
-    Tries fvcore, then thop, then ptflops. Returns None if none is installed
-    (the meter then reports passes/samples/time but no FLOPs). Call ONCE at
-    startup where the model exists (e.g. run_experiment) and hand the result to
-    every client meter. input_shape is a single-sample shape, e.g. (3, 32, 32).
     """
     if not _HAS_TORCH:
         return None

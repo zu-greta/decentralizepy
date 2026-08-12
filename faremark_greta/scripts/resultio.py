@@ -1,9 +1,5 @@
 #!/usr/bin/env python
 """resultio -- results.json
-
-Everything that reads result.json imports from this file
-
-THE CONTRACT (what analysis code is allowed to rely on)
 -------------------------------------------------------
     schema_version                          int, 2 = post-cleanup runs
     manifest.family                         grouping key for plots/calibration
@@ -24,7 +20,7 @@ THE CONTRACT (what analysis code is allowed to rely on)
                                per_round{r: {samples, gpu_ms, trained}},
                                trace[{round, action, ...}], wm_stats{r: {...}}}
 
-CLI (for eyeballing a run without opening the JSON):
+CLI:
     python scripts/resultio.py digest --in 'results/*/result.json'
     python scripts/resultio.py digest --in 'results/*/result.json' --family honest_c100_bdef_iid
     python scripts/resultio.py contract --in results/<run>/result.json   # key inventory

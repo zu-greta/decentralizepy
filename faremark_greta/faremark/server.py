@@ -1,8 +1,4 @@
 """Server side: FedAvg aggregation + round orchestration.
-
-The server keeps the last two global states so free-riders (which need
-W_t and W_{t-1}) work without changing the loop. `verify_hook` is per-client 
-watermark extraction + detection.
 """
 import copy
 
@@ -13,8 +9,7 @@ from .runlog import RoundTable
 
 
 class Aggregator:
-    """Weighted FedAvg. With equal IID shards this equals the simple mean the
-    paper uses (W_g = 1/N * sum W_i)."""
+    """Weighted FedAvg. With equal IID shards: (W_g = 1/N * sum W_i)"""
 
     @staticmethod
     def aggregate(updates: list) -> dict:
@@ -55,7 +50,7 @@ class Server:
         table = RoundTable(self.logger, rounds,
                            watermarked=self.verify_hook is not None)
         seen_action = {}          # cid -> last trace action, for phase-change notes
-
+        # run rounds
         for r in range(1, rounds + 1):
             updates = []
             for client in self.clients:
@@ -74,7 +69,7 @@ class Server:
             self.prev_global_state = self.global_state
             self.global_state = self.aggregator.aggregate(updates) # FedAvg aggregation
 
-            acc = self._evaluate()
+            acc = self._evaluate() # global test accuracy
             record = {"round": r, "test_acc": acc, **verify_info}
             self.history.append(record)
 
@@ -94,6 +89,11 @@ class Server:
         return self.history
 
     def _evaluate(self) -> float:
+        """
+        Evaluate the current global model on the test set.
+        Returns:
+            float: The accuracy of the global model on the test set.
+        """
         self.model.load_state_dict(self.global_state)
         self.model.to(self.device)
         return evaluate_accuracy(self.model, self.test_loader, self.device)

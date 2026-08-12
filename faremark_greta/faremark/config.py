@@ -1,8 +1,6 @@
 """Experiment configs.
 
 `config_idx` selects an experiment; `repeat` selects a seed.
-
-`expected_acc` is a loose [low, high] band on final FedAvg test accuracy for reference
 """
 from dataclasses import dataclass, field, asdict
 
@@ -20,12 +18,11 @@ class ExpConfig:
     momentum: float = 0.9
     weight_decay: float = 5e-4
     base_seed: int = 1000
-    expected_acc: tuple = (0.0, 100.0)      # correctness band
+    expected_acc: tuple = (0.0, 100.0)      # correctness band for reference
 
     # ---- free-rider selection / paper baselines ----
-    attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"
-                                            # |"adaptive_tap" (aka "submarine"/"autopilot")
-    num_free_riders: int = 0                # how many of num_clients are free-riders
+    attack: str = "none"                    # "none"|"previous_models"|"gaussian"|"reduced"|"adaptive_tap" (submarine)
+    num_free_riders: int = 0                # number of free-rider clients
     free_rider_ids: str = ""                # "3,6" pins which cids free-ride (overrides seeded choice). Empty => choose_free_riders(seed).
     noise_sigma: float = 0.1                # GaussianNoiseFreeRider std
     noise_decay: float = 0.0                # >0 -> sigma_t = sigma0 * t^(-decay)
@@ -34,37 +31,28 @@ class ExpConfig:
     trigger_class_map: str = ""             # "cid:class,cid:class" overrides the default trigger_class = cid % num_classes
 
     # ---- shared free-rider schedule + data knobs ----
-    autop_oracle_eta: float = 0.0           # >0 => the FR is handed the true eta (controlled test).
-                                            # For the submarine, tap_eta_source="self" ignores this.
-    autop_honest_until: int = 12            # W: fixed-warmup defect round (warmup=[1,W-1], calib=[W-K,W-1]).
-                                            # For dynamic warmup (tap_warmup_mode="dynamic") W is the fallback.
+    autop_oracle_eta: float = 0.0           # >0 => the FR is handed the true eta (controlled test). when tap_eta_source="self", ignored
+    autop_honest_until: int = 12            # W: fixed-warmup defect round (warmup=[1,W-1], calib=[W-K,W-1]). tap_warmup_mode="dynamic" W as fallback
     autop_calib_rounds: int = 4             # K: the K honest rounds that calibrate eta (server + FR self-est).
-                                            # Tagged "calib" in the trace.
     autop_trigger_train_n: int = -1         # TABLE V: num of trigger imgs trained on (-1 = all)
     autop_common_per_class: int = -1        # DATA per tap: -1=full shard; 0=triggers-only; N=+N/common-class
-    autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from:
-                                            # -1/0 = all of them; K>0 = K randomly chosen classes
+    autop_n_common_classes: int = -1        # how many COMMON CLASSES the free-rider draws from: -1/0 = all of them; K>0 = K randomly chosen classes
 
-    # ---- adaptive tap free-rider  (attack="adaptive_tap", aka the "submarine")  ----
+    # ---- adaptive tap free-rider  (attack="adaptive_tap", submarine attack)  ----
     # FR that trains only on rounds when its own BER nears the estimated eta.
-    tap_eta_source: str = "oracle"   # which eta the FR aims under: "oracle" = the true server eta
-                                     # (wm_eta_fixed / autop_oracle_eta, for controlled tests);
-                                     # "self" = the FR estimates it from its own calib-window probe BER
+    tap_eta_source: str = "oracle"   # eta FR aims under: "oracle" = given server eta. "self" = FR estimated from calib-window probe BER
     tap_eta_k: float = 3.0           # self mode: eta_hat = mu + k*sigma over the FR's own calib probe BERs
-    tap_margin: float = 0.02         # aim this far below eta:  target = eta - margin
-    tap_when: str = "threshold"      # when to tap: "threshold" (tap iff probe BER > target, else coast),
+    tap_margin: float = 0.02         # margin below eta:  target = eta - margin
+    tap_when: str = "threshold"      # tap time: "threshold" (tap iff probe BER > target, else coast),
                                      # "always" (tap every post-warmup round), "every_k" (tap every tap_period)
     tap_period: int = 1              # period P for tap_when="every_k"
     tap_max_coast: int = 999         # force a tap after this many consecutive coasts (safety cap)
     tap_data_cpc: int = 5            # amount of data per tap: images/common-class (-1 full shard, 0 trigger-only, N=+N)
-    tap_scope: str = "full"          # model scope a tap trains: "full" | "block2" (last 20 tensors) |
-                                     # "block" (last 8) | "head" (last 2). Backbone frozen => cheaper tap
-    tap_coast_mode: str = "resend"   # how the FR free-rides between taps: "resend" = submit the global
-                                     # unchanged (zero compute); "decay" = resend its own last tapped
-                                     # weights (mark fades slower, but it submits stale weights)
-    tap_graft_decay: float = 0.0      # graft coast: blend frozen mark-head toward global head each coast (0=off, tail-spike fix)
+    tap_scope: str = "full"          # model scope a tap trains: "full" | "block2" (last 20 tensors) 
+    tap_coast_mode: str = "decay"    # how the FR free-rides between taps: "decay" = resend its own last tapped
+    tap_graft_decay: float = 0.0     # graft coast: blend frozen mark-head toward global head each coast (0=off, tail-spike fix)
     tap_probe_holdout: int = 16      # held-out trigger images for the FR's self-BER probe (generalisation)
-    # ---- DYNAMIC adaptive-tap knobs (default = the prior FIXED behaviour) ----
+    # ---- DYNAMIC adaptive-tap knobs ----
     tap_margin_mode: str = "fixed"   # "fixed" = constant tap_margin; "derived" = eta - margin_k*sigma(calib probe BER)
     tap_margin_k: float = 1.0        # k for the derived margin (target = eta_hat - k*sigma)
     tap_warmup_mode: str = "fixed"   # "fixed" = defect at autop_honest_until; "dynamic" = defect when own probe converges
@@ -76,28 +64,14 @@ class ExpConfig:
     # ---- watermarking ----
     watermark: bool = False
     wm_bits: int = 0                        # m; 0 -> auto
-    wm_balanced_keys: bool = False          # False = paper-faithful random +/-1 keys 
-                                            # True = sign-balanced rows (removes that artifact by
-                                            # construction, still pseudo-random)
+    wm_balanced_keys: bool = False          # False = random +/-1 keys. True = sign-balanced rows 
     wm_trigger_assign: str = "roundrobin"   # trigger-class -> client assignment policy:
-                                            #   "roundrobin" = cid % num_classes (blind; the paper default)
+                                            #   "roundrobin" = cid % num_classes 
                                             #   "distribution" = server assigns each client a class it holds a lot of
     wm_lambda: float = 5.0                  # weight of L_wm (Eq. 11)
-    wm_exclude_trigger: bool = False        # ABLATION knob (env WM_EXCLUDE_TRIGGER=1).
-                                            #   False (DEFAULT, paper-faithful): the watermark
-                                            #     projection uses the FULL softmax incl. the
-                                            #     trigger class. FareMark's anti-dominance rule
-                                            #     (Eq. 6/10, "p_max<0.5") then flattens the
-                                            #     trigger-image softmax, which demotes the trigger
-                                            #     class out of argmax -> honest trig_acc ~= 0.
-                                            #   True: drop each client's trigger-class column from
-                                            #     the projection. The mark is carried by the tail
-                                            #     classes only, so the trigger class need not be
-                                            #     suppressed -> honest trig_acc RISES, and the BER
-                                            #     floor usually drops. Grouping auto-shrinks to fit
-                                            #     n-1 columns (m*l <= num_classes-1). This is a
-                                            #     DEVIATION from the paper; use it only for the
-                                            #     trig_acc ablation, never for headline numbers.
+    wm_exclude_trigger: bool = False        # extra test knob (env WM_EXCLUDE_TRIGGER=1).
+                                            #   False (default): watermark projection uses full softmax
+                                            #   True: drop each client's trigger-class column from projection. 
     wm_alpha: float = 0.4                   # smoothing exponent (Eq. 8)
     wm_f: str = "power"                     # smoothing kind: "power" | "sin"
     wm_beta: float = 0.6                    # memory coefficient (Eq. 14)
@@ -112,15 +86,10 @@ class ExpConfig:
                                             #             (paper V-F3 "client-specific trigger
                                             #             variations", still held-out)
                                             #  "client_train" = per-client images taken from that
-                                            #             client's OWN training shard (paper V-F3
-                                            #             "trigger sample consistency": test imgs
-                                            #             == train imgs). Memorisation, not
-                                            #             generalisation -- see paper Table V.
-    wm_eta_floor: float = 0.05              # small degenerate guard for eta only (not the threshold):
-                                            # keeps eta = mu+3sigma strictly positive if every benign BER is
-                                            # ~0. The operative threshold is always the computed mu+3sigma
-    wm_eta_fixed: float = 0.0               # >0 => pre-calibrated constant threshold for every
-                                            # round/experiment (from calibrate_eta.py). 0 => live calc.
+                                            #             client's own training shard (paper V-F3
+                                            #             "trigger sample consistency": test imgs == train imgs). 
+    wm_eta_floor: float = 0.05              # small degenerate guard for eta only. keeps eta = mu+3sigma strictly positive
+    wm_eta_fixed: float = 0.0               # >0 => pre-calibrated constant threshold 
     wm_verify_every: int = 1
     calib_on_all: bool = False              # calibrate eta over all clients (exposes circularity) vs benign-only
 

@@ -1,7 +1,7 @@
 """Server side: registration, extraction and detection
 
-The verification center registers every client's (trigger class, secret key,
-watermark bits). Each round it extracts the watermark from each submitted model
+The verification center registers every client's (trigger class, secret key, watermark bits). 
+Each round it extracts the watermark from each submitted model
 using N_T trigger samples (Eq. 15) and computes the bit-error-rate (Eq. 16):
 
   * benign client   -> trained with L_wm  -> BER ~ 0          (watermark present)
@@ -18,8 +18,7 @@ from . import watermark as wm
 
 
 class WatermarkRegistry:
-    """cid -> (trigger_class, key, target_bits, kind, alpha). One entry per
-    client slot, including slots that turn out to be free-riders"""
+    """cid -> (trigger_class, key, target_bits, kind, alpha)"""
 
     def __init__(self):
         self.entries: dict[int, dict] = {}
@@ -33,8 +32,7 @@ class WatermarkRegistry:
 
     def register(self, cid, trigger_class, key, target_bits, kind="power",
                  alpha=0.4, exclude="trigger"):
-        # exclude: which projection column the verifier drops. "trigger" sentinel
-        # -> use trigger_class (to be tested); None -> match the paper: full softmax
+        # exclude: which projection column the verifier drops
         exc = trigger_class if exclude == "trigger" else exclude
         self.entries[cid] = dict(trigger_class=trigger_class, key=key,
                                  target_bits=target_bits, kind=kind, alpha=alpha,
@@ -45,12 +43,7 @@ class WatermarkRegistry:
 
 
 def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
-    """Collect up to n_triggers samples per trigger class from the test set.
-
-    Keyed by class: every client whose trigger class is c is verified on the same
-    held-out images. Used whenever one class == one client. 
-    Under oversubscription (clients sharing a class) two clients differ only by 
-    their key M^i and bits B^i 
+    """Collect up to n_triggers samples per trigger class from the test set
     """
     g = torch.Generator().manual_seed(seed)
     by_class = {c: [] for c in classes}
@@ -70,12 +63,7 @@ def build_trigger_bank(test_dataset, classes, n_triggers, seed=0):
 
 def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
     """Table IX from FareMark, held-out variant. Keyed by CID.
-
-    "While clients sharing the same trigger class utilize identical class labels,
-    their watermarks remain distinguishable through client-specific trigger
-    variations." -> each client gets its own disjoint slice of that class's images,
-    so two clients on class c are verified on different images (plus their own M^i,
-    B^i). Images still come from the held-out test set, so the mark must generalise.
+    TODO: testing oversubscription
     """
     # cid -> class, and class -> [cids] (stable order so slices are reproducible)
     cls_of = {cid: e["trigger_class"] for cid, e in registry.entries.items()}
@@ -116,15 +104,7 @@ def build_trigger_bank_per_client(test_dataset, registry, n_triggers, seed=0):
 
 def build_trigger_bank_from_train(client_loaders, registry, n_triggers):
     """Table IX from FareMark, trigger sample consistency variant. Keyed by CID.
-
-    "we enforce trigger sample consistency: the trigger samples used during testing
-    are identical to those employed in training." -> each client's verification images
-    are drawn from its own training shard, i.e. images it actually trained on. This is
-    the paper-exact capacity protocol and it makes the mark trivially separable per
-    client -- but it is pure memorisation: the paper itself notes (Table V) that a mark
-    fitted to specific samples "cannot be generalized to other trigger-class samples".
-    Use it to reproduce the paper's capacity numbers; use the held-out banks to test
-    whether the mark means anything beyond those exact images.
+    TODO: testing oversubscription (trigger sample consistency)
     """
     bank = {}
     for cid, e in registry.entries.items():
@@ -151,13 +131,8 @@ def make_verifier(registry, trigger_bank, verify_model, device,
     THRESHOLD: eta is a pre-calibrated passed in as `eta_fixed` 
     (from calibrate_eta.py: mu+3sigma over per-round mean-over-clients
     benign BER, pooled over honest-only seeds, frozen)
-
-    `eta_floor` stays a tiny degenerate guard (keeps a >0 threshold if eta_fixed
-    is somehow 0). calib_on_all is kept only for the circularity demo.
     """
     fr_set = set(free_rider_indices)
-    benign_history = []          # per-round BER means (only used by the commented-out live calc)
-    CAL_WINDOW = 15              # TODO hardcoded (dead): sliding-window length for the commented-out live calc
 
     @torch.no_grad()
     def verify_hook(server, rnd, updates):
@@ -184,7 +159,7 @@ def make_verifier(registry, trigger_bank, verify_model, device,
                                    exclude=entry.get("exclude", tc))
             ber = wm.bit_error_rate(bits, entry["target_bits"])
 
-            # diagnostics: how hard is this trigger class to classify? (for analysis of BER floors)
+            # diagnostics: trigger class classification difficulty
             pmax, pred = probs.max(dim=1)
             trig_acc = (pred == tc).float().mean().item()      # is the class classified correctly
             ent = -(probs.clamp_min(1e-9) * probs.clamp_min(1e-9).log()).sum(dim=1).mean().item()
@@ -197,28 +172,16 @@ def make_verifier(registry, trigger_bank, verify_model, device,
             measured.append((cid, ber, cid in fr_set, tc))  # +trigger class
 
         # ================= THRESHOLD =================
-        # eta is a pre-calibrated CONSTANT frozen by scripts/threshold.py calibrate
-        # and injected as WM_ETA_FIXED. It never adapts during a run.
+        # eta is a pre-calibrated constant frozen by scripts/threshold.py calibrate and injected as WM_ETA_FIXED. 
         if eta_fixed and eta_fixed > 0:
             eta_round = float(eta_fixed)
-            eta_source = "fixed"          # the canonical path
+            eta_source = "fixed"          # frozen from offline calibration
         else:
             eta_round = eta_floor
-            eta_source = "floor_fallback"  # degenerate: NOT a calibrated threshold
-        # `eta_source` is logged so `threshold.py verify` and the plots can tell a
-        # properly-frozen run from one that silently fell back to eta_floor=0.05.
-        # Before this, a run with WM_ETA_FIXED unset produced a plausible-looking
-        # flat 0.05 threshold that was indistinguishable from a real calibration.
+            eta_source = "floor_fallback"  # not calibrated, fallback
 
         # ---- LEGACY (dead) live-threshold variants -------------------------------
-        # Kept, commented, for reference only: these are the two ways eta used to be
-        # recomputed DURING a run, before it was frozen offline. They are dead
-        # because a live threshold calibrated on the same round it judges is
-        # circular (and `calib_on_all` made free-riders poison their own threshold,
-        # which was the point of that demo). To revive: set eta_fixed=0 and
-        # un-comment. `benign_history` and CAL_WINDOW above exist only for these,
-        # as does the `benign_now` binding restored on the next commented line
-        # (it was removed from live code because nothing else used it).
+        # for reference only: live computed thresholds
         #
         # benign_now = [b for _, b, isfr, _ in measured if not isfr]
         # calib_now = [b for _, b, _, _ in measured] if calib_on_all else benign_now

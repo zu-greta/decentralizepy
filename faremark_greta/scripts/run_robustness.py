@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """ robustness experiment driver — Figs. 9-10 and Table VI.
+TODO: run these tests
 
 Trains a fully-watermarked model (all honest clients, no free-riders), then
 applies each watermark-removal operation at a range of strengths and records

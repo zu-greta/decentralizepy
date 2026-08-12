@@ -1,8 +1,7 @@
 """Dataset loading and the IID partition across clients
 
 IID: split training set evenly into `num_clients` shards, shuffling the indices first 
-Non-IID (Dirichlet): for each class, draw a Dirichlet(alpha) vector over clients and 
-hand out that class's samples in those proportions. 
+Non-IID (Dirichlet): for each class, draw a Dirichlet(alpha) vector over clients and hand out that class's samples in those proportions. 
     Small alpha -> each client sees only a few classes (severe skew); 
     large alpha -> approaches IID. alpha~=0.5 is the common FL non-IID benchmark; 
     alpha>=100 is effectively IID
@@ -76,8 +75,7 @@ def dirichlet_partition(labels, num_clients: int, alpha: float, seed: int) -> li
 
     For each class, draw a Dirichlet(alpha) vector over clients and hand out that
     class's samples in those proportions. Small alpha -> each client sees only a
-    few classes (severe skew); large alpha -> approaches IID. alpha~=0.5 is the
-    common FL non-IID benchmark; alpha>=100 is effectively IID
+    few classes (severe skew); large alpha -> approaches IID. 
     """
     labels = np.asarray(labels)
     rng = np.random.default_rng(seed)

@@ -548,6 +548,40 @@ August 11
 
 - TODO at the end: clenaup all the codebase and results and documentation for the next person to pick up
 
+meeting notes
+- experiment plan - for one dataset complete
+- diff FR - lenght, num etc 
+- check trigger class accruacy with a client that doesnt embed watermark !!!
+- check how other papers are doing detection and consequences
+- plot the tapping and the samples used side by side for refernece
+- non-iid -> isde by side (random and best distribution)
+
+START WRITING PAPER
+- fix and clean all plotting
+- FR def: do minimal work (samples seen closet to 0 as possible) and still stay under a threshold for BER
+
+propose a storyline and experiments to do - itemize section names and short outline - no plots yet
+BY TOMORROW - present to maxime too with basic slides and some plots
+
+TODO
+- aug11
+    - write the storyline proposal + list of experiments to run: aug12
+    - create ppt for maxime: aug12 meeting
+    [x] storyline proposal draft in md 
+    [] experiment plan in md
+    [] ppt for maxime meeting
+    [] storyline proposal draft in overleaf
+- aug12
+    - present storyline get feedback and finalize storyline and experiments to run
+    - cleanup codebase and results - keep only relevant results and plots for the paper
+    - run extra experiments from meeting: trigger class accuracy + detection + plotting
+    - setup everything to run + run
+- aug13
+    - write paper based on storyline
+    - collect results and plot
+- aug14
+    - write paper - add results
+
 ---
 
 ## paper notes

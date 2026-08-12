@@ -1,5 +1,6 @@
 """
 Robustness of the watermark to removal attacks
+TODO: test and confirm the results match the paper
 
 Paper section V-E + Tables VI and Figs. 9-10. After a watermark is embedded, an
 adversary (or ordinary model maintenance) may try to remove it. Test whether
