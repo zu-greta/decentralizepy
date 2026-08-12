@@ -1,10 +1,6 @@
 #!/usr/bin/env python
 """plots.py -- ALL FareMark figures in one place.
 
-Only the plots that appear in STORYLINE.md are kept. Everything is self-contained
-(no repo imports): reads result.json directly, so it runs identically on the
-cluster and locally.
-
 Subcommands (one per figure family):
 
   honest_lines     honest BER per trigger class over rounds        -> A1/E1_class_floors
@@ -41,22 +37,22 @@ import matplotlib.pyplot as plt
 
 
 # ###########################################################################
-# ##  EDITABLE CONSTANTS  --  change thresholds / windows here, ONE place.  ##
+# ##  EDITABLE CONSTANTS  --  change thresholds / windows here             ##
 # ###########################################################################
 TAIL = 20                    # "converged" window = last N rounds (calibration + tail-mean)
 
 # Two reference detection thresholds, drawn on the timelines / tap plots.
-# IID (Group A/D/K) values are the frozen references from STORYLINE.md 5.1.
-ETA_TIGHT_IID  = 0.064       # aggressive (mu+3s over round-means)  -- STORYLINE 5.1
-ETA_LOOSE_IID  = 0.264       # lenient    (mu+3s over per-client)   -- STORYLINE 5.1
-# non-IID (Group E/EA) values -- pass with --eta_tight/--eta_loose (STORYLINE E1).
+# IID (Group A/D/K) values are the frozen references
+ETA_TIGHT_IID  = 0.064       # aggressive (mu+3s over round-means) 
+ETA_LOOSE_IID  = 0.264       # lenient    (mu+3s over per-client)  
+# non-IID (Group E/EA) values -- pass with --eta_tight/--eta_loose 
 ETA_TIGHT_NIID = 0.161
 ETA_LOOSE_NIID = 0.576
 
 ETA_TIGHT_DEFAULT = ETA_TIGHT_IID   # used when neither CLI nor run config gives one
 ETA_LOOSE_DEFAULT = ETA_LOOSE_IID
 
-# honest_per_round: how to bucket a trig_acc==0 client-round (STORYLINE 6c).
+# honest_per_round: how to bucket a trig_acc==0 client-round 
 SUPPRESS_BER = 0.12          # trig_acc==0 AND BER <  this -> watermark SUPPRESSION (expected)
 STARVE_BER   = 0.30          # trig_acc==0 AND BER >= this -> data STARVATION (non-IID empty shard)
 
@@ -71,35 +67,33 @@ HARD_DRAW_GAP    = -10       # class_acc: trig-class acc this far below global =
 LBL_ROUND      = "communication round"
 LBL_BER        = "bit-error-rate  (0 = mark present · 0.5 = no mark)"
 LBL_BER_SHORT  = "bit-error-rate"
-LBL_BER_HONEST = "honest bit-error-rate (lower = mark embeds)"
+LBL_BER_HONEST = "honest bit-error-rate"
 LBL_TRIGACC    = "honest trigger-class test acc\n(argmax == trigger class)"
 LBL_TESTACC    = "global test accuracy (%)"
-LBL_SAMPLES    = "cumulative samples (contention-free)"
+LBL_SAMPLES    = "cumulative samples"
 LBL_FRACTION   = "cum FR / cum honest"
 
 LBL_ETA_TIGHT  = "η tight"            # + " = {val}" appended
 LBL_ETA_LOOSE  = "η loose"
-LBL_WARMUP     = "forced-honest warmup"
-LBL_CALIB      = "calibration window"
+LBL_WARMUP     = "honest warmup"
+LBL_CALIB      = "calib window"
 LBL_TAP        = "TAP (trains)"
 LBL_COAST      = "COAST (no train)"
 LBL_HONEST_MEAN = "honest mean BER"
 LBL_FR_MEAN     = "free-rider mean BER"
 LBL_HONEST_TWIN = "honest same-class twin"      # + " (class {c})"
-LBL_FR_SERVER   = "FR server-measured BER (what gets flagged)"
+LBL_FR_SERVER   = "FR server-measured BER"
 LBL_FR_PROBE    = "FR self-probe (drives tap/coast)"
 
-# titles (each f-string is marked  # TEXT  so you can grep them)
+# titles # TEXT 
 TITLE_HONEST_LINES = "Honest BER per trigger class"                       # TEXT
 TITLE_PER_ROUND    = "Honest BER & trigger-class accuracy per round"      # TEXT
 TITLE_CLASS_ACC    = "Per-client trigger-class accuracy (all-honest)"     # TEXT
 TITLE_SWEEP1       = "Free-rider BER over rounds, per data budget"        # TEXT
 TITLE_SWEEP2       = "Converged free-rider BER vs data budget"            # TEXT
 TITLE_TIMELINE     = "BER vs round"                                       # TEXT
-TITLE_ACCURACY     = ("Global test accuracy: attack vs honest\n"
-                      "(free-riders barely dent global accuracy -- they steal a good model)")  # TEXT
-TITLE_DIRICHLET    = ("Dirichlet(α) label-skew partition (rows=clients, cols=classes)\n"
-                      "small α = one client hogs each class; larger α = more even")            # TEXT
+TITLE_ACCURACY     = "Global test accuracy: attack vs honest"  # TEXT
+TITLE_DIRICHLET    = "Dirichlet(α) label-skew partition (rows=clients, cols=classes)"            # TEXT
 TITLE_GPU          = "Cumulative compute per round"                       # TEXT
 TITLE_ISO          = "Isolated same-class comparison"                     # TEXT
 TITLE_TAP          = "Submarine tap / coast"                              # TEXT
@@ -156,9 +150,9 @@ ps = SimpleNamespace(OKABE=OKABE, CYCLE=CYCLE, C_HONEST=C_HONEST, C_FR=C_FR,
                      stacked_panels=stacked_panels)
 
 
-# ###########################################################################
-# ##  IO / analysis helpers (self-contained; no detection/resultio import) ##
-# ###########################################################################
+# #############################
+# ##  IO / analysis helpers  ##
+# #############################
 def load(globs):
     out = []
     for g in (globs if isinstance(globs, (list, tuple)) else [globs]):
@@ -272,9 +266,7 @@ def default_out(inp):
 
 
 def eta_pair(a, runs=None):
-    """Resolve (eta_tight, eta_loose) for a figure: CLI overrides win, then the run's
-    frozen WM_ETA_FIXED (tight only), then the IID defaults. Loose is recomputed from
-    honest_in per-client BER when available."""
+    """Resolve (eta_tight, eta_loose) for a figure"""
     et = a.eta_tight
     if et is None:
         cf = None
@@ -364,7 +356,7 @@ def honest_per_round(a):
     """Per-ROUND honest BER (top) and trigger-class ACCURACY (bottom), one line per
     trigger class, aggregated over seeds. Reads wm_per_client[*].trig_acc.
 
-    Reading it (STORYLINE 6c):
+    Reading it 
       * BER descends to each class floor  -> the mark embeds.
       * trig_acc stays ~0 on the SAME rounds -> the watermark loss suppresses the
         trigger class below argmax to embed (EXPECTED; measured on each client's

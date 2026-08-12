@@ -2,19 +2,13 @@
 # =============================================================================
 # submit_pool.sh -- run the whole experiment matrix on a fixed number of pods.
 #
-# Instead of "1 runai job per run" (153 pods), this submits exactly PODS jobs.
 # Each pod carries its own slice of the manifest and replays it with WORKERS
 # concurrent runs on its single GPU. Two pods = 2 GPUs = 2*WORKERS runs at once.
 #
 #   ./submit_pool.sh                 # PODS=2, WORKERS=6, reads ./jobs.tsv
-#   PODS=1 ./submit_pool.sh          # if quota drops further
 #
 # HETEROGENEOUS GPUs (e.g. one A100-80 + one A100-40) -- assign per pod:
 #   POOLS="a100-80 a100-40" WORKERS_LIST="6 4" PODS=2 ./submit_pool.sh
-# Pod i gets POOLS[i] and WORKERS_LIST[i]; anything unset falls back to
-# RUNAI_EXTRA / WORKERS. Pods pull from a SHARED queue and claim jobs
-# atomically, so a slower GPU simply completes fewer runs -- no pod sits idle
-# waiting for the other, and you never have to guess the split.
 #
 # Build the manifest first, from your existing leg definitions:
 #   rm -f jobs.tsv

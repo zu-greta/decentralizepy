@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# runbook.sh -- one entry point for the whole pipeline.
+# runbook.sh -- entry point 
 #
 #   ./runbook.sh help          print the phase order
 #   ./runbook.sh probe         0. embedding sanity check (gates paper rows)
@@ -12,15 +12,15 @@
 #
 # Knobs (env): BATCH, PODS, WORKERS, RES, OUT, FAST_DATA(1), DETERMINISM(0), K4B(1)
 #
-# THIS TASK'S NEW WORK is groups Z and Y (see run_now.sh), which is the DEFAULT batch:
-#   ./runbook.sh manifest && ./runbook.sh submit      # runs Z (no-wm) + Y (J4 c36+c17)
-#   RES=~/local/results ./runbook.sh plot             # draws every storyline figure
+#   BATCH=<> ./runbook.sh manifest 
+#   WORKERS=<> PODS=<> BATCH=<> ./runbook.sh submit      
+#   RES=~/local/results ./runbook.sh plot            
 # =============================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; cd "$HERE"
 
 # ---- batch selection --------------------------------------------------------
-# Default = the two NEW single-seed groups this task adds:
+# Default = the two new groups:
 #   Z = no-watermark control (lambda=0; proves trig_acc~0 is caused by the watermark)
 #   Y = J4 oracle-eta reproduction at classes 3,6 AND 1,7
 # Other groups (already run / regenerable): A D E EA H K.  Combine letters, e.g.
@@ -36,13 +36,13 @@ RES="${RES:-/mnt/nfs/home/zu/results}"   # cluster results (submit) OR local dir
 OUT="${OUT:-$RES/figs}"
 ALL="$RES/*/result.json"
 
-# ---- frozen references (STORYLINE 5.1 / E1). Change here, applied to every plot ----
+# ---- frozen references. Change here, applied to every plot ----
 HON=A1_honest_c100                 # honest calibration family (IID, c100, 10 clients)
 HONCLASS="${HONCLASS:-A1_honest_c100}"   # all-honest family for the class-acc bar chart
 ETA_T="0.064"; ETA_L="0.264"       # IID  eta tight / loose
 ETA_T_NIID="0.161"; ETA_L_NIID="0.576"   # non-IID eta tight / loose
 
-PL="python ../scripts/plots.py"    # THE single merged plotting script
+PL="python ../scripts/plots.py"   
 PC="python ../scripts/paper_check.py"
 run(){ echo "== $*"; eval "$*" || echo "   (skipped -- family may not exist yet)"; }
 
@@ -79,7 +79,7 @@ phase_monitor(){
 }
 
 # ---------------------------------------------------------------------------
-# 4. ALL FIGURES. eta is FROZEN (references above), so no calibrate phase.
+# 4. ALL FIGURES. eta is FROZEN.
 #    Organised strictly by experiment group; every call maps to a merged plots.py
 #    subcommand. Families that are not present yet are skipped by run{} with a note.
 # ---------------------------------------------------------------------------
@@ -119,7 +119,7 @@ phase_plot(){
   run "$PL gpu_savings --in '$ALL' --family EA2_reduced_niid_distrib_c36 --out $OUT/gpu_savings_EA2_reduced_niid_distrib_c36"
 
   # ===================== GROUP K -- the submarine ===========================
-  # THREE views per free-rider (cid3 easy, cid6 hard) from the SAME data:
+  # 3 views per free-rider (cid3 easy, cid6 hard) from the SAME data:
   #   tap_perfr   = seed-band single graph (mean over seeds; majority tap/coast markers)
   #   tap_perseed = one panel PER SEED (fixes the marker collisions across seeds)
   #   tap_effort  = BER + cumulative SAMPLES side by side (stealth vs effort in one look)
@@ -137,16 +137,12 @@ phase_plot(){
   done
 
   # ===================== GROUP Z -- NO-WATERMARK control ====================
-  # A0_nowm = all-honest, lambda=0 (embedding OFF) but the verifier still logs
-  # trig_acc. The bottom panel of honest_per_round should stay HIGH here, unlike
-  # A1 where the watermark drives it to ~0 -- confirming the watermark embedding
-  # (not the class) causes the zero trigger-class accuracy (STORYLINE 6c).
+  # A0_nowm = all-honest, lambda=0 (embedding OFF) 
   run "$PL honest_per_round --in '$ALL' --family A0_nowm_honest_c100 --eta_tight $ETA_T --eta_loose $ETA_L --out $OUT/A0_nowm_per_round"
   run "$PL class_acc        --in '$ALL' --family A0_nowm_honest_c100 --out $OUT/A0_nowm_class_acc"
 
   # ===================== GROUP Y -- J4 oracle-eta reproduction ==============
-  # J4 = the oracle-eta version of K4 (block2 + graft, given eta=0.264). Reproduced
-  # at classes 3,6 (c36) and 1,7 (c17), single seed. Same 3 submarine views.
+  # J4 = the oracle-eta version of K4 (block2 + graft, given eta=0.264). 
   for fam in J4_scope_graft_block2_c36 J4_scope_graft_block2_c17; do
     run "$PL tap_perfr  --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --eta_tight $ETA_T --eta_loose $ETA_L --out $OUT/tap_${fam}"
     run "$PL tap_effort --in '$ALL' --family $fam --honest_in '$ALL' --honest_family $HON --eta_tight $ETA_T --eta_loose $ETA_L --out $OUT/tap_${fam}"
@@ -172,7 +168,7 @@ case "${1:-help}" in
   all-submit) phase_probe; phase_manifest; phase_submit ;;   # 0 -> 1 -> 2
   *)
     cat <<USAGE
-runbook.sh -- run phases in this order (wait for the cluster between submit and plot):
+runbook.sh -- run phases 
 
   ON THE CLUSTER (has submit_experiment.sh + .env):
     ./runbook.sh probe       0. embedding sanity
@@ -185,12 +181,7 @@ runbook.sh -- run phases in this order (wait for the cluster between submit and 
     RES=~/local/results ./runbook.sh plot     4. ALL figures
     RES=~/local/results ./runbook.sh grade    5. paper tables (optional)
 
-  THIS TASK'S NEW RUNS (default BATCH=ZY):
-    Z = A0_nowm_honest_c100    single-seed, all-honest, NO watermark (lambda=0);
-        plotted with honest_per_round -> trig_acc stays HIGH (vs A1 ~0).
-    Y = J4_scope_graft_block2_{c36,c17}  single-seed J4 reproduction at classes 3,6 and 1,7.
-
-  batch letters: A D E EA H K  (+ new Z Y). Combine, e.g. BATCH=EEAK. Batch size stays 16.
+  batch letters: A D E EA H K Y Z . Combine, e.g. BATCH=EEAK. Batch size stays 16.
 USAGE
     ;;
 esac
